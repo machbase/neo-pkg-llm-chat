@@ -1,4 +1,4 @@
-import neoLogo from '../../assets/image/neow_favicon.webp';
+import neoLogo from '../../assets/image/neowFavicon';
 
 export const LoadingDots = () => (
     <div className="chat-loading">

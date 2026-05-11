@@ -2794,6 +2794,224 @@ details.card > :not(summary) {
     border-color: var(--color-success);
 }
 
+/* ─── TQL/SQL 자동 mount (Run 버튼 없이 ChatExecResult로 인라인 교체) ─── */
+/* swapped 상태: 원본 코드(pre) + copy 버튼 hide, ChatExecResult가 그 자리에 표시 */
+.code-block-wrapper.swapped > pre {
+    display: none;
+}
+.code-block-wrapper.swapped > .code-copy-button {
+    display: none;
+}
+
+.chat-code-result-container {
+    margin: 0;
+}
+
+/* 코드 블록(.chat-markdown pre)과 동일한 visual box로 일치시킴 */
+.chat-exec-result {
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-12) var(--spacing-16);
+}
+.chat-exec-result__header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+.chat-exec-result__toggle-group {
+    display: inline-flex;
+    gap: 4px;
+}
+.chat-code-view-toggle {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: inherit;
+    padding: 2px 8px;
+    font-size: 11px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+}
+.chat-code-view-toggle:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+.chat-code-view-toggle.is-active {
+    background: rgba(120, 220, 120, 0.2);
+    border-color: rgba(120, 220, 120, 0.5);
+    color: #71e071;
+}
+.chat-exec-result__lang {
+    font-size: 10px;
+    opacity: 0.5;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+}
+
+.chat-exec-result__loading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    font-size: 12px;
+    opacity: 0.85;
+}
+.chat-exec-result__abort {
+    margin-left: auto;
+    padding: 2px 10px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: rgba(255, 120, 120, 0.95);
+    background: rgba(255, 80, 80, 0.12);
+    border: 1px solid rgba(255, 80, 80, 0.4);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+.chat-exec-result__abort:hover {
+    background: rgba(255, 80, 80, 0.22);
+    color: rgba(255, 160, 160, 1);
+}
+.chat-exec-result__spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    border-top-color: rgba(120, 220, 120, 0.8);
+    border-radius: 50%;
+    animation: chat-exec-spin 0.8s linear infinite;
+}
+@keyframes chat-exec-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+.chat-exec-result__code-fallback,
+.chat-exec-result__text {
+    margin: 0;
+    white-space: pre-wrap;
+    font-size: 12px;
+    background: rgba(0, 0, 0, 0.3);
+    padding: 8px;
+    border-radius: 4px;
+}
+.chat-exec-result__text {
+    max-height: 70vh;
+    overflow: auto;
+}
+
+/* Code view — 카피 버튼 + 원본 코드 (✕ 닫기 대체) */
+.chat-exec-result__code-block {
+    position: relative;
+}
+.chat-exec-result__copy {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    height: 24px;
+    padding: 0 10px;
+    background: rgba(30, 30, 30, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 10px;
+    font-weight: 600;
+    border-radius: var(--radius-sm, 4px);
+    cursor: pointer;
+    font-family: inherit;
+    z-index: 2;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease, background-color 0.15s ease;
+    backdrop-filter: blur(4px);
+}
+.chat-exec-result__code-block:hover .chat-exec-result__copy,
+.chat-exec-result__copy:focus-visible,
+.chat-exec-result__copy.is-copied {
+    opacity: 1;
+    pointer-events: auto;
+}
+.chat-exec-result__copy:hover {
+    background: rgba(50, 50, 50, 0.95);
+    color: #fff;
+}
+.chat-exec-result__copy.is-copied {
+    background: var(--color-success-muted);
+    border-color: var(--color-success);
+    color: #71e071;
+}
+
+/* ResultChartView — Phase 4 */
+.chat-chart-wrapper {
+    overflow: auto;
+    display: flex;
+    justify-content: center;
+}
+.chat-chart-iframe {
+    display: block;
+}
+.chat-chart-loading {
+    padding: 16px;
+    font-size: 12px;
+    opacity: 0.7;
+    text-align: center;
+}
+.chat-html-wrapper {
+    width: 100%;
+    max-height: 70vh;
+    overflow: auto;
+}
+.chat-html-iframe {
+    display: block;
+    width: 100%;
+    min-height: 480px;
+    border: none;
+    background: #fff;
+    border-radius: 4px;
+}
+
+/* ResultTableView — Phase 4 */
+.chat-result-table-wrapper {
+    font-size: 12px;
+}
+.chat-result-table__truncated-banner {
+    background: rgba(255, 200, 0, 0.15);
+    border: 1px solid rgba(255, 200, 0, 0.4);
+    color: #ffc800;
+    padding: 4px 8px;
+    margin-bottom: 6px;
+    border-radius: 4px;
+    font-size: 11px;
+}
+.chat-result-table__scroll {
+    overflow: auto;
+    max-height: 70vh;
+}
+.chat-result-table {
+    border-collapse: collapse;
+    width: 100%;
+}
+.chat-result-table th,
+.chat-result-table td {
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    padding: 4px 8px;
+    text-align: left;
+}
+.chat-result-table th {
+    background: rgba(255, 255, 255, 0.05);
+    position: sticky;
+    top: 0;
+    font-weight: 600;
+}
+.chat-result-table__null {
+    color: rgba(255, 255, 255, 0.4);
+    font-style: italic;
+}
+.chat-result-table__affected {
+    margin-top: 6px;
+    font-size: 11px;
+    opacity: 0.7;
+}
+
 /* ─── Markdown body ─── */
 .chat-markdown {
     line-height: 1.65;

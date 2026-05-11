@@ -51,3 +51,14 @@ export const getWsBase = async (): Promise<string> => {
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     return `${protocol}://${window.location.hostname}:${port}`;
 };
+
+/**
+ * LLM 중계 서버 origin 반환 (예: "http://localhost:8884").
+ * iframe `<base href>`에 사용. getLlmPort()의 cachedPort를 재사용 — 별도 fetch X.
+ */
+export async function getApiBaseOrigin(): Promise<string> {
+    const port = await getLlmPort();
+    const proto = window.location.protocol; // "http:" or "https:"
+    const host = window.location.hostname;
+    return `${proto}//${host}:${port}`;
+}

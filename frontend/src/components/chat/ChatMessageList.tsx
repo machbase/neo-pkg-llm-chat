@@ -4,7 +4,7 @@ import { ChatMessageItem } from './ChatMessageItem';
 import { LoadingDots } from './LoadingDots';
 import { RenderMd } from './RenderMd';
 import Icon from '../common/Icon';
-import neoLogo from '../../assets/image/neow_favicon.webp';
+import neoLogo from '../../assets/image/neowFavicon';
 
 interface ChatMessageListProps {
     messages: Message[];
