@@ -27,6 +27,8 @@ export default defineConfig({
         port: 7779,
         proxy: {
             "/public/neo-pkg-llm-chat": "http://localhost:5654",
+            "/db/tql": "http://localhost:8884",
+            "/db/query": "http://localhost:8884",
         },
     },
 });

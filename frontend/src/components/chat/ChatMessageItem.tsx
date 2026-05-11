@@ -1,7 +1,7 @@
 import type { Message, UserMessageAlign } from '../../types/chat';
 import { RenderMd } from './RenderMd';
 import { ErrorBanner } from './ErrorBanner';
-import neoLogo from '../../assets/image/neow_favicon.webp';
+import neoLogo from '../../assets/image/neowFavicon';
 
 interface ChatMessageItemProps {
     message: Message;
@@ -36,7 +36,7 @@ export const ChatMessageItem = ({ message, userMessageAlign = 'left' }: ChatMess
                 {message.isProcess || isUser ? (
                     <div className="chat-msg-text">{message.content}</div>
                 ) : (
-                    <RenderMd content={message.content} isInterrupt={message.isInterrupt} />
+                    <RenderMd content={message.content} isInterrupt={message.isInterrupt} isProcess={message.isProcess} />
                 )}
             </div>
         </div>

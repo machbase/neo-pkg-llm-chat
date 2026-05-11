@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import type { Message, PkgProvider, PkgSelectedModel } from '../../types/chat';
 import { ChatMessageList } from './ChatMessageList';
 import Icon from '../common/Icon';
-import neoLogo from '../../assets/image/neow_favicon.webp';
+import neoLogo from '../../assets/image/neowFavicon';
 
 interface SuggestionChip {
     icon: string;
