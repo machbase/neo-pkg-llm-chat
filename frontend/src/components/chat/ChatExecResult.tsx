@@ -122,7 +122,7 @@ export const ChatExecResult = ({ code, lang }: ChatExecResultProps) => {
                         role="tab"
                         aria-selected={view === 'result'}
                     >
-                        Result
+                        Run
                     </button>
                 </div>
             </div>
