@@ -53,7 +53,10 @@ curl http://localhost:8884/health
 
 ## WebSocket Protocol
 
-The chat UI communicates with the package service through WebSocket. The connection URL follows the format `ws://{host}:{port}/{user_id}/ws`.
+The chat UI communicates with the package service through WebSocket. Two URL forms are supported:
+
+- Direct port: `ws://{host}:{port}/{user_id}/ws`
+- Service proxy (recommended): `ws://{host}/web/services/neo-pkg-llm/ws/{user_id}` — neo transparently forwards to `127.0.0.1:{port}` (after stripPrefix the backend receives `/ws/{user_id}`). Use `wss` when the page is served over https.
 
 ### Client to Server Messages
 

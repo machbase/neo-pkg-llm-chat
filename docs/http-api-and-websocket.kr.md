@@ -53,7 +53,10 @@ curl http://localhost:8884/health
 
 ## WebSocket 프로토콜
 
-채팅 UI는 WebSocket을 통해 패키지 서비스와 통신합니다. 연결 URL은 `ws://{host}:{port}/{user_id}/ws` 형식입니다.
+채팅 UI는 WebSocket을 통해 패키지 서비스와 통신합니다. 연결 URL은 두 가지 형식을 지원합니다.
+
+- 포트 직접: `ws://{host}:{port}/{user_id}/ws`
+- 서비스 프록시(권장): `ws://{host}/web/services/neo-pkg-llm/ws/{user_id}` — neo 본체가 `127.0.0.1:{port}` 로 투명 포워딩(stripPrefix 후 백엔드는 `/ws/{user_id}` 수신). 페이지가 https 면 `wss`.
 
 ### 클라이언트 → 서버 메시지
 
