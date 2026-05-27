@@ -1962,7 +1962,7 @@ details.card > :not(summary) {
     justify-content: center;
     gap: var(--spacing-12);
     width: 100%;
-    max-width: 560px;
+    max-width: 720px;
     padding-right: 40px;
     position: relative;
     animation: chatFadeUp 0.5s cubic-bezier(0.4, 0, 0.2, 1) 0.15s both;
@@ -2838,9 +2838,9 @@ details.card > :not(summary) {
     background: rgba(255, 255, 255, 0.1);
 }
 .chat-code-view-toggle.is-active {
-    background: rgba(80, 150, 240, 0.2);
-    border-color: rgba(80, 150, 240, 0.5);
-    color: #5b9bf0;
+    background: rgba(120, 220, 120, 0.2);
+    border-color: rgba(120, 220, 120, 0.5);
+    color: #71e071;
 }
 .chat-exec-result__lang {
     font-size: 10px;

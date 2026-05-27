@@ -32,7 +32,10 @@ export function MachbaseSection({ config, onChange, errors = [] }: Props) {
                 </label>
                 <label className="form-label">
                     <span>User ID</span>
-                    <input type="text" placeholder="sys" value={config.user} onChange={set('user')} className={hasError('user') ? 'input-error' : ''} />
+                    {/* Fixed to the logged-in user (JWT identity) so the saved config filename
+                        and the DB connection username always agree. Editing here would create
+                        a config under a different name than the actual user. */}
+                    <input type="text" value={config.user} readOnly disabled className="opacity-60 cursor-not-allowed" />
                 </label>
                 <label className="form-label">
                     <span>Password</span>

@@ -28,12 +28,9 @@ type ExtWsOutgoing =
     | { type: "clear"; user_id: string; session_id: string };
 
 const getExtWsUrl = async (): Promise<string> => {
-    // base = {ws|wss}://<host>/web/services/<svc>/ws (서비스 프록시 공개 경로).
-    // userId 를 마지막 segment 로 붙여 .../ws/{userId} 를 만든다 → stripPrefix 후
-    // 백엔드는 /ws/{userId} 를 받아 해당 인스턴스의 /ws 로 라우팅한다.
     const base = await getWsBase();
     const userId = getCurrentUser() ?? "sys";
-    return `${base}/${userId}`;
+    return `${base}/${userId}/ws`;
 };
 
 const generateSessionId = (): string => `sess-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
@@ -303,15 +300,41 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
 
     const handleInterruptMessage = () => {
         setMessages((prev) => prev.map((m) => ({ ...m, isInterrupt: true })));
-        sendExt({ type: "stop", user_id: getCurrentUser() ?? "", session_id: sessionIdRef.current });
+        // Close WS to trigger server-side cancellation, then reconnect
+        const ws = socketRef.current;
+        if (ws) {
+            ws.onopen = null;
+            ws.onmessage = null;
+            ws.onclose = null;
+            ws.onerror = null;
+            ws.close();
+            socketRef.current = null;
+        }
+        setWsReady(false);
+        setProcessingAnswer(false);
+        processingAnswerRef.current = false;
+        // Reconnect after a short delay
+        setTimeout(() => { connect(); }, 500);
     };
 
     const handleClearSession = () => {
-        sendExt({ type: "clear", user_id: getCurrentUser() ?? "", session_id: sessionIdRef.current });
+        // Close WS to trigger server-side cancellation (same as interrupt),
+        // then reset session and reconnect
+        const ws = socketRef.current;
+        if (ws) {
+            ws.onopen = null;
+            ws.onmessage = null;
+            ws.onclose = null;
+            ws.onerror = null;
+            ws.close();
+            socketRef.current = null;
+        }
+        setWsReady(false);
         sessionIdRef.current = generateSessionId();
         setMessages([]);
         setProcessingAnswer(false);
         processingAnswerRef.current = false;
+        setTimeout(() => { connect(); }, 500);
     };
 
     const isConnected = wsReady && socketRef.current?.readyState === WebSocket.OPEN;

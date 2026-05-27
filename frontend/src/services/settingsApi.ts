@@ -32,25 +32,34 @@ export async function getConfig(name: string): Promise<AppConfig> {
     };
 }
 
+// All mutating calls use POST with Content-Type 'text/plain' so the browser treats
+// them as "simple" requests (no CORS preflight). The LLM server's @jsh/http build
+// has no `options()`/`all()` method to answer preflight, and the server reads the
+// raw body string + JSON.parses it. PUT/DELETE are tunneled via ?_method=PUT|DELETE.
+
 // ── Config create ──
-export async function createConfig(config: AppConfig): Promise<string> {
+// We always save under the path /api/configs/{name} (treated as PUT semantics on the
+// server) so the filename is decided by the caller, not by the request body. This
+// keeps the saved file aligned with the logged-in user instead of whatever the
+// machbase.user form field happens to contain.
+export async function createConfig(name: string, config: AppConfig): Promise<string> {
     const API_BASE = await getApiBase();
-    const res = await fetch(`${API_BASE}/configs`, {
+    const res = await fetch(`${API_BASE}/configs/${encodeURIComponent(name)}?_method=PUT`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "text/plain" },
         body: JSON.stringify(config),
     });
     const body = (await res.json()) as ApiResponse<{ name: string }>;
     if (!body.success) throw new Error(body.reason);
-    return body.data?.name ?? "";
+    return body.data?.name ?? name;
 }
 
 // ── Config update ──
 export async function updateConfig(name: string, config: AppConfig): Promise<string> {
     const API_BASE = await getApiBase();
-    const res = await fetch(`${API_BASE}/configs/${encodeURIComponent(name)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
+    const res = await fetch(`${API_BASE}/configs/${encodeURIComponent(name)}?_method=PUT`, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
         body: JSON.stringify(config),
     });
     const body = (await res.json()) as ApiResponse<{ name: string }>;
@@ -61,8 +70,9 @@ export async function updateConfig(name: string, config: AppConfig): Promise<str
 // ── Config delete ──
 export async function deleteConfig(name: string): Promise<void> {
     const API_BASE = await getApiBase();
-    const res = await fetch(`${API_BASE}/configs/${encodeURIComponent(name)}`, {
-        method: "DELETE",
+    const res = await fetch(`${API_BASE}/configs/${encodeURIComponent(name)}?_method=DELETE`, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain" },
     });
     const body = (await res.json()) as ApiResponse<{ name: string }>;
     if (!body.success) throw new Error(body.reason);

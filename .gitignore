@@ -1,9 +1,14 @@
 node_modules/
 cgi-bin/node_modules/
-cgi-bin/llm/
 cgi-bin/.llm-download.tar.gz
 cgi-bin/.llm-download.zip
 cgi-bin/api/.llm-download.tar.gz
 cgi-bin/api/.llm-download.zip
 .DS_Store
 ARCHITECTURE.md
+cgi-bin/llm/workers/
+cgi-bin/llm/logs/
+cgi-bin/llm/gateway-beacon.log
+cgi-bin/llm/worker-beacon.log
+cgi-bin/launcher-beacon.log
+stop-beacon.log

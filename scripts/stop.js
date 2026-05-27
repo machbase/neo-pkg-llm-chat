@@ -1,79 +1,79 @@
 'use strict';
 
-// pkg run stop — 패키지 관리 서비스 중지 + 바이너리 트리 정리.
+// pkg run stop — 모든 워커 서비스 정리 + Gateway 서비스 중지
+// Workers are identified by config files in cgi-bin/llm/workers/*.json
 
+var path = require('path');
 var process = require('process');
+var fs = require('fs');
 var service = require('service');
 
 var SERVICE_NAME = 'neo-pkg-llm';
+var WORKER_PREFIX = 'llm-w-';
+var ROOT = path.resolve(path.dirname(process.argv[1]), '..', 'cgi-bin');
+var WORKERS_DIR = path.join(ROOT, 'llm', 'workers');
+var LOG_FILE = path.join(path.resolve(path.dirname(process.argv[1]), '..'), 'stop-beacon.log');
 
-// 1. 프로세스 트리 먼저 정리
-killLlmTree();
+var keepAlive = setInterval(function () {}, 1000);
 
-// 2. service.stop으로 레지스트리 상태 stopped 전이
-console.println('stopping service:', SERVICE_NAME);
-service.stop(SERVICE_NAME, function(err) {
-  if (err) {
-    console.println('WARN:', err.message);
-  } else {
-    console.println('service stopped.');
+function beacon(msg) {
+  try { fs.writeFileSync(LOG_FILE, '[' + new Date().toISOString() + '] ' + msg + '\n', { flag: 'a' }); } catch (e) {}
+}
+
+beacon('stop.js invoked');
+
+// 1. Collect worker service names from config files
+var workerNames = [];
+try {
+  if (fs.existsSync(WORKERS_DIR)) {
+    var files = fs.readdirSync(WORKERS_DIR);
+    for (var i = 0; i < files.length; i++) {
+      if (files[i].endsWith('.json')) {
+        var sessionID = files[i].replace(/\.json$/, '');
+        workerNames.push(WORKER_PREFIX + sessionID.replace(/[^a-zA-Z0-9-]/g, '').substring(0, 20));
+      }
+    }
   }
-});
+} catch (e) {
+  beacon('scan error: ' + e.message);
+}
 
-function killLlmTree() {
-  var fs = require('fs');
-  var path = require('path');
-  var os = require('os');
-  var IS_WIN = os.platform() === 'windows';
-  var BIN_NAME = IS_WIN ? 'neo-pkg-llm.exe' : 'neo-pkg-llm';
+beacon('found ' + workerNames.length + ' workers: ' + workerNames.join(', '));
+console.println('[stop] found ' + workerNames.length + ' worker(s)');
 
-  // 1. OS 레벨 fallback — JSH 재시작으로 /proc/process tracker 가 비었거나
-  //    stale 인 orphan 좀비 대응. 이게 빠지면 service.stop 이 launcher 의
-  //    cmd.Wait() 에서 풀리지 않아 먹통이 되는 케이스 발생.
+// 2. Stop workers then gateway
+stopAll(workerNames, 0);
+
+function stopAll(names, idx) {
+  if (idx < names.length) {
+    var name = names[idx];
+    beacon('stopping worker: ' + name);
+    console.println('[stop] stopping worker:', name);
+    service.stop(name, function (err) {
+      beacon('stop ' + name + ': ' + (err ? err.message : 'OK'));
+      service.uninstall(name, function () {
+        stopAll(names, idx + 1);
+      });
+    });
+    return;
+  }
+
+  // All workers done → cleanup files
   try {
-    if (IS_WIN) {
-      process.exec('@taskkill', '/F', '/IM', BIN_NAME);
-    } else {
-      process.exec('@pkill', '-9', '-x', BIN_NAME);
+    if (fs.existsSync(WORKERS_DIR)) {
+      var wfiles = fs.readdirSync(WORKERS_DIR);
+      for (var k = 0; k < wfiles.length; k++) {
+        try { fs.unlinkSync(path.join(WORKERS_DIR, wfiles[k])); } catch (e) {}
+      }
     }
   } catch (e) {}
 
-  // 2. /proc/process 기반 정확한 트리 kill (tracker 살아있는 경우)
-  var procRoot = '/proc/process';
-  if (!fs.existsSync(procRoot)) return;
-
-  var re = /[\/\\]neo-pkg-llm(\.exe)?(\s|$|"|')/;
-  var found = null;
-  var entries = fs.readdirSync(procRoot);
-  for (var i = 0; i < entries.length; i++) {
-    var metaPath = path.join(procRoot, entries[i], 'meta.json');
-    if (!fs.existsSync(metaPath)) continue;
-    try {
-      var meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-      var exe = meta.exec_path || meta.command || '';
-      var args = meta.args || [];
-      var match = re.test(exe);
-      for (var j = 0; !match && j < args.length; j++) {
-        match = re.test(String(args[j]));
-      }
-      if (match) {
-        found = { pid: meta.pid, pgid: meta.pgid > 0 ? meta.pgid : meta.pid };
-        break;
-      }
-    } catch (e) {}
-  }
-
-  if (!found) return;
-  console.println('killLlmTree: pid=' + found.pid + ' pgid=' + found.pgid);
-
-  if (IS_WIN) {
-    try { process.exec('@taskkill', '/T', '/PID', String(found.pid)); } catch (e) {}
-    try { process.exec('@taskkill', '/F', '/T', '/PID', String(found.pid)); } catch (e) {}
-  } else {
-    // TERM 후 짧게 대기해 binary 가 cleanup 핸들러 돌릴 시간을 준다.
-    // sleep 호출 실패해도 KILL 은 무조건 시도 (graceful 못 되면 force).
-    try { process.exec('@kill', '-TERM', '-' + found.pgid); } catch (e) {}
-    try { process.exec('@sleep', '0.5'); } catch (e) {}
-    try { process.exec('@kill', '-KILL', '-' + found.pgid); } catch (e) {}
-  }
+  // Stop gateway
+  console.println('[stop] stopping gateway:', SERVICE_NAME);
+  service.stop(SERVICE_NAME, function (err) {
+    beacon('gateway: ' + (err ? err.message : 'stop OK'));
+    console.println('[stop] ' + (err ? 'WARN: ' + err.message : 'stopped.'));
+    clearInterval(keepAlive);
+    process.exit(0);
+  });
 }

@@ -16,6 +16,7 @@ const SUGGESTION_CHIPS: SuggestionChip[] = [
     { icon: 'table_chart', label: '어떤 테이블이 있어?', prompt: '테이블 리스트 조회 해줘' },
     { icon: 'sell', label: '태그 목록 보여줘', prompt: 'Example 테이블의 태그 리스트 조회해줘' },
     { icon: 'menu_book', label: 'Rollup이 뭐야?', prompt: 'Rollup 이 뭐야?' },
+    { icon: 'info', label: '서버 상태 확인 해줘', prompt: '서버 상태 알려줘' },
     {
         icon: 'dashboard', label: '분석 대시보드 만들어줘', children: [
             { icon: 'monitoring', label: '분석 대시보드', prompt: 'Example 테이블 데이터의 분석 대시보드 만들어줘' },
@@ -91,6 +92,7 @@ export const ChatView = ({
 
     useEffect(() => {
         wasEmptyRef.current = messages.length === 0;
+        if (messages.length === 0) setChipChildren(null);
     }, [messages.length]);
 
     useEffect(() => {

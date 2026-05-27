@@ -13,6 +13,19 @@ import type { AppConfig, ModelProvider } from "./types/settings";
 
 type AppTab = "settings" | "chat" | null;
 
+// "Usable" = at least one provider has both credentials and at least one named model.
+// Ollama is special: base_url empty is OK because the server falls back to
+// `${machbase.host}:11434` (see cgi-bin/llm/config/config.js ollamaURL()), so we only
+// require a named model. A freshly seeded sys.json has all-empty models and so fails
+// this check, sending the user to settings on first run.
+function isConfigUsable(c: AppConfig): boolean {
+    if (c.claude.api_key.trim() && c.claude.models.some((m) => m.name.trim())) return true;
+    if (c.chatgpt.api_key.trim() && c.chatgpt.models.some((m) => m.name.trim())) return true;
+    if (c.gemini.api_key.trim() && c.gemini.models.some((m) => m.name.trim())) return true;
+    if (c.ollama.models.some((m) => m.name.trim())) return true;
+    return false;
+}
+
 export default function App() {
     const { selectedConfig, setSelectedConfig, notify } = useApp();
     const [activeTab, setActiveTab] = useState<AppTab | null>(null);
@@ -51,8 +64,13 @@ export default function App() {
         (async () => {
             const list = await loadConfigList();
             if (list.includes(currentUser)) {
-                await loadConfig(currentUser);
-                setActiveTab("chat");
+                // Fetch directly (not via loadConfig) so we can synchronously inspect
+                // the data and decide routing — setConfig is async and won't show up
+                // in state by the time we'd check it.
+                const data = await getConfig(currentUser);
+                setConfig(data);
+                setSelectedConfig(currentUser);
+                setActiveTab(isConfigUsable(data) ? "chat" : "settings");
             } else {
                 setConfig((prev) => ({
                     ...prev,
@@ -88,12 +106,7 @@ export default function App() {
             });
         }
         // At least one provider must have API key + model (Ollama: model only)
-        const hasProvider =
-            (config.claude.api_key.trim() && config.claude.models.some((m) => m.name.trim())) ||
-            (config.chatgpt.api_key.trim() && config.chatgpt.models.some((m) => m.name.trim())) ||
-            (config.gemini.api_key.trim() && config.gemini.models.some((m) => m.name.trim())) ||
-            config.ollama.models.some((m) => m.name.trim());
-        if (!hasProvider) errors.push("no_provider");
+        if (!isConfigUsable(config)) errors.push("no_provider");
 
         if (errors.length > 0) {
             setValidationErrors(errors);
@@ -110,13 +123,19 @@ export default function App() {
         setValidationErrors([]);
         setSaving(true);
         try {
+            // Filename is always the logged-in user's identity (from JWT). Force the
+            // machbase.user field to match so the saved DB credentials line up with the
+            // saved file name, and one user can't accidentally overwrite another's file
+            // by editing the form value.
+            const owner = currentUser;
+            const payload: AppConfig = { ...config, machbase: { ...config.machbase, user: owner } };
             const isNew = selectedConfig === null;
             let savedName: string;
             if (isNew) {
-                savedName = await createConfig(config);
+                savedName = await createConfig(owner, payload);
                 notify(`Config "${savedName}" created.`, "success");
             } else {
-                savedName = await updateConfig(selectedConfig, config);
+                savedName = await updateConfig(owner, payload);
                 notify(`Config "${savedName}" saved.`, "success");
             }
             await loadConfigList();
@@ -127,7 +146,7 @@ export default function App() {
             notify(`Save failed: ${e instanceof Error ? e.message : "unknown error"}`, "error");
         }
         setSaving(false);
-    }, [config, selectedConfig, notify, loadConfigList, setSelectedConfig]);
+    }, [config, selectedConfig, notify, loadConfigList, setSelectedConfig, currentUser]);
 
     const handleOpenSettings = useCallback(async () => {
         const list = await loadConfigList();
