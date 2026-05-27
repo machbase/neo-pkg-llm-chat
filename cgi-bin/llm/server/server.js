@@ -317,7 +317,16 @@ function runServer(cfg, port) {
     jsonReply(ctx, 200, { ok: true, data: { port: p } });
   });
 
+  // /health — neo service proxy 의 healthPath 메타데이터 대상.
+  // 프록시 자체는 호출하지 않지만 servicectl proxy list 등에서 가리킨다.
+  server.get('/health', function (ctx) {
+    jsonReply(ctx, 200, { ok: true });
+  });
+
   // --- WebSocket: external (browser) ---
+  // 옛 컨벤션 두 라우트 복원 — JSH ws 의 path 매칭 동작이 path-template 의 끝 segment 가
+  // 정적일 때만 안정적이라(혹은 옛 환경에서만 동작 검증된 상태) 새 컨벤션(/ws/:user) 으로
+  // 통합한 변경을 되돌린다. service proxy 경유 WS 는 별도 fix 필요.
   var wss = new WebSocketServer({ server: server, path: '/ws' });
   var wss2 = new WebSocketServer({ server: server, path: '/:user/ws' });
 

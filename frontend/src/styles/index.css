@@ -2838,9 +2838,9 @@ details.card > :not(summary) {
     background: rgba(255, 255, 255, 0.1);
 }
 .chat-code-view-toggle.is-active {
-    background: rgba(120, 220, 120, 0.2);
-    border-color: rgba(120, 220, 120, 0.5);
-    color: #71e071;
+    background: rgba(80, 150, 240, 0.2);
+    border-color: rgba(80, 150, 240, 0.5);
+    color: #5b9bf0;
 }
 .chat-exec-result__lang {
     font-size: 10px;

@@ -1,9 +1,44 @@
 import type { TqlChartPayload } from "../types/exec";
+import { CHART_ASSET_PREFIX } from "../services/baseUrl";
 
 const escapeHtml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
 const escapeUrl = (s: string): string => encodeURI(s);
+
+// 루트 절대경로(/web/...) 에셋을 서비스 프록시 경로로 재작성한다. base href 만으로는
+// 절대경로에 prefix 를 못 붙이므로 URL 자체를 /web/services/<svc>/web/... 로 바꾼다.
+// http(s):// 절대 URL 이나 이미 prefix 가 붙은 경로는 그대로 둔다.
+const toProxyAsset = (url: string): string =>
+  url.startsWith("/") && !url.startsWith(`${CHART_ASSET_PREFIX}/`)
+    ? `${CHART_ASSET_PREFIX}${url}`
+    : url;
+
+const THEME_ASSET_RE = /\/themes\/[^/]+\.js(\?.*)?$/;
+const ECHARTS_MAIN_RE = /\/echarts(\.min)?\.js(\?.*)?$/;
+
+/**
+ * jsAssets에 echarts "dark" 테마 파일이 반드시 로드되도록 보정.
+ * - 기존 테마 파일(/themes/<name>.js)이 있으면 dark.js로 치환
+ * - 없으면 echarts 메인 asset 경로에서 /themes/dark.js를 유도해 추가
+ * 둘 다 실패하면 원본을 그대로 반환(테마 패치만으로는 라이트 fallback될 수 있음).
+ */
+function ensureDarkThemeAsset(assets: string[]): string[] {
+  let replaced = false;
+  const next = assets.map((src) => {
+    if (THEME_ASSET_RE.test(src)) {
+      replaced = true;
+      return src.replace(/\/themes\/[^/]+\.js/, "/themes/dark.js");
+    }
+    return src;
+  });
+  if (replaced) return next;
+  const main = assets.find((src) => ECHARTS_MAIN_RE.test(src));
+  if (main) {
+    next.push(main.replace(/\/echarts(\.min)?\.js.*$/, "/themes/dark.js"));
+  }
+  return next;
+}
 
 /**
  * TQL 차트 응답 + apiBase로 iframe srcdoc용 HTML 문자열 조립.
@@ -19,13 +54,25 @@ export function buildChartIframeHtml(payload: TqlChartPayload, apiBase: string):
   const height = escapeHtml(payload.style?.height ?? "360px");
   const safeApiBase = escapeHtml(apiBase);
   const cssAssetTags = (payload.cssAssets ?? [])
-    .map((href) => `<link rel="stylesheet" href="${escapeUrl(href)}">`)
+    .map((href) => `<link rel="stylesheet" href="${escapeUrl(toProxyAsset(href))}">`)
     .join("\n  ");
-  const jsAssetTags = payload.jsAssets
-    .map((src) => `<script src="${escapeUrl(src)}"></script>`)
+  // echarts 차트는 테마를 "dark"로 강제. geomap(leaflet)은 echarts를 쓰지 않으므로 제외.
+  // 테마는 (a) jsAssets의 테마 파일이 echarts.registerTheme로 등록하고
+  //         (b) jsCodeAssets가 echarts.init(dom, "<name>")로 사용한다.
+  // 따라서 asset URL만 바꾸면 init이 미등록 테마를 참조해 라이트로 떨어진다 →
+  // dark 테마 파일을 로드(a)하고 echarts.init을 패치해 인자를 "dark"로 치환(b)한다.
+  const jsAssets = isGeomap ? payload.jsAssets : ensureDarkThemeAsset(payload.jsAssets);
+  const jsAssetTags = jsAssets
+    .map((src) => `<script src="${escapeUrl(toProxyAsset(src))}"></script>`)
     .join("\n  ");
+  // echarts.init을 패치해 (1) 테마를 "dark"로 강제하고
+  // (2) 인스턴스 setOption에서 backgroundColor를 transparent로 덮어써
+  //     dark 테마의 짙은 배경(#100c2a) 대신 앱(iframe) 배경이 그대로 비치게 한다.
+  const themePatchTag = isGeomap
+    ? ""
+    : `<script>(function(){if(window.echarts&&typeof echarts.init==="function"){var _init=echarts.init;echarts.init=function(dom,_theme,opts){var c=_init.call(echarts,dom,"dark",opts);var _set=c.setOption;c.setOption=function(o){if(o&&typeof o==="object"){o.backgroundColor="transparent";}return _set.apply(this,arguments);};return c;};}})();</script>`;
   const jsCodeTags = payload.jsCodeAssets
-    .map((src) => `<script src="${escapeUrl(src)}"></script>`)
+    .map((src) => `<script src="${escapeUrl(toProxyAsset(src))}"></script>`)
     .join("\n  ");
   // geomap은 leaflet 컨테이너 — 정사각 box 채우는 width/height + grayscale 옵션
   const grayscale = typeof payload.style?.grayscale === "number" ? payload.style.grayscale : 0;
@@ -42,11 +89,12 @@ export function buildChartIframeHtml(payload: TqlChartPayload, apiBase: string):
 <base href="${safeApiBase}/">
 ${cssAssetTags}
 ${jsAssetTags}
-<style>.chart_container{display:flex;justify-content:center;align-items:center;height:100%}.chart_item{margin:auto}body{margin:0}</style>
+<style>.chart_container{display:flex;justify-content:center;align-items:center;height:100%}.chart_item{margin:auto}html,body{margin:0;background:transparent}</style>
 ${geomapExtraStyle}
 </head>
 <body style="width:100vw;height:100vh;margin:0">
 ${mountDiv}
+${themePatchTag}
 ${jsCodeTags}
 </body>
 </html>`;

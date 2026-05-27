@@ -28,9 +28,12 @@ type ExtWsOutgoing =
     | { type: "clear"; user_id: string; session_id: string };
 
 const getExtWsUrl = async (): Promise<string> => {
-    const base = await getWsBase();
-    const userId = getCurrentUser() ?? "sys";
-    return `${base}/${userId}/ws`;
+    // base 는 이미 .../ws 로 끝나는 service proxy 경유 URL.
+    // user 는 URL segment 가 아니라 첫 채팅 메시지의 user_id 필드로 전달된다
+    // (백엔드 onBrowserConnection 의 fallback 로직이 이를 인증 user 로 처리).
+    // — JSH ws 모듈의 path-template 매칭이 끝 segment 정적일 때만 동작하기 때문에
+    //   /ws/{user} 같은 URL 패턴을 못 받음. /ws 정적 경로로 통일.
+    return getWsBase();
 };
 
 const generateSessionId = (): string => `sess-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
