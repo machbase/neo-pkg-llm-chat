@@ -1962,6 +1962,7 @@ details.card > :not(summary) {
     margin: 0 auto;
     max-height: min(48vh, 420px);
     overflow-y: auto;
+    overscroll-behavior: contain;
     background: var(--color-surface-alt);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-lg);

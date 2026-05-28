@@ -215,10 +215,13 @@ export const ChatView = ({
         requestAnimationFrame(() => {
             const el = scrollRef.current;
             if (!el) return;
-            const items = el.querySelectorAll('.chat-message-item-wrap');
+            const items = el.querySelectorAll<HTMLElement>('.chat-message-item-wrap');
             const lastItem = items[items.length - 1];
             if (lastItem) {
-                lastItem.scrollIntoView({ block: 'start', behavior: 'smooth' });
+                const containerRect = el.getBoundingClientRect();
+                const itemRect = lastItem.getBoundingClientRect();
+                const delta = itemRect.top - containerRect.top;
+                el.scrollTo({ top: el.scrollTop + delta, behavior: 'smooth' });
             }
         });
     };
