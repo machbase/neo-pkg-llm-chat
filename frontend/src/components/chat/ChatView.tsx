@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Message, PkgProvider, PkgSelectedModel } from '../../types/chat';
 import { ChatMessageList } from './ChatMessageList';
+import { PromptSuggestionsPanel } from './PromptSuggestionsPanel';
 import Icon from '../common/Icon';
 import neoLogo from '../../assets/image/neowFavicon';
 
@@ -89,13 +90,60 @@ export const ChatView = ({
     const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
     const [isReconnecting, setIsReconnecting] = useState(false);
     const [chipChildren, setChipChildren] = useState<SuggestionChip[] | null>(null);
+    const [isPromptPanelOpen, setIsPromptPanelOpen] = useState(false);
+    const [promptPanelPos, setPromptPanelPos] = useState<{ left: number; bottom: number; width: number; maxHeight: number } | null>(null);
     const modelBtnRef = useRef<HTMLButtonElement>(null);
+    const inputWrapRef = useRef<HTMLDivElement>(null);
+    const promptPanelRef = useRef<HTMLDivElement>(null);
+    const promptToggleBtnRef = useRef<HTMLButtonElement>(null);
     const [dropdownPos, setDropdownPos] = useState<{ left: number; bottom: number } | null>(null);
 
     useEffect(() => {
         wasEmptyRef.current = messages.length === 0;
         if (messages.length === 0) setChipChildren(null);
     }, [messages.length]);
+
+    useEffect(() => {
+        if (!isPromptPanelOpen) return;
+        const handleClick = (e: MouseEvent) => {
+            const target = e.target as HTMLElement;
+            if (
+                !promptPanelRef.current?.contains(target) &&
+                !promptToggleBtnRef.current?.contains(target)
+            ) {
+                setIsPromptPanelOpen(false);
+            }
+        };
+        const handleKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') setIsPromptPanelOpen(false);
+        };
+        document.addEventListener('mousedown', handleClick);
+        document.addEventListener('keydown', handleKey);
+        return () => {
+            document.removeEventListener('mousedown', handleClick);
+            document.removeEventListener('keydown', handleKey);
+        };
+    }, [isPromptPanelOpen]);
+
+    const handleTogglePromptPanel = () => {
+        if (isPromptPanelOpen) {
+            setIsPromptPanelOpen(false);
+            return;
+        }
+        const wrap = inputWrapRef.current;
+        const btn = promptToggleBtnRef.current;
+        if (wrap && btn) {
+            const wrapRect = wrap.getBoundingClientRect();
+            const btnRect = btn.getBoundingClientRect();
+            setPromptPanelPos({
+                left: wrapRect.left + 12,
+                bottom: window.innerHeight - btnRect.top + 8,
+                width: wrapRect.width - 24,
+                maxHeight: Math.max(180, btnRect.top - 24),
+            });
+        }
+        setIsPromptPanelOpen(true);
+    };
 
     useEffect(() => {
         adjustTextareaHeight();
@@ -184,6 +232,7 @@ export const ChatView = ({
 
     const handleKeyDownEsc = (e: React.KeyboardEvent<HTMLElement>) => {
         if (e.key === 'Escape' && !e.shiftKey && isProcessingAnswer) {
+            if (isPromptPanelOpen) return;
             e.preventDefault();
             handleInterruptMessage();
         }
@@ -197,6 +246,19 @@ export const ChatView = ({
         const el = scrollRef.current;
         if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     }, []);
+
+    const handlePickPrompt = useCallback((prompt: string) => {
+        setInputValue(prompt);
+        setIsPromptPanelOpen(false);
+        requestAnimationFrame(() => {
+            const el = textareaRef.current;
+            if (el) {
+                el.focus();
+                const len = prompt.length;
+                el.setSelectionRange(len, len);
+            }
+        });
+    }, [setInputValue]);
 
     const handleClearMessages = () => handleClearSession();
 
@@ -277,7 +339,25 @@ export const ChatView = ({
                 )}
 
                 {/* Input */}
-                <div className={`chat-input-wrap ${showSlideDown ? 'chat-input-wrap--slide-down' : ''}`}>
+                <div ref={inputWrapRef} className={`chat-input-wrap ${showSlideDown ? 'chat-input-wrap--slide-down' : ''}`}>
+                    {isPromptPanelOpen && promptPanelPos && createPortal(
+                        <div
+                            ref={promptPanelRef}
+                            className="chat-prompt-panel-popup"
+                            style={{
+                                left: promptPanelPos.left,
+                                bottom: promptPanelPos.bottom,
+                                width: promptPanelPos.width,
+                                ['--chat-prompt-max-height' as string]: `${promptPanelPos.maxHeight}px`,
+                            }}
+                        >
+                            <PromptSuggestionsPanel
+                                visible
+                                onPick={handlePickPrompt}
+                            />
+                        </div>,
+                        document.body
+                    )}
                     <div className={`chat-input-container ${isDisconnected ? 'chat-input-container--disconnected' : ''}`}>
                         <div className="chat-input-row">
                             <textarea
@@ -354,6 +434,19 @@ export const ChatView = ({
                                         document.body
                                     )}
                                 </div>
+
+                                {/* Example prompts toggle */}
+                                <button
+                                    ref={promptToggleBtnRef}
+                                    type="button"
+                                    className={`chat-prompt-toggle-btn ${isPromptPanelOpen ? 'chat-prompt-toggle-btn--active' : ''}`}
+                                    onClick={handleTogglePromptPanel}
+                                    title="예제 프롬프트"
+                                    aria-expanded={isPromptPanelOpen}
+                                >
+                                    <Icon name="lightbulb" className="icon-sm" />
+                                    <span>예제</span>
+                                </button>
 
                                 {/* Connection status */}
                                 <div className={`chat-conn-badge ${isConnected ? 'chat-conn-badge--on' : 'chat-conn-badge--off'}`}>

@@ -1956,6 +1956,190 @@ details.card > :not(summary) {
     animation: chatFadeUp 0.5s cubic-bezier(0.4, 0, 0.2, 1) 0.1s both;
 }
 
+.chat-prompt-panel {
+    width: 100%;
+    max-width: 720px;
+    margin: 0 auto;
+    max-height: min(48vh, 420px);
+    overflow-y: auto;
+    background: var(--color-surface-alt);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-12);
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-8);
+    animation: chatFadeUp 0.18s ease-out;
+}
+
+.chat-prompt-category {
+    display: flex;
+    flex-direction: column;
+}
+
+.chat-prompt-category-header {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-8);
+    padding: var(--spacing-8) var(--spacing-12);
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-md);
+    color: var(--color-on-surface);
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    cursor: pointer;
+    text-align: left;
+    transition: background 0.15s ease;
+}
+
+.chat-prompt-category-header:hover {
+    background: var(--color-surface-hover);
+}
+
+.chat-prompt-category-icon {
+    font-size: 18px;
+    flex-shrink: 0;
+    color: var(--color-primary);
+}
+
+.chat-prompt-category-title {
+    flex: 1;
+}
+
+.chat-prompt-category-count {
+    font-size: var(--font-size-xs);
+    font-weight: 600;
+    color: var(--color-on-surface);
+    background: var(--color-border);
+    padding: 1px 8px;
+    border-radius: 999px;
+    min-width: 20px;
+    text-align: center;
+}
+
+.chat-prompt-category-toggle {
+    font-size: 18px;
+    flex-shrink: 0;
+    color: var(--color-on-surface-secondary);
+}
+
+.chat-prompt-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.chat-prompt-item {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    padding: var(--spacing-8) var(--spacing-12);
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-md);
+    color: var(--color-on-surface);
+    text-align: left;
+    white-space: normal;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.chat-prompt-item:hover {
+    background: var(--color-surface-hover);
+}
+
+.chat-prompt-item:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: -2px;
+}
+
+.chat-prompt-item-label {
+    font-size: var(--font-size-base);
+    font-weight: 500;
+    line-height: 1.3;
+}
+
+.chat-prompt-item-desc {
+    font-size: var(--font-size-sm);
+    color: var(--color-on-surface-muted);
+    line-height: 1.35;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.chat-prompt-panel::-webkit-scrollbar {
+    width: 8px;
+}
+
+.chat-prompt-panel::-webkit-scrollbar-thumb {
+    background: var(--color-scrollbar-thumb);
+    border-radius: 4px;
+}
+
+.chat-prompt-panel::-webkit-scrollbar-track {
+    background: var(--color-scrollbar-track);
+}
+
+@media (max-width: 768px) {
+    .chat-prompt-panel {
+        max-height: min(40vh, 320px);
+        padding: var(--spacing-8);
+    }
+
+    .chat-prompt-category-header,
+    .chat-prompt-item {
+        padding: var(--spacing-8);
+    }
+}
+
+/* Popup wrapper (rendered via portal to document.body, positioned via inline style) */
+.chat-prompt-panel-popup {
+    position: fixed;
+    display: flex;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.chat-prompt-panel-popup > .chat-prompt-panel {
+    max-height: var(--chat-prompt-max-height, min(48vh, 420px));
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
+}
+
+/* Example prompts toggle button (chat toolbar) */
+.chat-prompt-toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-4);
+    padding: var(--spacing-4) var(--spacing-8);
+    background: transparent;
+    border: 1px solid var(--color-border-medium);
+    border-radius: var(--radius-md);
+    color: var(--color-on-surface);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.chat-prompt-toggle-btn:hover {
+    border-color: var(--color-primary);
+    background: var(--color-surface-hover);
+}
+
+.chat-prompt-toggle-btn--active {
+    border-color: var(--color-primary);
+    color: var(--color-on-surface);
+    background: rgba(0, 95, 184, 0.08);
+}
+
+/* ─── Welcome-screen quick-action suggestion chips ─── */
 .chat-suggestions {
     display: flex;
     flex-wrap: wrap;
@@ -1986,7 +2170,7 @@ details.card > :not(summary) {
 .chat-suggestion-chip:hover {
     background: var(--color-surface-hover);
     border-color: var(--color-primary);
-    color: var(--color-primary);
+    color: var(--color-on-surface);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
 }
 
