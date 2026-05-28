@@ -51,6 +51,7 @@ interface ChatViewProps {
     handleSendMessage: () => void;
     handleInterruptMessage: () => void;
     handleClearSession: () => void;
+    handleEditUserMessage: (messageId: string, newContent: string) => void;
     onOpenSettings?: () => void;
 }
 
@@ -72,6 +73,7 @@ export const ChatView = ({
     handleSendMessage,
     handleInterruptMessage,
     handleClearSession,
+    handleEditUserMessage,
     onOpenSettings,
 }: ChatViewProps) => {
     const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -243,6 +245,8 @@ export const ChatView = ({
                             isProcessingAnswer={isProcessingAnswer}
                             userMessageAlign="right"
                             scrollRef={scrollRef}
+                            onEdit={handleEditUserMessage}
+                            canEdit={!isProcessingAnswer && isConnected}
                         />
                     </div>
                 )}

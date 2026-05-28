@@ -11,6 +11,10 @@ interface ChatMessageListProps {
     isProcessingAnswer?: boolean;
     userMessageAlign?: UserMessageAlign;
     scrollRef?: React.RefObject<HTMLDivElement | null>;
+    /** Forwarded to ChatMessageItem for the inline edit affordance. */
+    onEdit?: (messageId: string, newContent: string) => void;
+    /** Forwarded to ChatMessageItem; gates whether the pencil icon is rendered. */
+    canEdit?: boolean;
 }
 
 interface ToolGroup {
@@ -95,6 +99,8 @@ export const ChatMessageList = ({
     isProcessingAnswer = false,
     userMessageAlign = 'left',
     scrollRef,
+    onEdit,
+    canEdit,
 }: ChatMessageListProps) => {
     const items = buildDisplayItems(messages);
 
@@ -110,7 +116,12 @@ export const ChatMessageList = ({
                 }
                 return (
                     <div className="chat-message-item-wrap" key={item.message.id}>
-                        <ChatMessageItem message={item.message} userMessageAlign={userMessageAlign} />
+                        <ChatMessageItem
+                            message={item.message}
+                            userMessageAlign={userMessageAlign}
+                            onEdit={onEdit}
+                            canEdit={canEdit}
+                        />
                     </div>
                 );
             })}

@@ -184,7 +184,7 @@ export default function App() {
 
     return (
         <>
-            <div className="page bg-surface-alt" style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+            <div className="page bg-surface-alt" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
                 {activeTab === null && (
                     <div className="flex-1 flex items-center justify-center">
                         <span className="spinner" />

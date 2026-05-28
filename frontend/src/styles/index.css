@@ -2476,7 +2476,6 @@ details.card > :not(summary) {
     display: flex;
     flex-direction: column;
     flex: 1;
-    height: 100%;
     overflow-y: auto;
     scroll-behavior: smooth;
 }
@@ -2619,6 +2618,159 @@ details.card > :not(summary) {
     word-break: break-word;
     font-size: var(--font-size-base);
     line-height: 1.5;
+}
+
+/* ─── Inline message editor (user bubble) ─── */
+/* Prefix `.chat-msg-edit-*` is reserved for the inline edit affordance and
+   intentionally isolated from `.chat-input-*` and the rest of `.chat-msg-*`. */
+.chat-msg-bubble--editable {
+    position: relative;
+}
+
+.chat-msg-edit-btn {
+    position: absolute;
+    top: 50%;
+    left: -28px;
+    transform: translateY(-50%);
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    background: var(--color-surface-elevated);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-circle);
+    color: var(--color-on-surface-secondary);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 150ms ease, color 150ms ease, background-color 150ms ease;
+}
+
+.chat-msg-bubble--editable:hover .chat-msg-edit-btn,
+.chat-msg-edit-btn:focus-visible {
+    opacity: 1;
+}
+
+.chat-msg-edit-btn:hover {
+    background: var(--color-surface-hover-light);
+    color: var(--color-on-surface);
+}
+
+/* When the user message enters edit mode, drop the primary-blue user fill in
+   favor of a dark surface container, widen for editor breathing room, and
+   restore a uniformly rounded shape. */
+.chat-msg-bubble--editing.chat-msg-bubble--user {
+    background: var(--color-surface);
+    color: var(--color-on-surface);
+    border: 1px solid var(--color-border);
+    border-bottom-right-radius: var(--radius-lg);
+    padding: var(--spacing-12);
+    min-width: 360px;
+    max-width: 600px;
+    transition: border-color 0.15s ease;
+}
+
+/* Active border only when the textarea/buttons inside have focus. Outside
+   click closes edit mode entirely (handled in JS), so during normal editing
+   the bubble stays active-bordered. */
+.chat-msg-bubble--editing.chat-msg-bubble--user:focus-within {
+    border-color: var(--color-border-focus);
+}
+
+.chat-msg-edit {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-12);
+    min-width: 240px;
+}
+
+.chat-msg-edit-header {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-start;
+    gap: var(--spacing-8);
+}
+
+.chat-msg-edit-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-4);
+    padding: var(--spacing-4) var(--spacing-10);
+    font-size: var(--font-size-sm);
+    color: var(--color-on-surface);
+    background: rgba(0, 108, 210, 0.12);
+    border: 1px solid var(--color-border-focus);
+    border-radius: var(--radius-round);
+    line-height: 1;
+}
+
+.chat-msg-edit-textarea {
+    width: 100%;
+    min-height: 40px;
+    padding: 0;
+    font-size: var(--font-size-base);
+    line-height: var(--line-height-normal);
+    color: var(--color-on-surface);
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    resize: none;
+    box-sizing: border-box;
+    font-family: inherit;
+}
+
+.chat-msg-edit-textarea:focus {
+    outline: none;
+}
+
+.chat-msg-edit-actions {
+    display: flex;
+    flex-direction: row;
+    justify-content: flex-end;
+    gap: var(--spacing-8);
+}
+
+.chat-msg-edit-btn--cancel,
+.chat-msg-edit-btn--save {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-4);
+    height: var(--size-control-height);
+    padding: 0 var(--spacing-12);
+    font-size: var(--font-size-base);
+    font-weight: var(--font-weight-medium);
+    line-height: 1;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.chat-msg-edit-btn--cancel {
+    color: var(--color-on-surface);
+    background: transparent;
+    border: 1px solid var(--color-border);
+}
+
+.chat-msg-edit-btn--cancel:hover {
+    background: var(--color-surface-hover);
+}
+
+.chat-msg-edit-btn--save {
+    color: var(--color-on-primary);
+    background: var(--color-primary);
+    border: 1px solid var(--color-primary-hover);
+}
+
+.chat-msg-edit-btn--save:hover:not(:disabled) {
+    background: var(--color-primary-hover);
+    border-color: var(--color-primary-light);
+}
+
+.chat-msg-edit-btn--save:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
 }
 
 /* ─── Tool call dropdown ─── */

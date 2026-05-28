@@ -67,6 +67,12 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
 
     const isComposingRef = useRef(false);
     const processingAnswerRef = useRef(false);
+    // Monotonic token for sendChatWhenReady's polling loop. Each new call
+    // increments the token and captures it locally; if the captured token
+    // no longer matches the ref by the time a poll tick fires, that older
+    // invocation aborts (last-write-wins) so rapid successive edit-saves
+    // collapse to a single network send.
+    const pendingSendTokenRef = useRef(0);
 
     const getProcessingAnswer = useMemo(() => sProcessingAnswer, [sProcessingAnswer]);
 
@@ -268,6 +274,81 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
         }
     }, []);
 
+    // Send chat payload once WS reaches OPEN.
+    // `await connect()` only resolves after WebSocket object creation, not after
+    // the OPEN transition, so sendExt called immediately afterward may silently
+    // drop the payload (sendExt no-ops when readyState !== OPEN). This helper
+    // polls readyState (every 50ms, up to 5s) and sends exactly once.
+    const sendChatWhenReady = useCallback(async (query: string) => {
+        if (!sSelectedModel.provider || !sSelectedModel.model) return;
+
+        // Last-write-wins: bump the shared token and capture this call's
+        // generation. Any earlier in-flight invocation will see its captured
+        // token no longer match and abort silently (no send, no error msg).
+        pendingSendTokenRef.current += 1;
+        const myToken = pendingSendTokenRef.current;
+        const isStillCurrent = () => pendingSendTokenRef.current === myToken;
+
+        const payload: ExtWsOutgoing = {
+            type: "chat",
+            user_id: getCurrentUser() ?? "",
+            session_id: sessionIdRef.current,
+            provider: sSelectedModel.provider,
+            model: sSelectedModel.model,
+            query,
+        };
+
+        // Fast path: already OPEN.
+        if (socketRef.current?.readyState === WebSocket.OPEN) {
+            if (!isStillCurrent()) return;
+            socketRef.current.send(JSON.stringify(payload));
+            return;
+        }
+
+        // Ensure a connect attempt is in flight.
+        if (!socketRef.current) {
+            await connect();
+            if (!isStillCurrent()) return;
+        }
+
+        // Poll for OPEN up to 5s.
+        const TIMEOUT_MS = 5000;
+        const POLL_MS = 50;
+        const start = Date.now();
+        while (Date.now() - start < TIMEOUT_MS) {
+            // A newer sendChatWhenReady call has superseded this one — bail
+            // without sending or surfacing an error. The newer call owns the
+            // send semantics from here on.
+            if (!isStillCurrent()) return;
+            if (socketRef.current?.readyState === WebSocket.OPEN) {
+                socketRef.current.send(JSON.stringify(payload));
+                return;
+            }
+            // If the socket was closed/errored entirely, abort.
+            if (socketRef.current && socketRef.current.readyState === WebSocket.CLOSED) {
+                break;
+            }
+            await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+        }
+
+        // Failed to reach OPEN within timeout — surface an error message,
+        // but only if this invocation is still the latest one. Otherwise a
+        // superseded call would spam the user with stale errors.
+        if (!isStillCurrent()) return;
+        setMessages((prev) => [
+            ...prev,
+            {
+                id: `msg-${Date.now()}-edit-error`,
+                content: "Failed to reconnect to chat server while editing message.",
+                timestamp: Date.now(),
+                role: "assistant",
+                type: "error",
+                isProcess: false,
+                isInterrupt: false,
+            },
+        ]);
+    }, [connect, sSelectedModel.provider, sSelectedModel.model]);
+
     // Request model list
     const getListModels = useCallback(() => {
         sendExt({ type: "get_models", user_id: getCurrentUser() ?? "" });
@@ -320,6 +401,52 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
         setTimeout(() => { connect(); }, 500);
     };
 
+    // Edit a previous user message:
+    //  1. trim & validate (non-empty, role==='user')
+    //  2. if a stream is in flight, close WS (preserving sessionIdRef) — same
+    //     pattern as handleInterruptMessage but keeping the session id.
+    //  3. truncate messages array at the edited index, replacing content.
+    //  4. re-issue the chat request via sendChatWhenReady (handles WS OPEN race).
+    const handleEditUserMessage = useCallback((messageId: string, newContent: string) => {
+        const trimmed = newContent.trim();
+        if (!trimmed) return;
+
+        const index = messages.findIndex((m) => m.id === messageId);
+        if (index < 0) return;
+        if (messages[index].role !== "user") return;
+
+        // Interrupt any in-flight stream — but PRESERVE sessionIdRef so the
+        // server-side session continuity is kept for the re-issued question.
+        if (processingAnswerRef.current) {
+            const ws = socketRef.current;
+            if (ws) {
+                ws.onopen = null;
+                ws.onmessage = null;
+                ws.onclose = null;
+                ws.onerror = null;
+                ws.close();
+                socketRef.current = null;
+            }
+            setWsReady(false);
+            setProcessingAnswer(false);
+            processingAnswerRef.current = false;
+        }
+
+        // Truncate at edited index, replacing the edited message's content.
+        setMessages((prev) => {
+            const idx = prev.findIndex((m) => m.id === messageId);
+            if (idx < 0) return prev;
+            if (prev[idx].role !== "user") return prev;
+            const truncated = prev.slice(0, idx + 1);
+            truncated[idx] = { ...truncated[idx], content: trimmed };
+            return truncated;
+        });
+
+        // Re-issue request. sendChatWhenReady handles the WS-not-yet-OPEN race
+        // (post-close reconnect path) and silently no-ops if no model selected.
+        void sendChatWhenReady(trimmed);
+    }, [messages, sendChatWhenReady]);
+
     const handleClearSession = () => {
         // Close WS to trigger server-side cancellation (same as interrupt),
         // then reset session and reconnect
@@ -360,6 +487,7 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
         handleSendMessage,
         handleInterruptMessage,
         handleClearSession,
+        handleEditUserMessage,
         getListModels,
     };
 };
