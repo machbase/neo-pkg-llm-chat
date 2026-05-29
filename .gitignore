@@ -12,3 +12,4 @@ cgi-bin/llm/gateway-beacon.log
 cgi-bin/llm/worker-beacon.log
 cgi-bin/launcher-beacon.log
 stop-beacon.log
+.claude/
