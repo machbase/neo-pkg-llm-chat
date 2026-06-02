@@ -6,10 +6,11 @@ module.exports = function () {
     toolGroups: ['doc_tools'],
     skipCore: true,
     guards: [],
-    hint: '문서 조회 요청입니다. search_documents(keyword)로 문서를 찾고, get_full_document_content로 읽은 후 답변하세요. 자체 지식으로 답변 금지!',
+    hint: '문서 조회 요청입니다. search_documents(keyword)로 문서를 찾고, get_full_document_content로 읽은 후 답변하세요. 자체 지식으로 답변 금지! 단, 특정 테이블 구조/컬럼 요청 시 describe_table을 사용하세요.',
     allowTools: [
       'search_documents', 'list_available_documents', 'get_full_document_content',
       'get_document_sections', 'extract_code_blocks',
+      'list_tables', 'describe_table',
     ],
   };
 };

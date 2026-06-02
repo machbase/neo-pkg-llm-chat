@@ -3,8 +3,8 @@ var ToolPrompts = {
     '- execute_sql_query: 직접 SQL 실행. GROUP BY 없이 사용 가능.\n' +
     '- timeformat: "ms" 파라미터로 지정! SQL 안에 넣지 마세요!\n' +
     '- UPDATE 구문 사용 금지\n' +
-    '- 통계 조회: SELECT NAME, COUNT(*), AVG(VALUE) FROM 테이블 GROUP BY NAME\n' +
-    '- 시간 범위 확인: SELECT MIN(TIME), MAX(TIME) FROM 테이블 (timeformat:"ms")\n',
+    '- 통계 조회: describe_table로 확인한 실제 컬럼명 사용! (예: SELECT NAME, COUNT(*), AVG(VALUE) FROM 테이블 GROUP BY NAME)\n' +
+    '- 시간 범위 확인: describe_table로 확인한 BASETIME 컬럼 사용! (예: SELECT MIN(TIME), MAX(TIME) FROM 테이블, timeformat:"ms")\n',
 
   tql_tools: '## TQL 도구 사용법\n' +
     '- TQL의 SQL() 안에서는 반드시 GROUP BY 포함!\n' +
@@ -12,15 +12,19 @@ var ToolPrompts = {
     '- TQL SQL()에서 ROLLUP alias 사용 금지! 표현식 직접 사용\n' +
     '- TQL에서 SQL()은 파일당 1회만 사용 가능\n' +
     '- save_tql_file: 파일명/폴더명은 반드시 영어로만! 한글 절대 금지!\n' +
-    '- TEMPLATE 형식: TEMPLATE:ID TABLE:테이블명 TAG:태그명 UNIT:단위\n' +
-    '- UNIT 선택: 수시간→\'sec\', 수일→\'hour\', 수주~수년→\'day\'\n',
+    '- tql_content에는 raw TQL을 직접 작성! (TEMPLATE 문법 없음) 골격은 tql/tql-chart-conventions.md 그대로 복사 후 TABLE/TAG/기간만 변경.\n' +
+    '- ROLLUP 단위 선택: 수시간→\'sec\', 수일→\'hour\', 수주~수년→\'day\'\n',
 
   dashboard_tools: '## 대시보드 도구 사용법\n' +
-    '- create_dashboard_with_charts: 반드시 이 도구 하나로! (create_dashboard + add_chart 조합 금지!)\n' +
+    '- create_dashboard_with_charts: 반드시 이 도구 하나로 모든 차트를 한 번에 생성! 정확히 1회만 호출하고, 생성 후 차트 추가·대시보드 재생성 금지. (개별 차트 추가 금지)\n' +
     '- filename: "테이블명/테이블명_Dashboard.dsh" 형식 (영어로만!)\n' +
     '- title: 의미 있는 영어 이름! (예: "GOLD Analysis Dashboard")\n' +
     '- time_start, time_end: 에폭 밀리초 숫자를 문자열로 전달! "auto", "now-1d" 등 금지!\n' +
-    '- charts: {title, type, tql_path} 또는 {title, type, table, tag, column}\n' +
+    '- refresh: 사용자가 자동 새로고침/주기적 갱신을 요청할 때만 설정(기본 "Off"). 켜면 end time은 시스템이 자동으로 live("now")로 처리하므로 따로 지정할 필요 없음.\n' +
+    '- charts(table-based): {title, type, table, tag, column} ← 기본 분석은 이것만 사용!\n' +
+    '- 여러 태그 비교 차트는 tag를 쉼표로 구분! 예: tag:"high,low", tag:"open,high,low,close"\n' +
+    '- charts(TQL): {title, type, tql_path} ← .tql 파일을 직접 만든 고급 분석에서만! 둘을 섞지 말 것\n' +
+    '- 생성 후 대시보드 URL은 [대시보드 열기](URL) 마크다운 링크 형식으로 답변에 포함!\n' +
     '- chart title: 각 차트의 내용을 설명하는 이름!\n',
 
   doc_tools: '## 문서 도구 사용법\n' +

@@ -77,7 +77,7 @@ function register(registry, mc) {
         var neoDir = findNeoDir();
         if (!neoDir) return cb(null, 'Error: neo documentation directory not found');
         var content = fs.readFileSync(path.join(neoDir, filePath), 'utf8');
-        if (content.length > 8000) content = content.substring(0, 8000) + '\n\n... (truncated, total ' + content.length + ' chars)';
+        if (content.length > 16000) content = content.substring(0, 16000) + '\n\n... (truncated, total ' + content.length + ' chars)';
         cb(null, content);
       } catch (e) { cb(null, 'Error: File not found: ' + filePath); }
     },

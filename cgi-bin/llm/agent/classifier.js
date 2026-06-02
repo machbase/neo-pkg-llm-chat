@@ -109,11 +109,16 @@ function buildSkillHint(query, activeSkill, timeRange) {
         '오직 save_html_report만 사용하세요. ' +
         '리포트 생성 후 URL을 최종 답변에 포함하세요!' + timeHint + ']';
     case 'AdvancedAnalysis':
-      return '[시스템 힌트: 고급 분석 키워드가 감지되었습니다. 고급 분석(TQL 템플릿) 절차를 따르세요.' + timeHint +
+      var advTime = timeRange ? timeHint
+        : ' 시간 범위는 describe_table 결과의 time range(ms)를 사용하세요(별도 조회 불필요).';
+      return '[시스템 힌트: 고급 분석 요청입니다. describe_table 한 번으로 구조·태그·통계·시간범위·ROLLUP 여부를 확인한 뒤, TQL을 직접 작성하세요 (템플릿 문서는 참고 패턴이고, save_tql_file 저장 시 자동 실행검증됩니다. 검증 실패하면 에러 보고 고쳐서 다시 저장).' + advTime +
         ' ★ 마지막에 반드시 preview_dashboard를 호출하고, 반환된 URL을 최종 답변에 포함하세요!]';
     case 'BasicAnalysis':
-      return '[시스템 힌트: 기본 분석 요청입니다. 기본 분석(table-based 차트, create_dashboard_with_charts) 절차를 따르세요. ' +
-        'TQL 파일/템플릿/save_tql_file/create_folder를 절대 사용하지 마세요.' + timeHint +
+      var basicTime = timeRange ? timeHint
+        : ' 시간 범위는 describe_table 결과의 time range(ms)를 사용하세요(별도 조회 불필요).';
+      return '[시스템 힌트: 기본 분석 요청입니다. 기본 분석(table-based 차트) 절차를 따르세요. ' +
+        'TQL 파일/템플릿/save_tql_file/create_folder를 절대 사용하지 마세요. ' +
+        '★ describe_table 한 번으로 테이블 구조·태그·통계·시간 범위를 모두 확인한 뒤, 그 프로파일을 보고 데이터 특성에 맞는 차트 타입을 선택하세요.' + basicTime +
         ' ★ 마지막에 반드시 preview_dashboard를 호출하고, 반환된 URL을 최종 답변에 포함하세요!]';
     case 'Timer':
       return '[시스템 힌트: 타이머 요청입니다. 시스템 프롬프트의 타이머 생성 워크플로우를 따르세요.\n' +

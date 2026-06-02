@@ -16,18 +16,18 @@ function captureKnownTags(result, fctx) {
 
 function validateTagInArgs(toolName, args, knownTags) {
   if (!knownTags || knownTags.length === 0) return '';
-  if (toolName !== 'save_tql_file' && toolName !== 'execute_tql_script' && toolName !== 'validate_chart_tql') return '';
+  if (toolName !== 'save_tql_file' && toolName !== 'execute_tql_script') return '';
 
-  var tql = args.tql_content || args.tql_script || '';
+  var tql = args.tql_content || '';
   if (!tql) return '';
 
   // Detect unsubstituted placeholders
   var placeholderRE = /\{(TAG\d?|TABLE|UNIT)\}/g;
   var found = tql.match(placeholderRE);
   if (found && found.length > 0) {
-    return 'Error: 플레이스홀더 ' + JSON.stringify(found) + '가 치환되지 않았습니다. ' +
-      'tql_content에 raw TQL을 직접 쓰지 마세요! ' +
-      '반드시 TEMPLATE:ID TABLE:테이블 TAG:태그 UNIT:단위 형식을 사용하세요.';
+    return 'Error: 플레이스홀더 ' + JSON.stringify(found) + '가 그대로 남아있습니다. ' +
+      'tql_content에는 raw TQL을 직접 작성하되, {TABLE}/{TAG}/{UNIT} 같은 플레이스홀더 대신 ' +
+      '실제 테이블명·태그명·시간단위 값을 채워 넣으세요. (TEMPLATE 문법은 없습니다)';
   }
 
   // Check NAME='...' references against known tags

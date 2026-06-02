@@ -1,5 +1,6 @@
 var { argStr } = require('./registry');
 var { expandTemplate } = require('./tql_templates');
+var { extractUserTables, checkTableOwnership } = require('./ownership');
 
 function register(registry, mc) {
   // execute_tql_script
@@ -16,13 +17,17 @@ function register(registry, mc) {
     fn: function (args, cb) {
       var tql = argStr(args, 'tql_content', '');
       if (!tql) return cb(null, 'Error: tql_content is required');
-      mc.executeTQL(tql, function (err, result) {
-        if (err) return cb(null, 'Error: TQL execution failed: ' + err.message);
-        if (!result || result.trim() === '') return cb(null, 'TQL executed successfully (no output).');
-        if (result.length > 5000) {
-          return cb(null, result.substring(0, 5000) + '\n... (truncated, total ' + result.length + ' chars)');
-        }
-        cb(null, result);
+      var tables = extractUserTables(tql);
+      checkTableOwnership(mc, tables, function (ownerErr) {
+        if (ownerErr) return cb(null, 'Error: ' + ownerErr.message);
+        mc.executeTQL(tql, function (err, result) {
+          if (err) return cb(null, 'Error: TQL execution failed: ' + err.message);
+          if (!result || result.trim() === '') return cb(null, 'TQL executed successfully (no output).');
+          if (result.length > 5000) {
+            return cb(null, result.substring(0, 5000) + '\n... (truncated, total ' + result.length + ' chars)');
+          }
+          cb(null, result);
+        });
       });
     },
   });
@@ -35,7 +40,7 @@ function register(registry, mc) {
       type: 'object',
       properties: {
         filename: { type: 'string', description: 'File path (e.g., "GOLD/avg_trend.tql"). Must be English only.' },
-        tql_content: { type: 'string', description: 'TQL script content or TEMPLATE reference' },
+        tql_content: { type: 'string', description: 'Raw TQL script content, written directly (no TEMPLATE syntax)' },
       },
       required: ['filename', 'tql_content'],
     },
@@ -87,6 +92,42 @@ function register(registry, mc) {
       return;
 
       function processTql() {
+        var tables = extractUserTables(tqlContent);
+        checkTableOwnership(mc, tables, function (ownerErr) {
+          if (ownerErr) return cb(null, 'Error: ' + ownerErr.message);
+          processTqlAfterOwnerCheck();
+        });
+      }
+
+      function processTqlAfterOwnerCheck() {
+        // 대시보드 테마 일관성: TQL이 직접 지정한 theme() 호출은 패널 테마(white)와 어긋남 → CHART 인자에서 제거
+        tqlContent = tqlContent.replace(/theme\s*\(\s*['"][^'"]*['"]\s*\)\s*,/g, '');
+        tqlContent = tqlContent.replace(/,\s*theme\s*\(\s*['"][^'"]*['"]\s*\)/g, '');
+
+        // 레이아웃 일관성(겹침 방지) — chartOption이 있는 차트 TQL에만. 모두 보수적(못 잡으면 no-op)이라 유효 TQL을 깨지 않음.
+        if (/chartOption\s*\(/.test(tqlContent)) {
+          // 1) yAxis 안의 name 제거 (축 이름이 좌상단 제목/부제와 겹침). flat yAxis 객체에 한함(중첩이면 미매치=no-op)
+          tqlContent = tqlContent.replace(/(yAxis\s*:\s*\{)([^{}]*?)(\})/g, function (m, head, body, tail) {
+            if (!/\bname\s*:/.test(body)) return m;
+            var nb = body.replace(/(^|,)\s*name\s*:\s*(['"])[^'"]*\2\s*/g, '$1');
+            nb = nb.replace(/,\s*,/g, ',').replace(/^\s*,/, '').replace(/,\s*$/, '');
+            return head + nb + tail;
+          });
+          // 2) grid가 아예 없으면 표준 grid 주입 (ECharts 기본 여백이 좁아 제목/범례/축 라벨이 겹침)
+          if (!/grid\s*:/.test(tqlContent)) {
+            tqlContent = tqlContent.replace(/chartOption\s*\(\s*\{/, 'chartOption({ grid: { left: 72, right: 30, top: 66, bottom: 78 },');
+          } else {
+            // 3) grid 여백이 너무 작으면 최소값으로 보정 (단일 flat grid 객체에 한함). 더 크게 잡은 값은 유지.
+            tqlContent = tqlContent.replace(/grid\s*:\s*\{([^{}]*)\}/, function (m, body) {
+              body = body.replace(/\bleft\s*:\s*(\d+)/, function (x, v) { return 'left: ' + Math.max(parseInt(v, 10), 55); });
+              body = body.replace(/\bright\s*:\s*(\d+)/, function (x, v) { return 'right: ' + Math.max(parseInt(v, 10), 24); });
+              body = body.replace(/\btop\s*:\s*(\d+)/, function (x, v) { return 'top: ' + Math.max(parseInt(v, 10), 60); });
+              body = body.replace(/\bbottom\s*:\s*(\d+)/, function (x, v) { return 'bottom: ' + Math.max(parseInt(v, 10), 76); });
+              return 'grid: {' + body + '}';
+            });
+          }
+        }
+
         if (!filename.toLowerCase().endsWith('.tql')) filename += '.tql';
 
         var slashIdx = filename.lastIndexOf('/');
@@ -94,14 +135,37 @@ function register(registry, mc) {
 
         function doSave() {
           function afterFolder() {
+            if (tqlContent.indexOf('$.foreach') >= 0) {
+              return cb(null, 'Error: TQL SCRIPT에 존재하지 않는 $.foreach 사용. SCRIPT는 3-block {초기화},{레코드마다},{끝나고} 패턴이고 main(가운데) 블록이 레코드마다 자동 실행됩니다($.values[i]). 여러 시리즈는 main에서 배열에 push 후 deinit에서 인덱스별 $.yield(시리즈0[i], 시리즈1[i], ...). 고쳐서 다시 저장하세요.');
+            }
             mc.executeTQL(tqlContent, function (err, testResult) {
-              if (err) return cb(null, 'Error: TQL validation failed: ' + err.message);
-              if (testResult && testResult.toLowerCase().indexOf('error') === 0) {
-                return cb(null, 'Error: TQL validation failed: ' + testResult);
+              var tqlHint = '\n흔한 원인: CHART 옵션은 반드시 chartOption({...}) 안에 — title/grid/series를 CHART()에 직접 쓰면 "invalid option" 또는 "FUNCTION→TERNARY[:]" 에러 (형식: CHART(tz(\'Asia/Seoul\'), chartOption({ title:..., series:[...] }))) / ROLLUP 쿼리에 NAME을 SELECT/GROUP BY (단일 태그는 WHERE NAME=... 로만 필터, SELECT는 ROLLUP 표현식+집계만) / SQL()에 GROUP BY 누락 / ROLLUP에 alias / 큰따옴표 대신 백틱 / ROLLUP 단위 오류(sec~month, ms 불가) / ROLLUP 없는 테이블에 ROLLUP() / 차트에 TIME,VALUE 따로(=> [timestamp,value] 페어로). TQL을 고쳐 다시 저장하세요.';
+              if (err) return cb(null, 'Error: TQL 실행 검증 실패: ' + err.message + tqlHint);
+              var tqlRes = String(testResult || '');
+              var tqlResLow = tqlRes.toLowerCase();
+              if (tqlResLow.indexOf('error') === 0 || tqlRes.indexOf('MACH-ERR') >= 0 || tqlResLow.indexOf('"success":false') >= 0 || tqlResLow.indexOf('"success": false') >= 0) {
+                return cb(null, 'Error: TQL 실행 검증 실패: ' + tqlRes.substring(0, 500) + tqlHint);
               }
-              mc.writeFile(filename, tqlContent, function (err2) {
-                if (err2) return cb(null, 'Error: Failed to save file: ' + err2.message);
-                cb(null, 'TQL file saved: ' + filename + shiftedMsg);
+              function writeIt() {
+                mc.writeFile(filename, tqlContent, function (err2) {
+                  if (err2) return cb(null, 'Error: Failed to save file: ' + err2.message);
+                  cb(null, 'TQL file saved: ' + filename + shiftedMsg);
+                });
+              }
+              // 안전장치: TQL 문법은 맞아도 데이터 0건이면 빈 차트가 됨(에러 없이 "망함") → 거부하고 수정 유도
+              var sqlM = tqlContent.match(/SQL\(\s*`([\s\S]*?)`\s*\)/);
+              if (!sqlM) return writeIt();
+              mc.querySQL(sqlM[1], 'ms', '', '', function (qerr, qres) {
+                if (qerr) return writeIt(); // 검증 쿼리 자체 실패는 과잉차단 방지 위해 통과
+                var hasData = false;
+                try {
+                  var qp = JSON.parse(qres);
+                  hasData = !!(qp && qp.success && qp.data && qp.data.rows && qp.data.rows.length > 0);
+                } catch (e) { hasData = (qres || '').length > 20; }
+                if (!hasData) {
+                  return cb(null, 'Error: 차트 쿼리가 데이터를 0건 반환했습니다 (TQL 문법은 맞지만 빈 차트가 됩니다). 시간 범위를 describe_table의 time range(ms)에 맞추고(TO_DATE에 실제 데이터 기간 사용), 태그명/테이블을 확인해 TQL을 고쳐 다시 저장하세요.');
+                }
+                writeIt();
               });
             });
           }

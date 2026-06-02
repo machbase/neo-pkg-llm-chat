@@ -176,7 +176,7 @@
 | sql/sql-storage-size.md | 자동 스토리지 관리 | retention_policy,DURATION,INTERVAL,data_lifecycle,automatic_purge |
 | sql/sql-tag-statistics.md | 태그 통계 조회 | v$tag_stat,TAG_STAT_ENABLE,per-tag_statistics,SUMMARIZED |
 | sql/sql-tag-table.md | 태그 테이블 데이터 모델 | tall/narrow_format,BASETIME,PIVOT,wide_format변환,schema_flexibility |
-| tql/tql-analysis-templates.md | TQL 분석 템플릿 모음 | 분석패턴,금융,센서,진동,statistical_analysis |
+| tql/tql-chart-conventions.md | TQL 차트 작성 컨벤션 | 차트작성,theme_white,제목_부제_좌상단,범례_줌배치,시간축,timestamp_value페어,NULL,ROLLUP,심층분석 |
 | tql/tql-chart-validation.md | TQL 차트 검증 | validation,column_reference,NO_DATA,INVALID_COLUMN |
 | tql/tql-fft.md | FFT 푸리에 변환 | FFT,frequency_domain,signal_processing,spectrum_analysis |
 | tql/tql-filters.md | 신호처리 필터링 | moving_average,low_pass_filter,kalman_filter,noise_removal |

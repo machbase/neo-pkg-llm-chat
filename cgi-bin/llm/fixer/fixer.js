@@ -5,7 +5,7 @@ var { captureKnownTags, validateTagInArgs } = require('./tag_validate');
 var { jsonMarshal, jsonUnmarshal } = require('./json_helper');
 
 var DASHBOARD_TOOLS = {
-  create_dashboard: true, create_dashboard_with_charts: true,
+  create_dashboard_with_charts: true,
   add_chart_to_dashboard: true, remove_chart_from_dashboard: true,
   update_chart_in_dashboard: true, delete_dashboard: true,
   update_dashboard_time_range: true, preview_dashboard: true,
@@ -20,6 +20,8 @@ function createFixerContext() {
     dataMaxDt: '',
     knownTags: [],
     inferTableName: null,
+    advanced: false,
+    skillName: '',
   };
 }
 
@@ -50,6 +52,12 @@ function fix(msg, fctx) {
       }
     }
 
+    // Step 2.5: describe_table profile auto-inject (basic analysis → one-call exploration)
+    if (name === 'describe_table' && (fctx.skillName === 'BasicAnalysis' || fctx.skillName === 'AdvancedAnalysis') && args.profile === undefined) {
+      args.profile = true;
+      console.println('  [fix] describe_table profile auto-injected (' + fctx.skillName + ')');
+    }
+
     // Step 3: save_html_report time injection
     if (name === 'save_html_report' && fctx.timeStartDt) {
       args.time_start = fctx.timeStartDt;
@@ -74,7 +82,7 @@ function fix(msg, fctx) {
 
     // Step 9: Dashboard filename/title auto-fix
     fixDashboardFilename(name, args);
-    fixDashboardTitle(name, args);
+    fixDashboardTitle(name, args, fctx);
 
     // Step 10: TQL content fixes (template expansion, line breaks)
     fixTQLContent(name, args, fctx);
@@ -90,6 +98,29 @@ function fixCharts(args, fctx) {
       if (args.charts.indexOf("'") >= 0 && args.charts.indexOf('"') < 0) {
         args.charts = args.charts.replace(/'/g, '"');
         console.println('  [fix] charts single quotes → double quotes');
+      }
+    }
+  }
+
+  // Basic analysis is table-based only — strip any tql_path the model hallucinated (no .tql files exist)
+  if (fctx.skillName === 'BasicAnalysis' && typeof args.charts === 'string' && args.charts) {
+    var basicList = jsonUnmarshal(args.charts);
+    if (Array.isArray(basicList)) {
+      var basicStripped = false;
+      for (var bsi = 0; bsi < basicList.length; bsi++) {
+        if (basicList[bsi].tql_path) {
+          if (!basicList[bsi].tag) {
+            // recover tag from tql_path basename: "SILVER/open.tql" → "open"
+            var bsBase = String(basicList[bsi].tql_path).split('/').pop().replace(/\.tql$/i, '');
+            if (bsBase) basicList[bsi].tag = bsBase;
+          }
+          delete basicList[bsi].tql_path;
+          basicStripped = true;
+        }
+      }
+      if (basicStripped) {
+        args.charts = jsonMarshal(basicList);
+        console.println('  [fix] BasicAnalysis: stripped tql_path from charts (table-based enforced)');
       }
     }
   }
@@ -227,7 +258,7 @@ function fixDashboardFilename(name, args) {
   }
 
   // Add timestamp for create operations
-  if (name === 'create_dashboard' || name === 'create_dashboard_with_charts') {
+  if (name === 'create_dashboard_with_charts') {
     var now = new Date();
     var ts = now.getFullYear() +
       pad2(now.getMonth() + 1) + pad2(now.getDate()) + '_' +
@@ -242,13 +273,14 @@ function fixDashboardFilename(name, args) {
   console.println('  [fix] Dashboard filename → ' + fn);
 }
 
-function fixDashboardTitle(name, args) {
-  if (name !== 'create_dashboard' && name !== 'create_dashboard_with_charts') return;
+function fixDashboardTitle(name, args, fctx) {
+  if (name !== 'create_dashboard_with_charts') return;
   var title = args.title || '';
   if (!title || title === 'New dashboard' || title === 'Dashboard' || title === 'dashboard') {
     var fn = args.filename || '';
     var table = fn.split('/')[0] || '데이터';
-    args.title = table + ' 심층 분석 대시보드';
+    var suffix = (fctx && fctx.advanced) ? ' 심층 분석 대시보드' : ' 분석 대시보드';
+    args.title = table + suffix;
   }
 }
 
@@ -313,6 +345,26 @@ function captureResults(tc, result, err, fctx) {
   }
   if (tc.function.name === 'execute_sql_query') {
     captureDataTimeRange(tc.function.arguments, result, fctx);
+  }
+  if (tc.function.name === 'describe_table') {
+    captureProfile(result, fctx);
+  }
+}
+
+// Capture knownTags + data time range from an expanded describe_table profile output.
+function captureProfile(result, fctx) {
+  if (!result || typeof result !== 'string') return;
+  var tagsM = result.match(/^tags \(\d+\):\s*(.*)$/m);
+  if (tagsM) {
+    var tags = tagsM[1].split(',').map(function (t) { return t.trim(); }).filter(function (t) { return t.length > 0; });
+    if (tags.length > 0) fctx.knownTags = tags;
+  }
+  var trM = result.match(/^time range \(ms\):\s*(\d+)\s*~\s*(\d+)/m);
+  if (trM) {
+    var mn = parseInt(trM[1], 10);
+    var mx = parseInt(trM[2], 10);
+    if (mn > 0) fctx.dataMinDt = msToDatetime(mn);
+    if (mx > 0) fctx.dataMaxDt = msToDatetime(mx);
   }
 }
 

@@ -11,9 +11,15 @@ var ConsecutiveFailureGuard = {
       var failures = countConsecutiveFailures(agent.messages, toolName);
       if (failures >= 2) {
         console.println('  [guard] ' + toolName + ' failed ' + failures + 'x consecutively, re-prompting');
-        var hint = toolName + ' 도구가 연속 ' + failures + '회 실패했습니다. 다른 접근법을 사용하세요.';
-        if (toolName === 'save_tql_file') {
-          hint += ' TEMPLATE 형식(TEMPLATE:ID TABLE:테이블 TAG:태그 UNIT:단위)을 사용하세요.';
+        var hint;
+        if (failures >= 4 && toolName === 'save_tql_file') {
+          // 무한 루프 방지: 그만 포기하고 지금까지 성공한 차트로 마무리하도록 유도
+          hint = 'save_tql_file 이 ' + failures + '회 연속 실패했습니다. 이 차트는 **포기하고 건너뛰세요.** 같은 파일을 또 저장하려 하지 말고, 지금까지 저장에 성공한 .tql 파일들만으로 **즉시 create_dashboard_with_charts를 호출**해 대시보드를 완성하고 작업을 끝내세요.';
+        } else {
+          hint = toolName + ' 도구가 연속 ' + failures + '회 실패했습니다. 에러 메시지를 다시 읽고 고치세요.';
+          if (toolName === 'save_tql_file') {
+            hint += ' CHART 옵션은 반드시 `chartOption({ ... })` 안에 넣으세요(title/grid/series를 CHART()에 직접 쓰면 안 됨) — 형식: `CHART(tz(\'Asia/Seoul\'), chartOption({ ... }))`. 골격은 tql/tql-chart-conventions.md 를 그대로 복사해 TABLE/TAG/기간만 바꾸세요. (TEMPLATE 문법 없음 — raw TQL 직접 작성)';
+          }
         }
         return rePrompt(agent, msg, hint);
       }

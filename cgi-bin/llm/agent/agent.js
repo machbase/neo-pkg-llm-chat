@@ -13,6 +13,7 @@ var ConsecutiveFailureGuard = require('../guard/consecutive_failure');
 var DashboardEarlyGuard = require('../guard/dashboard_early');
 var ChartOmissionGuard = require('../guard/chart_omission');
 var ReportOmissionGuard = require('../guard/report_omission');
+var RedundantFinalizeGuard = require('../guard/redundant_finalize');
 
 var MAX_STEPS = 60;
 
@@ -30,7 +31,7 @@ function createAgent(llmClient, registry) {
     cancelled: false,
     fixerCtx: createFixerContext(),
     guard: createPipeline(
-      [ConsecutiveFailureGuard, DashboardEarlyGuard],
+      [ConsecutiveFailureGuard, DashboardEarlyGuard, RedundantFinalizeGuard],
       [ChartOmissionGuard, ReportOmissionGuard]
     ),
   };
@@ -95,14 +96,30 @@ function applySkill(agent, activeSkill) {
   }
 }
 
+// Ollama(약한 모델)는 raw TQL의 `CHART(chartOption({...}))` 구조를 신뢰성 있게 못 만들어
+// 같은 syntax 에러로 무한 재시도에 빠진다 → 심층(AdvancedAnalysis)을 table-based(BasicAnalysis)로 라우팅.
+// Basic 스킬은 allowTools에 save_tql_file이 없어 TQL 호출 자체가 불가 → 루프 원천 차단(옵션 A).
+function rerouteForOllama(agent, activeSkill, skillRegistry) {
+  if (agent.llm && agent.llm.type === 'ollama' && activeSkill && activeSkill.name === 'AdvancedAnalysis') {
+    var basicSkill = skillRegistry.get('BasicAnalysis');
+    if (basicSkill) {
+      console.println('[Agent] Ollama reroute: AdvancedAnalysis → BasicAnalysis (table-based, TQL 비활성)');
+      return basicSkill;
+    }
+  }
+  return activeSkill;
+}
+
 // cb() — no error, just signals ready
 function initMessages(agent, query, cb) {
   var skillRegistry = createSkillRegistry();
-  var activeSkill = skillRegistry.classify(query);
+  var activeSkill = rerouteForOllama(agent, skillRegistry.classify(query), skillRegistry);
 
   agent.skillName = activeSkill.name;
   agent.advanced = (activeSkill.name === 'AdvancedAnalysis');
   agent.reportMode = (activeSkill.name === 'Report');
+  agent.fixerCtx.advanced = agent.advanced;
+  agent.fixerCtx.skillName = agent.skillName;
 
   // Load document catalog directly from file (avoids async issues with registry.execute in WS context)
   try {
@@ -146,12 +163,14 @@ function continueMessages(agent, query) {
   if (tr) { agent.fixerCtx.timeStartDt = tr.startDt; agent.fixerCtx.timeEndDt = tr.endDt; }
 
   var skillRegistry = createSkillRegistry();
-  var activeSkill = skillRegistry.classify(query);
+  var activeSkill = rerouteForOllama(agent, skillRegistry.classify(query), skillRegistry);
   var prevSkill = agent.skillName;
 
   agent.skillName = activeSkill.name;
   agent.advanced = (activeSkill.name === 'AdvancedAnalysis');
   agent.reportMode = (activeSkill.name === 'Report');
+  agent.fixerCtx.advanced = agent.advanced;
+  agent.fixerCtx.skillName = agent.skillName;
 
   console.println('[Agent] Skill: ' + activeSkill.name +
     ' | Workflows: [' + (activeSkill.workflows || []).join(', ') + ']' +

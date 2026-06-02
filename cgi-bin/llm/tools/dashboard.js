@@ -1,11 +1,11 @@
-var { argStr, argInt } = require('./registry');
+var { argStr } = require('./registry');
 var path = require('path');
 
 var GRID_COLS = 36;
 var CHART_W_LARGE = 17;
 var CHART_W_SMALL = 7;
 var CHART_H_DEFAULT = 7;
-var LARGE_TYPES = { Line: true, Bar: true, Scatter: true, 'Tql chart': true };
+var LARGE_TYPES = { Line: true, Bar: true, Scatter: true, 'Tql chart': true, Video: true };
 var COLORS = ['#5470c6', '#91cc75', '#fac858', '#ee6666', '#73c0de', '#3ba272', '#fc8452', '#9a60b4', '#ea7ccc', '#FADE2A'];
 
 function chartWidth(type) { return LARGE_TYPES[type] ? CHART_W_LARGE : CHART_W_SMALL; }
@@ -21,74 +21,87 @@ function getChartTypeDefaults(chartType) {
     case 'Line': return { areaStyle: false, smooth: false, isStep: false, isStack: false, connectNulls: true, isSymbol: false, symbol: 'circle', symbolSize: 4, isSampling: false, fillOpacity: 0.3, tagLimit: 12, markLine: { symbol: ['none','none'], label: { show: false }, data: [] }, visualMap: { type: 'piecewise', show: false, dimension: 0, seriesIndex: 0, pieces: [] } };
     case 'Bar': return { isStack: false, isLarge: false, isPolar: false, polarRadius: 30, polarSize: 80, startAngle: 90, maxValue: 100, tagLimit: 12, polarAxis: 'time' };
     case 'Scatter': return { isLarge: false, symbol: 'circle', symbolSize: 4, tagLimit: 12 };
-    case 'Pie': return { doughnutRatio: 50, roseType: false, tagLimit: 12 };
+    case 'Pie': return { doughnutRatio: 50, roseType: false, tagLimit: 12, labelShow: true, labelPosition: 'outside' };
     case 'Gauge': return { isAxisTick: true, axisLabelDistance: 25, valueFontSize: 15, valueAnimation: false, alignCenter: 30, isAnchor: true, anchorSize: 25, min: 0, max: 100, tagLimit: 1, digit: 0, axisLineStyleWidth: 10, isAxisLineStyleColor: false, axisLineStyleColor: [[0.5,'#c2c2c2'],[1,'#F44E3B']] };
+    case 'Liquidfill': return { tagLimit: 1 };
     case 'Tql chart': return { theme: 'white' };
+    case 'Text': return {};
+    case 'Geomap': return {};
+    case 'advScatter': return { isLarge: false, symbol: 'circle', symbolSize: 4, tagLimit: 12 };
+    case 'Video': return {};
     default: return getChartTypeDefaults('Line');
   }
 }
 
-function makeBlock(table, tag, column, color, userName, aggregator) {
+function makeBlock(table, tag, column, color, userName, aggregator, nameCol, timeCol) {
   if (!column) column = 'VALUE';
-  if (!color) color = '#367FEB';
-  if (!userName) userName = 'sys';
-  if (!aggregator) aggregator = 'value';
+  if (!color) color = '#5470c6';
+  if (!userName) userName = '';
+  if (!aggregator) aggregator = 'avg';
+  if (!nameCol) nameCol = 'NAME';
+  if (!timeCol) timeCol = 'TIME';
   return {
     id: generatePanelID(), table: table, userName: userName, color: color, type: 'tag',
-    filter: [{ id: generatePanelID(), column: 'NAME', operator: 'in', value: tag, useFilter: true, useTyping: false, typingValue: 'NAME in ("' + tag + '")' }],
-    values: [{ id: generatePanelID(), alias: '', value: column, aggregator: aggregator }],
-    useRollup: false, name: 'NAME', time: 'TIME', useCustom: false, aggregator: aggregator,
-    diff: 'none', tag: tag, value: column, alias: '', math: '', isValidMath: true,
+    filter: [{ id: generatePanelID(), column: nameCol, operator: 'in', value: tag, useFilter: true, useTyping: false, typingValue: nameCol + ' in ("' + tag + '")' }],
+    values: [{ id: generatePanelID(), alias: '', value: column, jsonKey: '', aggregator: aggregator }],
+    useRollup: false, name: nameCol, time: timeCol, useCustom: false, aggregator: aggregator,
+    diff: 'none', tag: tag, value: column, jsonKey: '', alias: '', math: '', isValidMath: true,
     duration: { from: '', to: '' }, customFullTyping: { use: false, text: '' }, isVisible: true, tableInfo: [],
   };
 }
 
 function normalizeChartType(t) {
   if (!t) return 'Line';
-  var map = { 'line': 'Line', 'bar': 'Bar', 'scatter': 'Scatter', 'pie': 'Line', 'gauge': 'Line', 'tql chart': 'Tql chart', 'liquid fill': 'Line' };
+  var map = {
+    'line': 'Line', 'bar': 'Bar', 'scatter': 'Scatter', 'pie': 'Pie', 'gauge': 'Gauge',
+    'tql chart': 'Tql chart', 'liquidfill': 'Liquidfill', 'liquid fill': 'Liquidfill',
+    'text': 'Text', 'geomap': 'Geomap', 'advscatter': 'advScatter', 'adv scatter': 'advScatter',
+    'video': 'Video',
+  };
   return map[t.toLowerCase()] || t;
 }
 
-function makeChartPanel(title, chartType, table, tag, column, color, tqlPath, x, y, w, h) {
+function makeChartPanel(title, chartType, table, tag, column, color, tqlPath, x, y, w, h, nameCol, timeCol) {
   chartType = normalizeChartType(chartType);
   if (tqlPath) chartType = 'Tql chart';
   if (!w || w <= 0) w = chartWidth(chartType);
   if (!h || h <= 0) h = CHART_H_DEFAULT;
 
-  var agg = 'value';
+  var agg = 'avg';
   if (chartType === 'Pie') agg = 'count';
-  else if (chartType === 'Gauge' || chartType === 'Liquid fill') agg = 'last';
+  else if (chartType === 'Gauge' || chartType === 'Liquidfill') agg = 'last';
 
   var panel = {
-    id: generatePanelID(), title: title || 'Chart', titleColor: '', type: chartType,
+    id: generatePanelID(), title: title || 'New chart', titleColor: '', type: chartType,
     x: x, y: y, w: w, h: h, theme: 'white', useCustomTime: false, isAxisInterval: false,
-    timeRange: { start: '', end: '', refresh: 'Off' },
+    timeRange: { start: null, end: null, refresh: 'Off' },
     blockList: [], transformBlockList: [],
-    chartInfo: getChartTypeDefaults(chartType),
+    tqlInfo: null,
     chartOptions: getChartTypeDefaults(chartType),
     commonOptions: {
       isLegend: true, legendTop: 'bottom', legendLeft: 'center', legendOrient: 'horizontal',
       isTooltip: true, tooltipTrigger: 'axis', tooltipBgColor: '#FFFFFF', tooltipTxtColor: '#333',
-      tooltipDecimals: 3, tooltipUnit: '', isInsideTitle: true, isDataZoom: false, title: title,
+      tooltipDecimals: 3, tooltipUnit: '', isInsideTitle: true, isDataZoom: false, title: title || 'New chart',
       gridTop: 50, gridBottom: 50, gridLeft: 35, gridRight: 35,
     },
     xAxisOptions: [{
       type: 'time', axisTick: { alignWithLabel: true }, axisLabel: { hideOverlap: true },
-      axisLine: { onZero: false }, scale: true, useMinMax: false, useBlockList: [0],
+      axisLine: { onZero: false }, scale: true, useMinMax: false, min: null, max: null, useBlockList: [0],
       label: { name: 'value', key: 'value', title: '', unit: '', decimals: null, squared: 0 },
     }],
     yAxisOptions: [{
       type: 'value', position: 'left', offset: '', alignTicks: true, scale: true, useMinMax: false,
-      axisLine: { onZero: false },
+      min: null, max: null, axisLine: { onZero: false }, thresholds: [],
       label: { name: 'value', key: 'value', title: '', unit: '', decimals: null, squared: 0 },
     }],
     axisInterval: { IntervalType: '', IntervalValue: '' },
+    version: '1.0.1',
   };
 
   if (tqlPath) {
     if (tqlPath[0] !== '/') tqlPath = '/' + tqlPath;
     panel.tqlInfo = { path: tqlPath, params: [{ name: '', value: '', format: '' }], chart_id: '' };
-    panel.blockList = [makeBlock('', '', 'VALUE', color, 'sys', 'avg')];
+    panel.blockList = [makeBlock('', '', 'VALUE', color, '', 'avg', nameCol, timeCol)];
   } else if (table && tag) {
     var tags = tag.split(',');
     var blocks = [];
@@ -96,7 +109,7 @@ function makeChartPanel(title, chartType, table, tag, column, color, tqlPath, x,
       var t = tags[i].trim();
       if (!t) continue;
       var c = tags.length > 1 ? COLORS[i % COLORS.length] : (color || COLORS[0]);
-      blocks.push(makeBlock(table, t, column, c, 'sys', agg));
+      blocks.push(makeBlock(table, t, column, c, null, agg, nameCol, timeCol));
     }
     panel.blockList = blocks;
   }
@@ -104,21 +117,31 @@ function makeChartPanel(title, chartType, table, tag, column, color, tqlPath, x,
   return panel;
 }
 
-function buildDSHFile(filename, title, timeStart, timeEnd, panels) {
+function buildDSHFile(filename, title, timeStart, timeEnd, panels, refresh) {
   var name = path.basename(filename);
   var dir = path.dirname(filename);
   if (dir === '.') dir = '/';
   else dir = '/' + dir + '/';
 
+  // auto-refresh가 켜진 대시보드는 end time을 live('now')로 — 고정 timestamp면 새로고침해도 같은 창만 보여 의미 없음.
+  // ('now'는 Neo가 매 갱신마다 현재 시각으로 평가; parseTimeValue를 거치지 않고 문자열 그대로 사용)
+  var refreshVal = refresh || 'Off';
+  var endVal = (refreshVal && refreshVal !== 'Off') ? 'now' : parseTimeValue(timeEnd);
+
+  var dashboardObj = {
+    variables: [],
+    timeRange: { start: parseTimeValue(timeStart), end: endVal, refresh: refreshVal },
+    title: title, panels: panels,
+  };
+  // 심층(전부 TQL) 대시보드는 패널 헤더를 끔 → 각 차트가 좌상단에 제목+부제를 직접 표시(헤더에 가려지지 않음).
+  // 기본(table-based) 대시보드는 헤더 유지.
+  var allTql = panels && panels.length > 0 && panels.every(function (p) { return p.type === 'Tql chart'; });
   return {
     id: generateID(), type: 'dsh', name: name, path: dir, code: '',
-    panels: [], range_bgn: '', range_end: '', savedCode: false, sheet: [],
-    shell: { icon: 'dashboard', theme: '', id: 'DSH' },
-    dashboard: {
-      variables: [],
-      timeRange: { start: parseTimeValue(timeStart), end: parseTimeValue(timeEnd), refresh: 'Off' },
-      title: title, panels: panels,
-    },
+    panels: [], range_bgn: '', range_end: '', savedCode: JSON.stringify(dashboardObj), sheet: [],
+    shell: {},
+    panelHeader: !allTql,
+    dashboard: dashboardObj,
   };
 }
 
@@ -177,7 +200,8 @@ function register(registry, mc) {
         title: { type: 'string', description: 'Dashboard title' },
         time_start: { type: 'string', description: 'Start time (epoch ms as string)' },
         time_end: { type: 'string', description: 'End time (epoch ms as string)' },
-        charts: { type: 'string', description: 'JSON array of chart objects: [{title, type, table, tag, column, tql_path, color, w, h}]' },
+        refresh: { type: 'string', description: 'Auto-refresh interval. Options: "Off", "3 seconds", "5 seconds", "10 seconds", "30 seconds", "1 minute", "5 minutes", "10 minutes", "1 hour". Default: "Off"' },
+        charts: { type: 'string', description: 'JSON array of chart objects: [{title, type, table, tag, column, name_column, time_column, tql_path, color, w, h}]. tag: single tag, OR comma-separated for multi-series comparison charts (e.g. "high,low" or "open,high,low,close"). name_column/time_column: use actual PRIMARY KEY / BASETIME column names from describe_table (default: NAME/TIME)' },
       },
       required: ['filename', 'title', 'charts'],
     },
@@ -186,6 +210,7 @@ function register(registry, mc) {
       var title = argStr(args, 'title', 'Dashboard');
       var timeStart = argStr(args, 'time_start', '');
       var timeEnd = argStr(args, 'time_end', '');
+      var refresh = argStr(args, 'refresh', 'Off');
       var chartsStr = argStr(args, 'charts', '[]');
       if (!filename) return cb(null, 'Error: filename is required');
       if (!filename.toLowerCase().endsWith('.dsh')) filename += '.dsh';
@@ -222,12 +247,19 @@ function register(registry, mc) {
           var w = chartWidth(cType);
           var h = CHART_H_DEFAULT;
           if (x + w > GRID_COLS) { x = 0; y += CHART_H_DEFAULT; }
-          panels.push(makeChartPanel(c.title, cType, c.table || '', c.tag || '', c.column || 'VALUE', c.color || COLORS[i % COLORS.length], tqlPath, x, y, w, h));
+          panels.push(makeChartPanel(c.title, cType, c.table || '', c.tag || '', c.column || 'VALUE', c.color || COLORS[i % COLORS.length], tqlPath, x, y, w, h, c.name_column || '', c.time_column || ''));
           x += w;
         }
 
+        // Inject userName into all blocks (Neo UI requires 'SYS' etc. for V$_STAT queries)
+        var user = (mc.user || 'SYS').toUpperCase();
+        for (var pi = 0; pi < panels.length; pi++) {
+          var bl = panels[pi].blockList || [];
+          for (var bi = 0; bi < bl.length; bi++) bl[bi].userName = user;
+        }
+
         fillAllPanels(mc, panels, 0, function () {
-          var dsh = buildDSHFile(filename, title, timeStart, timeEnd, panels);
+          var dsh = buildDSHFile(filename, title, timeStart, timeEnd, panels, refresh);
           var content = JSON.stringify(dsh, null, 2);
 
           function doWrite() {
@@ -353,6 +385,8 @@ function register(registry, mc) {
           var d = dsh.dashboard || dsh;
           if (args.time_start || args.time_end) d.timeRange = { start: parseTimeValue(argStr(args, 'time_start', '')), end: parseTimeValue(argStr(args, 'time_end', '')), refresh: args.refresh || 'Off' };
           if (args.refresh) d.timeRange.refresh = args.refresh;
+          // refresh가 켜져 있으면 end는 live('now')로 (고정 end면 새로고침 무의미)
+          if (d.timeRange && d.timeRange.refresh && d.timeRange.refresh !== 'Off') d.timeRange.end = 'now';
           mc.writeFile(filename, JSON.stringify(dsh, null, 2), function (err2) { cb(null, err2 ? 'Error: ' + err2.message : 'Dashboard time range updated: ' + filename); });
         } catch (e) { cb(null, 'Error: ' + e.message); }
       });
@@ -374,9 +408,11 @@ function register(registry, mc) {
           if (!d.panels) d.panels = [];
           var maxY = 0;
           for (var i = 0; i < d.panels.length; i++) { var py = (d.panels[i].y || 0) + (d.panels[i].h || CHART_H_DEFAULT); if (py > maxY) maxY = py; }
-          var panel = makeChartPanel(argStr(args, 'chart_title', 'Chart'), argStr(args, 'chart_type', 'Line'), argStr(args, 'table', ''), argStr(args, 'tag', ''), argStr(args, 'column', 'VALUE'), '', argStr(args, 'tql_path', ''), 0, maxY, 0, 0);
+          var panel = makeChartPanel(argStr(args, 'chart_title', 'New chart'), argStr(args, 'chart_type', 'Line'), argStr(args, 'table', ''), argStr(args, 'tag', ''), argStr(args, 'column', 'VALUE'), '', argStr(args, 'tql_path', ''), 0, maxY, 0, 0);
+          var addUser = (mc.user || 'SYS').toUpperCase();
+          for (var bi = 0; bi < (panel.blockList || []).length; bi++) panel.blockList[bi].userName = addUser;
           d.panels.push(panel);
-          mc.writeFile(filename, JSON.stringify(dsh, null, 2), function (err2) { cb(null, err2 ? 'Error: ' + err2.message : 'Chart added: ' + argStr(args, 'chart_title', 'Chart')); });
+          mc.writeFile(filename, JSON.stringify(dsh, null, 2), function (err2) { cb(null, err2 ? 'Error: ' + err2.message : 'Chart added: ' + argStr(args, 'chart_title', 'New chart')); });
         } catch (e) { cb(null, 'Error: ' + e.message); }
       });
     },

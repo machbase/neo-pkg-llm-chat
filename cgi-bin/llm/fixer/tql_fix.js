@@ -18,9 +18,9 @@ function setExpandTemplateFunc(fn) {
 }
 
 function fixTQLContent(toolName, args, fctx) {
-  if (toolName !== 'save_tql_file' && toolName !== 'execute_tql_script' && toolName !== 'validate_chart_tql') return;
+  if (toolName !== 'save_tql_file' && toolName !== 'execute_tql_script') return;
 
-  var contentKey = toolName === 'validate_chart_tql' ? 'tql_script' : 'tql_content';
+  var contentKey = 'tql_content';
   var content = args[contentKey];
   if (!content || typeof content !== 'string') return;
 

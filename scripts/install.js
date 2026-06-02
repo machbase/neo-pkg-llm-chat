@@ -7,10 +7,19 @@ var process = require('process');
 var fs = require('fs');
 var service = require('service');
 
-var ROOT = path.resolve(path.dirname(process.argv[1]), '..', 'cgi-bin');
+var PKG_ROOT = path.resolve(path.dirname(process.argv[1]), '..');
+var ROOT = path.join(PKG_ROOT, 'cgi-bin');
 var LLM_DIR = path.join(ROOT, 'llm');
 var SERVICE_NAME = 'neo-pkg-llm';
 var LAUNCHER = path.join(ROOT, 'llm-launcher.js');
+
+// Remove files left behind by overwrite-style updates (list: scripts/obsolete.json).
+// Best-effort — must never block install, so swallow any failure.
+try {
+  require('./cleanup').runCleanup(PKG_ROOT);
+} catch (e) {
+  console.println('[install] cleanup skipped: ' + (e && e.message ? e.message : String(e)));
+}
 
 if (!fs.existsSync(LAUNCHER)) {
   console.println('ERROR: launcher not found:', LAUNCHER);

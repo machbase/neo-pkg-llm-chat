@@ -1,0 +1,8 @@
+{
+  "_note": "Orphan files to delete after an overwrite-style update. MERGER: whenever you remove a file or folder from the repo, append its package-root-relative path to 'remove'. Keep this list CUMULATIVE — never prune old entries (deletion is idempotent, so stale entries are harmless and version-jump updates stay covered). Paths are relative to the package root (the folder containing scripts/, cgi-bin/, frontend/). A trailing slash or a plain folder name removes the whole directory. Runs from scripts/install.js (see scripts/cleanup.js).",
+  "remove": [
+    "cgi-bin/package.json",
+    "cgi-bin/llm/server/ws_server.js",
+    "cgi-bin/llm/neo/tql/tql-analysis-templates.md"
+  ]
+}
