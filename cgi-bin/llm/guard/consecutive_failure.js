@@ -12,13 +12,15 @@ var ConsecutiveFailureGuard = {
       if (failures >= 2) {
         console.println('  [guard] ' + toolName + ' failed ' + failures + 'x consecutively, re-prompting');
         var hint;
-        if (failures >= 4 && toolName === 'save_tql_file') {
+        if (failures >= 4 && (toolName === 'save_tql_file' || toolName === 'compile_tql_from_spec')) {
           // 무한 루프 방지: 그만 포기하고 지금까지 성공한 차트로 마무리하도록 유도
-          hint = 'save_tql_file 이 ' + failures + '회 연속 실패했습니다. 이 차트는 **포기하고 건너뛰세요.** 같은 파일을 또 저장하려 하지 말고, 지금까지 저장에 성공한 .tql 파일들만으로 **즉시 create_dashboard_with_charts를 호출**해 대시보드를 완성하고 작업을 끝내세요.';
+          hint = toolName + ' 이 ' + failures + '회 연속 실패했습니다. 이 차트는 **포기하고 건너뛰세요.** 같은 차트를 또 시도하지 말고, 지금까지 저장에 성공한 .tql 파일들만으로 **즉시 create_dashboard_with_charts를 호출**해 대시보드를 완성하고 작업을 끝내세요.';
         } else {
           hint = toolName + ' 도구가 연속 ' + failures + '회 실패했습니다. 에러 메시지를 다시 읽고 고치세요.';
-          if (toolName === 'save_tql_file') {
-            hint += ' CHART 옵션은 반드시 `chartOption({ ... })` 안에 넣으세요(title/grid/series를 CHART()에 직접 쓰면 안 됨) — 형식: `CHART(tz(\'Asia/Seoul\'), chartOption({ ... }))`. 골격은 tql/tql-chart-conventions.md 를 그대로 복사해 TABLE/TAG/기간만 바꾸세요. (TEMPLATE 문법 없음 — raw TQL 직접 작성)';
+          if (toolName === 'compile_tql_from_spec') {
+            hint += ' 이 도구는 **spec(JSON)만** 받습니다(raw TQL 아님). 에러 메시지(TIR invalid 등)대로 **spec의 잘못된 필드만 고쳐 재호출**하세요. raw TQL을 직접 쓰거나 save_tql_file로 전환하지 마세요(특수 차트가 아닌 한).';
+          } else if (toolName === 'save_tql_file') {
+            hint += ' 가능하면 raw TQL 대신 compile_tql_from_spec(spec)로 생성하세요(문법/레이아웃을 서버가 보장). 꼭 raw가 필요하면 CHART 옵션은 `CHART(tz(\'Asia/Seoul\'), chartOption({ ... }))` 안에 넣으세요(title/grid/series를 CHART()에 직접 쓰면 "no sink"/"invalid token" 에러).';
           }
         }
         return rePrompt(agent, msg, hint);
@@ -34,6 +36,11 @@ function countConsecutiveFailures(msgs, toolName) {
     var m = msgs[i];
     if (m.role === 'tool') {
       var content = m.content.toLowerCase();
+      // 가드가 끼워넣은 취소 마커(rePrompt의 'cancelled: redirecting' / 결정론적 차단의 '취소됨')는
+      // 실패 스트릭을 끊지 않음 → give-up 에스컬레이션(>=4)이 신뢰성 있게 누적되도록.
+      if (content.indexOf('cancelled') >= 0 || content.indexOf('redirecting') >= 0 || content.indexOf('취소됨') >= 0) {
+        continue;
+      }
       if (content.indexOf('failed') >= 0 || content.indexOf('error') >= 0 || content.indexOf('failure') >= 0) {
         count++;
       } else {

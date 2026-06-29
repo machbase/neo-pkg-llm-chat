@@ -46,6 +46,13 @@
     --color-primary-light: rgb(0, 108, 210);
     --color-primary-dark: rgb(0, 83, 160);
 
+    /* ─── Favorites accent (Tweaks: gold·blue·green·purple, default gold) ─── */
+    --color-fav-accent: #f5b301;
+    /* Duplicate-flash highlight — soft brand blue (calm "look here", not a warning).
+       Swap candidates: green rgba(113,224,113,.22) · purple rgba(168,130,255,.26)
+       · neutral rgba(255,255,255,.14) · gold rgba(245,179,1,.25) */
+    --color-fav-flash: rgba(0, 117, 226, 0.30);
+
     /* ─── Semantic ─── */
     --color-success: #71e071;
     --color-success-light: #9df486;
@@ -2138,6 +2145,228 @@ details.card > :not(summary) {
     border-color: var(--color-primary);
     color: var(--color-on-surface);
     background: rgba(0, 95, 184, 0.08);
+}
+
+/* ─── Favorites toggle button (chat toolbar) ─── */
+.chat-fav-toggle-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-4);
+    padding: var(--spacing-4) var(--spacing-8);
+    background: transparent;
+    border: 1px solid var(--color-border-medium);
+    border-radius: var(--radius-md);
+    color: var(--color-on-surface);
+    font-size: var(--font-size-sm);
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.chat-fav-toggle-btn:hover {
+    border-color: var(--color-fav-accent);
+    background: var(--color-surface-hover);
+}
+
+.chat-fav-toggle-btn--active {
+    border-color: var(--color-fav-accent);
+    color: var(--color-on-surface);
+    background: var(--color-surface-hover);
+}
+
+.chat-fav-star {
+    color: var(--color-fav-accent);
+    font-variation-settings: 'FILL' 1;
+}
+
+/* ─── Favorites popover panel ─── */
+.chat-fav-panel-popup {
+    position: fixed;
+    display: flex;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.chat-fav-panel {
+    width: 100%;
+    max-width: 720px;
+    margin: 0 auto;
+    max-height: var(--chat-prompt-max-height, min(48vh, 420px));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    background: var(--color-surface-alt);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-8);
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-4);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
+    animation: chatFadeUp 0.18s ease-out;
+}
+
+.chat-fav-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--spacing-8);
+    padding: var(--spacing-4) var(--spacing-8);
+}
+
+.chat-fav-title {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--color-on-surface);
+}
+
+.chat-fav-meta {
+    font-size: var(--font-size-xs);
+    color: var(--color-on-surface-muted);
+    white-space: nowrap;
+}
+
+.chat-fav-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.chat-fav-item {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-6);
+    padding: var(--spacing-4) var(--spacing-8);
+    border-radius: var(--radius-md);
+    transition: background 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+}
+
+.chat-fav-item:hover {
+    background: var(--color-surface-hover);
+}
+
+.chat-fav-item--dragging {
+    opacity: 0.4;
+}
+
+.chat-fav-item--over {
+    background: var(--color-surface-hover-block);
+    box-shadow: inset 0 0 0 1px var(--color-border-medium);
+}
+
+/* Flash an existing item when the user tries to re-add a duplicate. */
+.chat-fav-item--flash {
+    animation: chatFavFlash 1.2s ease-out;
+}
+
+@keyframes chatFavFlash {
+    0% { background: var(--color-fav-flash); }
+    100% { background: transparent; }
+}
+
+.chat-fav-grip {
+    display: flex;
+    align-items: center;
+    color: var(--color-on-surface-muted);
+    cursor: grab;
+    flex-shrink: 0;
+}
+
+.chat-fav-grip:active {
+    cursor: grabbing;
+}
+
+.chat-fav-item-text {
+    flex: 1;
+    min-width: 0;
+    text-align: left;
+    background: transparent;
+    border: none;
+    color: var(--color-on-surface);
+    font-size: var(--font-size-base);
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: var(--spacing-2) 0;
+}
+
+.chat-fav-item-remove {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-on-surface-muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: all 0.15s ease;
+}
+
+.chat-fav-item:hover .chat-fav-item-remove {
+    opacity: 1;
+}
+
+.chat-fav-item-remove:hover {
+    background: var(--color-surface-hover-block);
+    color: var(--color-on-surface);
+}
+
+.chat-fav-add {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-6);
+    margin-top: var(--spacing-2);
+    padding: var(--spacing-8) var(--spacing-8) var(--spacing-4);
+    border-top: 1px solid var(--color-border);
+}
+
+.chat-fav-add-input {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: none;
+    color: var(--color-on-surface);
+    font-size: var(--font-size-base);
+    padding: var(--spacing-4) 0;
+}
+
+.chat-fav-add-input::placeholder {
+    color: var(--color-on-surface-muted);
+}
+
+.chat-fav-add-input:focus {
+    outline: none;
+}
+
+.chat-fav-add-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    border: none;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--color-on-surface-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.chat-fav-add-btn:hover:not(:disabled) {
+    background: var(--color-surface-hover);
+    color: var(--color-on-surface);
+}
+
+.chat-fav-add-btn:disabled {
+    color: var(--color-on-surface-disabled);
+    cursor: default;
 }
 
 /* ─── Welcome-screen quick-action suggestion chips ─── */

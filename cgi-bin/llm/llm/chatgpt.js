@@ -5,6 +5,17 @@ var _client = http2.NewClient();
 var DEFAULT_MODEL = 'gpt-4o';
 var BASE_URL = 'https://api.openai.com';
 
+// OpenAI's content/cyber policy returns HTTP 400 for adversarial security prompts (e.g. asking
+// for credentials or path traversal). Surface that as a clean refusal answer, not a raw API error.
+function isPolicyRefusal(statusCode, errBody) {
+  return statusCode === 400 && /cyber_policy|content[_\s]?policy|content_filter|flagged/i.test(errBody || '');
+}
+// NOTE: real attacks are blocked upstream by security.screenQuery before the LLM runs, so a
+// cyber_policy 400 now almost always means OpenAI flagged LEGITIMATE security/admin DOC content
+// (e.g. ALTER USER / CREATE USER / M$SYS_USERS in a password-management how-to). Do NOT label it
+// as our security refusal — that mislabels a legit question. Use a neutral model-limitation note.
+var POLICY_REFUSAL_TEXT = '현재 선택된 모델(GPT)의 콘텐츠 정책으로 인해 이 질문에는 답변이 제한되었습니다(보안·관리 관련 문서가 포함된 질문에서 발생할 수 있습니다). 다른 모델(예: ollama)로 다시 시도해 주세요.';
+
 function createChatGPTClient(apiKey, model) {
   return {
     apiKey: apiKey, model: model || DEFAULT_MODEL, type: 'chatgpt',
@@ -26,6 +37,9 @@ function chatgptChat(client, messages, toolDefs, cb) {
     var resp = _client.do(req);
     if (!resp.ok) {
       var errBody = ''; try { errBody = resp.string(); } catch (e) {}
+      if (isPolicyRefusal(resp.statusCode, errBody)) {
+        return cb(null, createChatResponse(client.model, createMessage('assistant', POLICY_REFUSAL_TEXT), true));
+      }
       if (resp.statusCode === 429) return cb(new Error('[ChatGPT] API 사용량 한도 초과 (HTTP 429)'));
       return cb(new Error('[ChatGPT] API error (HTTP ' + resp.statusCode + '): ' + errBody));
     }
@@ -48,6 +62,9 @@ function chatgptChatSync(client, messages, toolDefs) {
   var resp = _client.do(req);
   if (!resp.ok) {
     var errBody = ''; try { errBody = resp.string(); } catch (e) {}
+    if (isPolicyRefusal(resp.statusCode, errBody)) {
+      return createChatResponse(client.model, createMessage('assistant', POLICY_REFUSAL_TEXT), true);
+    }
     if (resp.statusCode === 429) throw new Error('[ChatGPT] API 사용량 한도 초과 (HTTP 429)');
     throw new Error('[ChatGPT] API error (HTTP ' + resp.statusCode + '): ' + errBody);
   }

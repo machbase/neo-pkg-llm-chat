@@ -196,11 +196,22 @@ export default function App() {
                             <div className="page-header">
                                 <div className="page-header-inner">
                                     <div>
-                                        <h1 className="page-title">{selectedConfig === null ? "New Configuration" : `Configuration: ${selectedConfig}`}</h1>
+                                        {/* Do not echo the account name in the title (it is the
+                                            logged-in user; showing it leaks the admin id on screen). */}
+                                        <h1 className="page-title">{selectedConfig === null ? "New Configuration" : "Configuration"}</h1>
                                         <p className="page-desc">Manage LLM providers, API keys, models, and connection settings.</p>
                                     </div>
                                     <div className="flex items-center gap-2">
-                                        <button className="btn btn-content btn-success" onClick={() => setActiveTab("chat")}>
+                                        {/* Gate chat entry: a user must have a SAVED, usable config.
+                                            selectedConfig === null means nothing is saved/loaded yet
+                                            (filling the form without saving doesn't count) — matches the
+                                            backend gate that checks the config FILE exists. */}
+                                        <button
+                                            className="btn btn-content btn-success"
+                                            onClick={() => setActiveTab("chat")}
+                                            disabled={selectedConfig === null || !isConfigUsable(config)}
+                                            title={selectedConfig === null || !isConfigUsable(config) ? "사용 가능한 설정(제공자·API 키·모델)을 저장한 뒤 채팅할 수 있습니다." : undefined}
+                                        >
                                             <Icon name="chat" className="icon-sm" /> Chat
                                         </button>
                                         <button className="btn btn-content btn-primary" onClick={handleSave} disabled={saving}>

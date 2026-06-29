@@ -2,6 +2,8 @@
  * Tool Registry - manages tool definitions and execution.
  */
 
+var security = require('./security');
+
 function createRegistry(mc) {
   var tools = {};
   var order = [];
@@ -15,9 +17,12 @@ function createRegistry(mc) {
 
   // Async execute: cb(err, result)
   function execute(name, args, cb) {
+    if (!args) args = {};
+    // Security chokepoint: every tool call from every LLM backend is screened here exactly once.
+    var sec = security.checkToolCall(name, args);
+    if (sec.denied) return cb(null, sec.message);
     var tool = tools[name];
     if (!tool) return cb(new Error('Unknown tool: ' + name));
-    if (!args) args = {};
     try {
       tool.fn(args, cb);
     } catch (e) {
@@ -66,6 +71,8 @@ function createRegistry(mc) {
   // Register all tools
   require('./sql').register(registry, mc);
   require('./tql').register(registry, mc);
+  require('./tql_spec').register(registry, mc); // compile_tql_from_spec — tql(save/execute) 등록 후
+  require('./forecast').register(registry, mc); // forecast_table — tql_spec(헬퍼)/tql(save/execute) 등록 후
   require('./files').register(registry, mc);
   require('./dashboard').register(registry, mc);
   require('./report').register(registry, mc);

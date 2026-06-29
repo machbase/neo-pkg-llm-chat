@@ -93,6 +93,15 @@ function createGateway(cfg, serverPort) {
       return;
     }
 
+    // Per-user isolation gate: a user may only chat with their OWN saved config. If they have
+    // none yet, refuse here — never proceed to a worker that would fall back to sys.json and let
+    // them use another account's credentials / LLM API keys. They must create their config first.
+    if (!fs.existsSync(pathMod.join(CONFIGS_DIR, userID + '.json'))) {
+      sendJSON(browserConn, { type: 'error', session_id: sessionID, code: 'config_required',
+        msg: '설정이 없습니다. 먼저 본인 계정의 설정(LLM 제공자·API 키·접속 정보)을 저장한 뒤 채팅을 시작하세요.' });
+      return;
+    }
+
     var route = routes[sessionID];
 
     if (route && (route.provider !== provider || route.model !== model)) {

@@ -63,6 +63,16 @@ logger.init({ dir: 'logs', prefix: 'worker-' + sessionID.substring(0, 12), level
 
 var mc = createClient(cfg.machbase);
 var registry = createRegistry(mc);
+
+// Output redaction (eval #5 category 1): mask the REAL secrets + credential patterns from
+// everything sent to the UI — progress narration, tool-result previews, and final answer.
+var security = require('./tools/security');
+var OUTPUT_SECRETS = [
+  cfg.machbase && cfg.machbase.password,
+  cfg.claude && cfg.claude.api_key,
+  cfg.chatgpt && cfg.chatgpt.api_key,
+  cfg.gemini && cfg.gemini.api_key,
+].filter(function (s) { return s && typeof s === 'string' && s.length >= 4; });
 var llmClient;
 try {
   llmClient = createLLM(cfg);
@@ -148,7 +158,8 @@ function runChat(query) {
 function sendStreamMsg(msgType, text) {
   var message = { ver: '1.0', id: Date.now(), type: msgType };
   if (text !== undefined) {
-    message.body = { ofStreamBlockDelta: { contentType: 'text/markdown', text: text } };
+    var safe = security.redactSecrets(text, OUTPUT_SECRETS);
+    message.body = { ofStreamBlockDelta: { contentType: 'text/markdown', text: safe } };
   }
   sendJSON({ type: 'msg', message: message });
 }

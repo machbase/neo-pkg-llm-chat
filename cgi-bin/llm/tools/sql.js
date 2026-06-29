@@ -1,5 +1,7 @@
 var { argStr, argInt } = require('./registry');
 var { extractUserTables, checkTableOwnership } = require('./ownership');
+var rangeCache = require('./range_cache');
+var security = require('./security');
 
 function register(registry, mc) {
   // list_tables
@@ -109,9 +111,10 @@ function register(registry, mc) {
             if (colId === 0 && (colName === '_ROWID' || colName === '_ARRIVAL_TIME')) continue;
 
             var role = '';
-            if (colFlag === 134217728) { role = ' PRIMARY KEY'; nameCol = colName; }
-            else if (colFlag === 16777216) { role = ' BASETIME'; timeCol = colName; }
-            else if (colFlag === 33554432) { role = ' SUMMARIZED'; valueCol = colName; }
+            // 비트 AND — ROLLUP 테이블은 SUMMARIZED 컬럼 플래그에 rollup 비트가 더해짐(예 570425344) → 정확비교(===)로는 누락
+            if (colFlag & 134217728) { role = ' PRIMARY KEY'; nameCol = colName; }
+            else if (colFlag & 16777216) { role = ' BASETIME'; timeCol = colName; }
+            else if (colFlag & 33554432) { role = ' SUMMARIZED'; valueCol = colName; }
 
             out += '- ' + colName + ' (' + colType + ')' + role + '\n';
           }
@@ -159,12 +162,10 @@ function register(registry, mc) {
       if (!sql) return cb(null, 'Error: sql_query is required');
 
       var upper = sql.toUpperCase().trim();
-      if (upper.indexOf('UPDATE ') === 0 || upper.indexOf('DELETE ') === 0) {
-        return cb(null, 'Error: UPDATE/DELETE statements are not allowed.');
-      }
-      if (upper.indexOf('DROP ') === 0) {
-        return cb(null, 'Error: DROP statements are not allowed through this tool. 사용자에게 직접 SQL 콘솔에서 실행하도록 안내하세요. 예: DROP TABLE 테이블명 CASCADE;');
-      }
+      // Defense-in-depth (also enforced at registry.execute chokepoint): refuse mutation/
+      // privilege statements, multi-statement, and credential-table reads; allow SELECT + setup CREATE.
+      var denied = security.sqlDenied(sql);
+      if (denied) return cb(null, 'Error: ' + denied);
 
       var format = argStr(args, 'format', 'csv');
       var timeformat = argStr(args, 'timeformat', '');
@@ -190,7 +191,16 @@ function register(registry, mc) {
             var rows = parsed.data.rows;
             var out = cols.join(',') + '\n';
             for (var i = 0; i < rows.length; i++) out += rows[i].join(',') + '\n';
-            cb(null, out.trim());
+            out = out.trim();
+            // Ground-truth row count footer — prevents weak models from confabulating
+            // a count from the LIMIT clause (e.g. reporting "50 rows" when only 9 returned).
+            var n = rows.length;
+            // effective LIMIT: explicit LIMIT in the SQL, else the auto-applied limit param
+            var limM = upper.match(/\bLIMIT\s+(\d+)/);
+            var effLimit = limM ? parseInt(limM[1], 10) : limit;
+            var footer = '\n\n(' + n + ' row' + (n === 1 ? '' : 's') + ')';
+            if (n >= effLimit) footer += ' — capped at LIMIT ' + effLimit + ', more rows may exist';
+            cb(null, out + footer);
           } catch (e) { cb(null, result); }
         });
       });
@@ -219,7 +229,10 @@ function appendProfile(mc, table, nameCol, timeCol, valueCol, out, cb) {
           var pR = JSON.parse(resR);
           if (pR.success && pR.data && pR.data.rows && pR.data.rows.length > 0) {
             var mn = pR.data.rows[0][0], mx = pR.data.rows[0][1];
-            if (mn != null && mx != null) out += 'time range (ms): ' + mn + ' ~ ' + mx + '\n';
+            if (mn != null && mx != null) {
+              out += 'time range (ms): ' + mn + ' ~ ' + mx + '\n';
+              rangeCache.set(table, parseInt(String(mn), 10), parseInt(String(mx), 10));
+            }
           }
         } catch (e) {}
       }

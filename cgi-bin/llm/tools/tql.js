@@ -2,6 +2,15 @@ var { argStr } = require('./registry');
 var { expandTemplate } = require('./tql_templates');
 var { extractUserTables, checkTableOwnership } = require('./ownership');
 
+// 쿼리 결과에 행이 있는지 (Machbase는 200+{"success":false}로도 에러를 줄 수 있어 success/rows 확인)
+function rowsPresent(qres) {
+  try {
+    var qp = JSON.parse(qres);
+    return !!(qp && qp.success && qp.data && qp.data.rows && qp.data.rows.length > 0);
+  } catch (e) { return (qres || '').length > 20; }
+}
+var ZERO_ROW_MSG = 'Error: 차트 쿼리가 데이터를 0건 반환했습니다 (TQL 문법은 맞지만 빈 차트가 됩니다). 시간 범위를 describe_table의 time range(ms)에 맞추고(TO_DATE에 실제 데이터 기간 사용), 태그명/테이블을 확인해 TQL을 고쳐 다시 저장하세요.';
+
 function register(registry, mc) {
   // execute_tql_script
   registry.register({
@@ -143,7 +152,7 @@ function register(registry, mc) {
               if (err) return cb(null, 'Error: TQL 실행 검증 실패: ' + err.message + tqlHint);
               var tqlRes = String(testResult || '');
               var tqlResLow = tqlRes.toLowerCase();
-              if (tqlResLow.indexOf('error') === 0 || tqlRes.indexOf('MACH-ERR') >= 0 || tqlResLow.indexOf('"success":false') >= 0 || tqlResLow.indexOf('"success": false') >= 0) {
+              if (tqlResLow.indexOf('error') === 0 || /MACH(?:CLI)?-ERR/i.test(tqlRes) || tqlResLow.indexOf('"success":false') >= 0 || tqlResLow.indexOf('"success": false') >= 0) {
                 return cb(null, 'Error: TQL 실행 검증 실패: ' + tqlRes.substring(0, 500) + tqlHint);
               }
               function writeIt() {
@@ -152,20 +161,50 @@ function register(registry, mc) {
                   cb(null, 'TQL file saved: ' + filename + shiftedMsg);
                 });
               }
-              // 안전장치: TQL 문법은 맞아도 데이터 0건이면 빈 차트가 됨(에러 없이 "망함") → 거부하고 수정 유도
+              // 안전장치: TQL 문법은 맞아도 데이터 0건이면 빈 차트 → 우선 실제 데이터 범위로 자동 스냅 재시도, 그래도 0건이면 거부.
+              // (모델이 시간 범위를 틀려도 — 예: 다른 테이블 범위 재사용 — 테이블에 데이터가 있으면 자동 교정)
               var sqlM = tqlContent.match(/SQL\(\s*`([\s\S]*?)`\s*\)/);
               if (!sqlM) return writeIt();
               mc.querySQL(sqlM[1], 'ms', '', '', function (qerr, qres) {
-                if (qerr) return writeIt(); // 검증 쿼리 자체 실패는 과잉차단 방지 위해 통과
-                var hasData = false;
-                try {
-                  var qp = JSON.parse(qres);
-                  hasData = !!(qp && qp.success && qp.data && qp.data.rows && qp.data.rows.length > 0);
-                } catch (e) { hasData = (qres || '').length > 20; }
-                if (!hasData) {
-                  return cb(null, 'Error: 차트 쿼리가 데이터를 0건 반환했습니다 (TQL 문법은 맞지만 빈 차트가 됩니다). 시간 범위를 describe_table의 time range(ms)에 맞추고(TO_DATE에 실제 데이터 기간 사용), 태그명/테이블을 확인해 TQL을 고쳐 다시 저장하세요.');
+                // 추출 SQL을 직접 실행: CHART가 에러를 차트로 삼켜도 raw SQL이라 에러가 그대로 드러난다.
+                // 구문/GROUP BY/컬럼 에러(MACHCLI-ERR / success:false)면 거부 — qerr.message(HTTP 500 본문) 또는 qres에서 탐지.
+                var qBlob = (qerr && qerr.message ? qerr.message : '') + ' ' + String(qres || '');
+                if (/MACH(?:CLI)?-ERR/i.test(qBlob) || /"success"\s*:\s*false/i.test(qBlob)) {
+                  return cb(null, 'Error: TQL 실행 검증 실패(SQL): ' + qBlob.substring(0, 400) + tqlHint);
                 }
-                writeIt();
+                if (qerr) return writeIt(); // 에러 마커 없는 검증쿼리 실패(네트워크 등)는 과잉차단 방지 위해 통과
+                if (rowsPresent(qres)) return writeIt();
+
+                // 0건 → 테이블 실제 MIN/MAX(TIME)으로 TO_DATE 범위 스냅 후 재검
+                var tmF = /FROM\s+([A-Za-z_][A-Za-z0-9_]*)/i.exec(tqlContent);
+                var tdAll = tqlContent.match(/TO_DATE\s*\(\s*'([^']+)'\s*\)/g);
+                if (!tmF || !tdAll || tdAll.length < 2) return cb(null, ZERO_ROW_MSG);
+                mc.querySQL('SELECT MIN(TIME), MAX(TIME) FROM ' + tmF[1].toUpperCase(), 'ms', '', '', function (me, mr) {
+                  if (me) return cb(null, ZERO_ROW_MSG);
+                  var mn = 0, mx = 0;
+                  try {
+                    var mp = JSON.parse(mr);
+                    if (mp && mp.data && mp.data.rows && mp.data.rows.length > 0) {
+                      mn = parseInt(String(mp.data.rows[0][0]), 10);
+                      mx = parseInt(String(mp.data.rows[0][1]), 10);
+                    }
+                  } catch (e) {}
+                  if (!mn || !mx) return cb(null, ZERO_ROW_MSG);
+                  function p2(n) { return (n < 10 ? '0' : '') + n; }
+                  function fmt(ms) { var d = new Date(ms); return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + ' ' + p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds()); }
+                  var d0 = (tdAll[0].match(/'([^']+)'/) || [])[1];
+                  var d1 = (tdAll[1].match(/'([^']+)'/) || [])[1];
+                  var snapped = tqlContent.replace("TO_DATE('" + d0 + "')", "TO_DATE('" + fmt(mn) + "')").replace("TO_DATE('" + d1 + "')", "TO_DATE('" + fmt(mx) + "')");
+                  var sm2 = snapped.match(/SQL\(\s*`([\s\S]*?)`\s*\)/);
+                  if (!sm2) return cb(null, ZERO_ROW_MSG);
+                  mc.querySQL(sm2[1], 'ms', '', '', function (e4, r4) {
+                    if (e4 || !rowsPresent(r4)) return cb(null, ZERO_ROW_MSG);
+                    tqlContent = snapped;
+                    shiftedMsg += '\n[주의] 요청 시간 범위에 데이터가 없어 실제 데이터 범위로 자동 조정: ' + fmt(mn) + ' ~ ' + fmt(mx);
+                    console.println('[tql] 0-row → snapped to data range: ' + fmt(mn) + ' ~ ' + fmt(mx));
+                    writeIt();
+                  });
+                });
               });
             });
           }

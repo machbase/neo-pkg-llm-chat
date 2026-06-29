@@ -23,6 +23,8 @@ machsql is an interactive tool that performs SQL queries through the terminal sc
 | -r | --format | Specifies output file format (default: csv) |
 | -h | --help | Displays options |
 | -c | N/A | Add Connection parameter (Supported from version 6.1 or later) |
+| -K | --auth-key-file | Authentication private key file path (Machbase 8.5+) |
+|    | --auth-sig-scheme | Authentication signature scheme (`ECDSA`, `RSA_PKCS1_V15`, `RSA_PSS`; Machbase 8.5+) |
 
 ### Examples
 
@@ -42,6 +44,34 @@ export MACHBASE_CONNECTION_STRING=ALTERNATIVE_SERVERS=192.168.0.148:8888;CONNECT
 ```
 
 Setting connection parameter with -c option takes precedence over environment variables. This option is supported from version 6.1 or later.
+
+## AUTH KEY Challenge Authentication
+
+> **Note**: This feature is supported from Machbase 8.5 or later.
+
+`machsql` supports public-key-based challenge authentication in addition to password authentication.
+
+```bash
+machsql -s 127.0.0.1 -u app_user \
+    -K /opt/machbase/keys/app_user_ecdsa.pem \
+    --auth-sig-scheme=ECDSA \
+    -f script.sql
+```
+
+Notes:
+
+- `-K`, `--auth-key-file` internally enables `AUTH_MODE=CHALLENGE`, and `-p` is not used for authentication in that case.
+- If `--auth-sig-scheme` is omitted, the default scheme is chosen from the key algorithm: `ECDSA` for an ECDSA key, `RSA_PKCS1_V15` for an RSA key.
+- Supported key parameters are ECDSA `P-256`, `P-384`, `P-521` and RSA `2048`, `3072`, `4096` bits. To use RSA-PSS authentication, specify `--auth-sig-scheme=RSA_PSS`.
+- On POSIX systems, restricting the private key file permission to `600` is recommended.
+
+The connection-string form is also supported, but `-K` is recommended because the connection string may expose the key file path in process arguments or logs:
+
+```bash
+machsql -c "SERVER=127.0.0.1;PORT_NO=5656;UID=APP_USER;AUTH_MODE=CHALLENGE;AUTH_SIG_SCHEME=ECDSA;AUTH_KEY_FILE=/opt/machbase/keys/app_user_ecdsa.pem;" -f script.sql
+```
+
+Authentication fails if the key file does not exist, if the key type does not match `--auth-sig-scheme`, or if the AUTH KEY entry is expired (`VALID_BEFORE`) or deactivated. See [AUTH KEY Authentication](../sql-reference/sql-reference-user-manage.md#auth-key-authentication) for registering and managing keys.
 
 ## Using HEREDOC for SQL Scripts
 

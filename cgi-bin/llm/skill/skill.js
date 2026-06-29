@@ -56,6 +56,15 @@ function createRegistry() {
       return skills['SystemInfo'];
     }
 
+    // 4.5 Forecast(예측) — 이후 데이터 예측 요청 → CodeExec(forecast_table)로 인라인 예측 차트.
+    //  · 순수 문서 질문(예측이 뭐야/사용법)은 제외해 DocLookup으로 보냄.
+    //  · 대시보드/리포트 요청은 제외 → 아래 Basic/Advanced/Report로 라우팅(거기에도 forecast_table 노출됨).
+    if (containsKeyword(lower, ['예측', '예상', '전망', '이후 데이터', '미래 값', '향후', 'forecast', 'predict', 'prediction', 'extrapolat'])
+      && !containsKeyword(lower, ['뭐야', '뭔가요', '란?', '이란', '사용법', '문법', '설명해', 'what is', 'how to'])
+      && !containsKeyword(lower, ['대시보드', 'dashboard', '리포트', '보고서', 'report'])) {
+      return skills['CodeExec'];
+    }
+
     // 5. CodeExec — 실행 의도 확실한 키워드 (DocLookup 키워드 없을 때만)
     var hasDocKw = containsKeyword(lower, [
       '뭐야', '뭔가요', '란?', '이란', '사용법', '문법', '예제', '알려줘', '설명해', '어떻게', '방법',
@@ -87,13 +96,19 @@ function createRegistry() {
       return skills['AdvancedAnalysis'];
     }
 
-    // 8. BasicAnalysis
+    // 8. BasicAnalysis — 명시적 차트/시각화/분석 의도만
     if (containsKeyword(lower, [
-      '분석', '대시보드', '차트', '시각화', '추세', '트렌드', '패턴', '비교', '보여줘', '보여 줘', '그래프',
+      '분석', '대시보드', '차트', '시각화', '추세', '트렌드', '패턴', '비교', '그래프',
       'dashboard', 'chart', 'visualize', 'visualization', 'trend', 'pattern', 'compare', 'comparison',
-      'show me', 'plot', 'graph', 'analyze', 'analysis', 'display',
+      'plot', 'graph', 'analyze', 'analysis',
     ])) {
       return skills['BasicAnalysis'];
+    }
+
+    // 8.5 모호한 "보여줘/show me/display" — 위에서 차트 단어가 안 걸렸으면 단순 데이터 조회(SQL 표)로.
+    //  ("데이터 보여줘"=표 조회 / "차트 보여줘"=위 규칙 8에서 이미 BasicAnalysis 처리됨)
+    if (containsKeyword(lower, ['보여줘', '보여 줘', 'show me', 'display'])) {
+      return skills['CodeExec'];
     }
 
     // 9. CodeExec — 범용 조회 키워드 fallback

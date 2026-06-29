@@ -13,12 +13,14 @@ function createBuilder() {
   function addCore() {
     if (isOllama) {
       parts.push(segmentsOllama.OllamaSegRole);
+      parts.push(segmentsOllama.OllamaSegSafety);
       parts.push(segmentsOllama.OllamaSegTableSchema);
       parts.push(segmentsOllama.OllamaSegSqlTools);
       parts.push(segmentsOllama.OllamaSegErrorHandling);
       parts.push(segmentsOllama.OllamaSegCommonProhibitions);
     } else {
       parts.push(segments.SegRole);
+      parts.push(segments.SegSafety);
       parts.push(segments.SegTableSchema);
       parts.push(segments.SegSqlTools);
       parts.push(segments.SegErrorHandling);

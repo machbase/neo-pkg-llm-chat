@@ -1,6 +1,7 @@
 // TQL Analysis Template Expander
 // Parses tql-analysis-templates.md and expands TEMPLATE:ID references
 
+var process = require('process'); // jsh에선 process가 전역이 아님 → 명시적 require (loadTemplates의 process.cwd()용)
 var fs = require('fs');
 var path = require('path');
 

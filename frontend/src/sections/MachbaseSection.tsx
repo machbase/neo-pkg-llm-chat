@@ -34,8 +34,9 @@ export function MachbaseSection({ config, onChange, errors = [] }: Props) {
                     <span>User ID</span>
                     {/* Fixed to the logged-in user (JWT identity) so the saved config filename
                         and the DB connection username always agree. Editing here would create
-                        a config under a different name than the actual user. */}
-                    <input type="text" value={config.user} readOnly disabled className="opacity-60 cursor-not-allowed" />
+                        a config under a different name than the actual user. Masked (type=password)
+                        so the admin account name is not shown in plaintext / on screen-shares. */}
+                    <input type="password" value={config.user} readOnly disabled className="opacity-60 cursor-not-allowed" />
                 </label>
                 <label className="form-label">
                     <span>Password</span>

@@ -29,8 +29,11 @@ function getSavedTQLPaths(msgs) {
     if (m.role === 'assistant' && m.toolCalls) {
       pendingPaths = [];
       for (var j = 0; j < m.toolCalls.length; j++) {
-        if (m.toolCalls[j].function.name === 'save_tql_file') {
-          pendingPaths.push(m.toolCalls[j].function.arguments.filename || '');
+        var nm = m.toolCalls[j].function.name;
+        var fargs = m.toolCalls[j].function.arguments || {};
+        // save_tql_file / compile_tql_from_spec / forecast_table(filename 있을 때만 = 저장 경로). filename 없는 답변/인라인 경로는 ''.
+        if (nm === 'save_tql_file' || nm === 'compile_tql_from_spec' || nm === 'forecast_table') {
+          pendingPaths.push(fargs.filename || '');
         } else {
           pendingPaths.push('');
         }

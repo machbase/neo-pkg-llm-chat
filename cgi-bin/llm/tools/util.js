@@ -110,7 +110,8 @@ function register(registry, mc) {
             }
 
             // 4) Session info via V$SESSION
-            mc.querySQL("SELECT ID, USER_NAME, CLIENT_TYPE, LOGIN_TIME FROM V$SESSION", '', '', '', function (err4, raw4) {
+            // USER_NAME intentionally NOT selected — session account names are sensitive (eval #5, 1a).
+            mc.querySQL("SELECT ID, CLIENT_TYPE, LOGIN_TIME FROM V$SESSION", '', '', '', function (err4, raw4) {
               if (!err4 && raw4) {
                 try {
                   var parsed = JSON.parse(raw4);
@@ -118,7 +119,7 @@ function register(registry, mc) {
                     info.machbase.sessions = {
                       count: parsed.data.rows.length,
                       list: parsed.data.rows.slice(0, 20).map(function (r) {
-                        return { id: r[0], user: r[1], client_type: r[2], login_time: r[3] };
+                        return { id: r[0], client_type: r[1], login_time: r[2] };
                       }),
                     };
                   }
@@ -137,7 +138,7 @@ function register(registry, mc) {
                   } catch (e) { /* ignore */ }
                 }
                 var result = JSON.stringify(info, null, 2);
-                result += '\n\n[지시] 위 정보를 **모두** 사용자에게 정리하여 보여주세요. 패키지 정보, 서비스 상태, DB 연결, 서버 설정(config), 스토리지(storage), 세션(sessions), 테이블 수를 빠짐없이 포함하세요.';
+                result += '\n\n[지시] 위 정보를 사용자에게 정리하여 보여주세요. 패키지 정보, 서비스 상태, DB 연결, 서버 설정(config), 스토리지(storage), 세션 수, 테이블 수를 포함하되, 사용자 계정명·접속 비밀번호·API 키 등 민감 정보는 절대 포함하지 마세요.';
                 cb(null, result);
               });
             });

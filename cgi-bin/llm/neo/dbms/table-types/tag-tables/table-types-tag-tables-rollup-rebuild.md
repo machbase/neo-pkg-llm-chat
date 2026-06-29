@@ -6,79 +6,19 @@ If anomalous data has already been collected, you can delete the raw data and in
 However, previously generated rollup statistics are not automatically rolled back.
 In that case, you must rebuild the affected rollup buckets.
 
-In Machbase, the currently documented rebuild paths are:
+In Machbase, rebuild rollups with the built-in server procedure `EXEC ROLLUP_REBUILD(...)`.
 
-1. Python script
-   - built-in rollup only
-   - for standard rollup / rollup extension
-   - rebuilds by time range (`begintime ~ endtime`)
-   - uses the Machbase Neo REST API
-2. Built-in server procedure `EXEC ROLLUP_REBUILD(...)`
-   - supports built-in rollup, rollup extension, and custom rollup
-   - callable directly from SQL
-   - follows the custom rollup dependency tree for stop/rebuild/start
+- supports built-in rollup, rollup extension, and custom rollup
+- callable directly from SQL
+- follows the custom rollup dependency tree for stop/rebuild/start
 
 ## Limitations
 
-1. The Python rebuild tool is only for built-in rollups.
-2. The Python rebuild tool only targets tables created with `WITH ROLLUP` or `WITH ROLLUP EXTENSION`.
-3. The Python rebuild tool assumes internal built-in rollup tables (`_<table>_ROLLUP_SEC`, `_<table>_ROLLUP_MIN`, `_<table>_ROLLUP_HOUR`) and the fixed built-in aggregate schema.
-4. Custom rollups cannot be recovered directly with the Python rebuild tool.
-5. `EXEC ROLLUP_REBUILD(...)` is supported in Standard Edition and is **not supported in Cluster Edition**.
-6. `EXEC ROLLUP_REBUILD(...)` only supports single-tag rebuild by `table_name`, `tag_name`, `begin_time`, and `end_time`.
-7. The rebuild range must be handled as whole affected buckets, not partial timestamps, with delete followed by insert.
+`EXEC ROLLUP_REBUILD(...)` has the following limitations.
 
-## Python-Based Rollup Rebuild
-
-### Scope
-
-The Python script is intended for built-in rollups only.
-
-Assumptions:
-
-- The source table uses `WITH ROLLUP` or `WITH ROLLUP EXTENSION`
-- Internal rollup table names follow this pattern:
-  - `_<table>_ROLLUP_SEC`
-  - `_<table>_ROLLUP_MIN`
-  - `_<table>_ROLLUP_HOUR`
-- The internal aggregate columns follow the fixed built-in rollup schema
-- Delete and reinsert can be done based on `_ID`
-
-It cannot be applied directly to custom rollups because the destination table name, column count, types, and aggregate expressions are all user-defined.
-
-### Example
-
-```bash
-python3 rollup_rebuild_timerange.py \
-  --server http://127.0.0.1:5654 \
-  --tablename TAG \
-  --tagname tag-0 \
-  --begintime '2000-01-01 00:00:00' \
-  --endtime   '2000-01-01 00:00:11'
-```
-
-### Parameters
-
-| Parameter | Description |
-|---|---|
-| `--server` | Machbase Neo REST API address (e.g. `http://127.0.0.1:5654`) |
-| `--tablename` | TAG table name (case-sensitive) |
-| `--tagname` | Tag key value of the anomalous data |
-| `--begintime` | Start time of the error/deletion range |
-| `--endtime` | End time of the error/deletion range |
-
-### Execution Model
-
-The script restores built-in rollups in this order:
-
-1. source flush
-2. freeze if needed
-3. second rollup: force / stop / delete / insert / start / flush
-4. minute rollup: force / stop / delete / insert / start / flush
-5. hour rollup: force / stop / delete / insert / start
-6. unfreeze if needed
-
-If execution stops in the middle, rerunning is generally safe because it rebuilds the same buckets by delete-then-insert.
+1. It is supported in Standard Edition and is **not supported in Cluster Edition**.
+2. It only supports single-tag rebuild by `table_name`, `tag_name`, `begin_time`, and `end_time`.
+3. The rebuild range must be handled as whole affected buckets, not partial timestamps, with delete followed by insert.
 
 ## `EXEC ROLLUP_REBUILD(...)` Procedure
 
@@ -285,4 +225,4 @@ ORDER BY code, time;
 3. If one error time range spans multiple buckets, rebuild every affected bucket.
 4. Custom rollup destination tables accumulate append-only results, so rebuild must use delete followed by insert.
 5. In rollup-on-rollup pipelines, always rebuild from lower stages first then upper stages.
-6. For large built-in time-range recovery, the Python tool is more convenient. For custom or mixed extension/custom environments, use `EXEC ROLLUP_REBUILD(...)`.
+6. For built-in rollup, rollup extension, and custom rollup alike, use `EXEC ROLLUP_REBUILD(...)`.

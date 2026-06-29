@@ -3,13 +3,42 @@
 var TIME_RANGE_KO_RE = /(최근|지난)\s*(\d+)\s*(시간|분|일|주|개월|년)/;
 var TIME_RANGE_EN_RE = /(last|past|recent)\s+(\d+)\s*(hours?|minutes?|mins?|days?|weeks?|months?|years?)/i;
 
+// 절대 날짜 토큰(시각 선택): 2023-10-01 / 2023/10/01 / 2023-10-01 00:00:00 / 2023-10-01T00:00
+var ABS_DATE = '(\\d{4}[-/.]\\d{1,2}[-/.]\\d{1,2}(?:[ T]\\d{1,2}:\\d{2}(?::\\d{2})?)?)';
+// 두 날짜 토큰 + 구분자(~ – — 부터 to -). 사용자가 명시한 절대 기간을 그대로 잡는다.
+var ABS_RANGE_RE = new RegExp(ABS_DATE + '\\s*(?:~|–|—|부터|to|-)\\s*' + ABS_DATE, 'i');
+
+// 날짜 문자열 → 로컬(서버 KST) Date. 엔진별 Date 문자열 파싱 편차를 피해 컴포넌트로 직접 생성. 실패 시 null.
+function parseLocalDate(s) {
+  var m = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/.exec(String(s).trim());
+  if (!m) return null;
+  var dt = new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
+  return isNaN(dt.getTime()) ? null : dt;
+}
+
+// "2023-10-01 ~ 2023-11-01" 류 절대 기간 → {start,end,label}. 못 잡거나 끝<=시작이면 null.
+function parseAbsoluteRange(query) {
+  var m = ABS_RANGE_RE.exec(query);
+  if (!m) return null;
+  var start = parseLocalDate(m[1]);
+  var end = parseLocalDate(m[2]);
+  if (!start || !end || end.getTime() <= start.getTime()) return null;
+  return { start: start, end: end, label: m[1].trim() + ' ~ ' + m[2].trim() };
+}
+
 function parseTimeRange(query) {
   var now = new Date();
   var startTime = null;
+  var endTime = null; // 절대 기간일 때만 채워짐(상대 기간은 now가 끝). null → now.
   var label = '';
 
+  // ── 절대 기간: "YYYY-MM-DD[ HH:MM[:SS]] ~ YYYY-MM-DD[...]" (상대 기간보다 먼저) ──
+  // 사용자가 날짜를 직접 주면 그 값을 그대로 쓴다(추측/전체범위 금지).
+  var abs = parseAbsoluteRange(query);
+  if (abs) { startTime = abs.start; endTime = abs.end; label = abs.label; }
+
   // "오늘" / "today"
-  if (query.indexOf('오늘') >= 0 || /\btoday\b/i.test(query)) {
+  if (!label && (query.indexOf('오늘') >= 0 || /\btoday\b/i.test(query))) {
     startTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
     label = query.indexOf('오늘') >= 0 ? '오늘' : 'today';
   }
@@ -68,8 +97,10 @@ function parseTimeRange(query) {
 
   if (!label || !startTime) return null;
 
-  // Select ROLLUP unit based on duration
-  var dur = now.getTime() - startTime.getTime();
+  var endDate = endTime || now; // 절대 기간이면 명시된 끝, 상대 기간이면 now
+
+  // Select ROLLUP unit based on duration (start→end)
+  var dur = endDate.getTime() - startTime.getTime();
   var rollupUnit = "'day'";
   if (dur <= 2 * 60 * 60 * 1000) rollupUnit = "'sec'";
   else if (dur <= 24 * 60 * 60 * 1000) rollupUnit = "'min'";
@@ -77,9 +108,9 @@ function parseTimeRange(query) {
 
   return {
     startMs: String(startTime.getTime()),
-    endMs: String(now.getTime()),
+    endMs: String(endDate.getTime()),
     startDt: formatDatetime(startTime),
-    endDt: formatDatetime(now),
+    endDt: formatDatetime(endDate),
     label: label,
     unit: rollupUnit,
   };
@@ -94,8 +125,7 @@ function pad2(n) { return n < 10 ? '0' + n : String(n); }
 
 // Build skill-specific hint for user message
 function buildSkillHint(query, activeSkill, timeRange) {
-  var timeHint = ' 반드시 SELECT MIN(TIME), MAX(TIME) FROM 테이블 (timeformat=\'ms\')로 시간 범위를 먼저 조회하고, ' +
-    '그 결과를 time_start/time_end에 문자열로 전달하세요. now-1h 등 상대값 사용 금지!';
+  var timeHint = ' 기간을 언급하지 않았으니 time_start/time_end는 넣지 마세요. MIN/MAX 등 사전 조회도 하지 마세요 — 도구가 전체 데이터를 자동 처리(폭에 맞춘 롤업)합니다.';
 
   if (timeRange) {
     timeHint = ' 시간 범위가 지정되었습니다. time_start=' + timeRange.startMs + ', time_end=' + timeRange.endMs +

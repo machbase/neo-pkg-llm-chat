@@ -143,10 +143,12 @@ function runServer(cfg, port) {
   var CGI_BIN_DIR = ARGV1.slice(0, ARGV1.lastIndexOf('/llm'));
   if (!CGI_BIN_DIR) CGI_BIN_DIR = pathMod.resolve('..');
   var CONFIGS_DIR = pathMod.join(CGI_BIN_DIR, 'llm', 'configs');
+  var PREFS_DIR = pathMod.join(CGI_BIN_DIR, 'llm', 'prefs');
   var CONFIG_FILE = pathMod.join(CGI_BIN_DIR, 'config.json');
   var CONFIG_DEFAULT = { server: { port: '8884' } };
 
   console.println('[Server] CONFIGS_DIR: ' + CONFIGS_DIR);
+  console.println('[Server] PREFS_DIR: ' + PREFS_DIR);
   console.println('[Server] CONFIG_FILE: ' + CONFIG_FILE);
 
   function setCORS(ctx) {
@@ -175,6 +177,35 @@ function runServer(cfg, port) {
   function removeConfigFile(name) {
     var fp = pathMod.join(CONFIGS_DIR, name + '.json');
     if (fs.existsSync(fp)) fs.unlinkSync(fp);
+  }
+
+  // ── Per-user UI prefs (favorites) ──
+  // Conservative filename charset to avoid path traversal via the `user` param.
+  function safePrefName(name) {
+    return String(name || '').replace(/[^A-Za-z0-9_.-]/g, '_') || 'sys';
+  }
+  function readPrefsFile(user) {
+    var fp = pathMod.join(PREFS_DIR, safePrefName(user) + '.json');
+    if (!fs.existsSync(fp)) return null;
+    return JSON.parse(fs.readFileSync(fp, { encoding: 'utf8' }));
+  }
+  function writePrefsFile(user, data) {
+    if (!fs.existsSync(PREFS_DIR)) fs.mkdirSync(PREFS_DIR, { recursive: true });
+    fs.writeFileSync(pathMod.join(PREFS_DIR, safePrefName(user) + '.json'), JSON.stringify(data, null, 2));
+  }
+  function sanitizeFavorites(list) {
+    if (!Array.isArray(list)) return [];
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var it = list[i];
+      if (it && typeof it.prompt === 'string' && it.prompt.trim()) {
+        out.push({
+          id: (typeof it.id === 'string' && it.id) ? it.id : ('fav-' + Date.now() + '-' + i),
+          prompt: String(it.prompt),
+        });
+      }
+    }
+    return out;
   }
 
   function jsonReply(ctx, status, data) {
@@ -296,6 +327,34 @@ function runServer(cfg, port) {
     try { removeConfigFile(name); jsonReply(ctx, 200, { success: true, reason: 'success', data: { name: name } }); }
     catch (e) { jsonReply(ctx, 500, { success: false, reason: e.message }); }
   }
+
+  // /api/prefs — per-user UI preferences (favorites)
+  // GET  /api/prefs?user={user}            → { favorites: [...] }
+  // POST /api/prefs?user={user}  (text/plain body { favorites: [...] }) → saves
+  // POST is used for saves (Content-Type text/plain) to avoid a CORS preflight,
+  // same convention as /api/configs.
+  function handlePrefsSave(ctx) {
+    var user = ctx.query('user') || 'sys';
+    try {
+      var parsed = parseBody(ctx) || {};
+      var favorites = sanitizeFavorites(parsed.favorites);
+      writePrefsFile(user, { favorites: favorites });
+      jsonReply(ctx, 200, { success: true, reason: 'success', data: { favorites: favorites } });
+    } catch (e) {
+      jsonReply(ctx, 500, { success: false, reason: e.message });
+    }
+  }
+  server.get('/api/prefs', function (ctx) {
+    var user = ctx.query('user') || 'sys';
+    try {
+      var data = readPrefsFile(user) || {};
+      jsonReply(ctx, 200, { success: true, reason: 'success', data: { favorites: sanitizeFavorites(data.favorites) } });
+    } catch (e) {
+      jsonReply(ctx, 500, { success: false, reason: e.message });
+    }
+  });
+  server.post('/api/prefs', handlePrefsSave);
+  server.put('/api/prefs', handlePrefsSave);
 
   // /api/debug
   server.get('/api/debug', function (ctx) {

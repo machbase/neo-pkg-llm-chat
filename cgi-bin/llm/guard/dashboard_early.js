@@ -32,22 +32,13 @@ var DashboardEarlyGuard = {
 };
 
 function countSavedTQLs(msgs) {
+  // 저장 성공을 도구 이름이 아니라 결과로 카운트: save_tql_file·compile_tql_from_spec(filename 경로)
+  // 둘 다 성공 시 "TQL file saved: ..." 를 반환(후자는 save_tql_file에 위임). 답변 경로("실행 검증됨")·에러는 자연히 제외.
   var count = 0;
-  var pendingSave = false;
   for (var i = 0; i < msgs.length; i++) {
     var m = msgs[i];
-    if (m.role === 'assistant' && m.toolCalls) {
-      for (var j = 0; j < m.toolCalls.length; j++) {
-        if (m.toolCalls[j].function.name === 'save_tql_file') {
-          pendingSave = true;
-        }
-      }
-    } else if (m.role === 'tool' && pendingSave) {
-      var content = m.content.toLowerCase();
-      if (content.indexOf('error') < 0 && content.indexOf('fail') < 0) {
-        count++;
-      }
-      pendingSave = false;
+    if (m.role === 'tool' && m.content && m.content.toLowerCase().indexOf('tql file saved') >= 0) {
+      count++;
     }
   }
   return count;

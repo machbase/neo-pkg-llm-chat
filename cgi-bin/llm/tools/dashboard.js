@@ -1,4 +1,6 @@
 var { argStr } = require('./registry');
+var { detectColumns, detectTags } = require('./tql_spec');
+var rangeCache = require('./range_cache');
 var path = require('path');
 
 var GRID_COLS = 36;
@@ -50,20 +52,55 @@ function makeBlock(table, tag, column, color, userName, aggregator, nameCol, tim
   };
 }
 
-function normalizeChartType(t) {
+// Neo board 뷰어(eI: $un.filter(key===type)[0].value)가 인식하는 유효 패널 타입.
+// 이 집합 밖의 type이 .dsh에 들어가면 뷰어 파서가 TypeError로 죽어 "404 not found file name"이 뜬다.
+// ($un의 'Adv scatter'/'Liquid fill'은 코드의 advScatter/Liquidfill과 표기가 달라 잠재 크래시 → 화이트리스트에서 제외해 Line으로 폴백)
+var VALID_TYPES = { Line: 1, Bar: 1, Scatter: 1, Gauge: 1, Pie: 1, 'Tql chart': 1, Text: 1, Geomap: 1, Video: 1 };
+
+// 입력 타입 → 유효 타입 매핑. spec-kind/임시명(line_multi, bar_multi 등)도 흡수. 매핑 불가면 입력 그대로(검증은 호출측).
+function mapChartType(t) {
   if (!t) return 'Line';
   var map = {
     'line': 'Line', 'bar': 'Bar', 'scatter': 'Scatter', 'pie': 'Pie', 'gauge': 'Gauge',
-    'tql chart': 'Tql chart', 'liquidfill': 'Liquidfill', 'liquid fill': 'Liquidfill',
-    'text': 'Text', 'geomap': 'Geomap', 'advscatter': 'advScatter', 'adv scatter': 'advScatter',
-    'video': 'Video',
+    'tql chart': 'Tql chart', 'text': 'Text', 'geomap': 'Geomap', 'video': 'Video',
+    // spec-kind / 임시명 별칭 → 유효 타입
+    'line_single': 'Line', 'line_multi': 'Line', 'line_multi2': 'Line',
+    'bar_single': 'Bar', 'bar_multi': 'Bar',
+    'scatter_single': 'Scatter', 'scatter_multi': 'Scatter',
   };
-  return map[t.toLowerCase()] || t;
+  return map[String(t).toLowerCase()] || t;
+}
+
+// 생성 단계 가드: 유효(또는 별칭 흡수 가능)면 {type}, 아니면 {error}(모델이 보고 스스로 교정).
+// candlestick/ohlc는 inline 렌더 불가 → tql_path(또는 기본분석은 Line)로 유도.
+function validateChartType(t) {
+  var k = String(t || '').toLowerCase();
+  if (k === 'ohlc' || k === 'candlestick') {
+    return { error: 'chart type "' + t + '"는 inline tag로 렌더되지 않습니다. 캔들차트는 compile_tql_from_spec(kind="ohlc")로 만들어 tql_path로 넣으세요. (기본 분석이면 type="Line", tag="open,high,low,close")' };
+  }
+  var out = mapChartType(t);
+  if (VALID_TYPES[out]) return { type: out };
+  return { error: 'invalid chart type "' + t + '". 사용 가능한 타입: ' + Object.keys(VALID_TYPES).join(', ') };
+}
+
+// 패널 빌드용: 어떤 입력이 와도 절대 크래시 안 나는 유효 타입 보장(최후 폴백 Line).
+function normalizeChartType(t) {
+  var out = mapChartType(t);
+  if (!VALID_TYPES[out]) {
+    console.println('[dashboard] invalid chart type "' + t + '" → fallback Line');
+    out = 'Line';
+  }
+  return out;
 }
 
 function makeChartPanel(title, chartType, table, tag, column, color, tqlPath, x, y, w, h, nameCol, timeCol) {
   chartType = normalizeChartType(chartType);
   if (tqlPath) chartType = 'Tql chart';
+  // tql_path 차트에 제목이 없으면 파일명에서 유도(모델이 title 빠뜨려도 "New chart" 대신 의미있는 제목). 예: SILVER/Silver_Volume.tql → "Silver Volume"
+  if (tqlPath && (!title || title === '')) {
+    var bn = String(tqlPath).replace(/^.*\//, '').replace(/\.tql$/i, '').replace(/_/g, ' ').trim();
+    if (bn) title = bn;
+  }
   if (!w || w <= 0) w = chartWidth(chartType);
   if (!h || h <= 0) h = CHART_H_DEFAULT;
 
@@ -151,6 +188,17 @@ function parseTimeValue(s) {
   return isNaN(n) ? s : n;
 }
 
+// 대시보드 파일명에 작성시각 _YYYYMMDD_HHMMSS 자동 부착 (이력/파일 구분 — 모델 순응과 무관하게 코드가 보장).
+// 모델이 베이스명만 줘도, 이미 타임스탬프를 붙여 줘도 항상 일관된 단일 타임스탬프가 된다.
+function withTimestamp(filename) {
+  // 기존/모델부착 타임스탬프 제거(중복 방지). _YYYYMMDD_HHMMSS(전체) 또는 _YYYYMMDD(날짜만, 모델이 자주 붙임) 둘 다 처리.
+  var base = filename.replace(/\.dsh$/i, '').replace(/_\d{8}(_\d{6})?$/, '');
+  var d = new Date();
+  function p2(n) { return (n < 10 ? '0' : '') + n; }
+  var ts = '' + d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate()) + '_' + p2(d.getHours()) + p2(d.getMinutes()) + p2(d.getSeconds());
+  return base + '_' + ts + '.dsh';
+}
+
 var TYPE_MAP = { 'string': 5, 'varchar': 5, 'datetime': 6, 'double': 20, 'float': 16, 'int32': 8, 'int64': 12 };
 var SIZE_MAP = { 'string': 32, 'varchar': 32, 'datetime': 8, 'double': 8, 'float': 4, 'int32': 4, 'int64': 8 };
 
@@ -189,6 +237,149 @@ function fillAllPanels(mc, panels, idx, cb) {
   });
 }
 
+// tql_path를 참조하는 차트들의 실제 파일 존재를 검증. 없는 것은 drop하고 그 경로들을 droppedPaths로 반환.
+// cb(keptCharts, droppedPaths). tql_path 없는 인라인 차트는 검증 대상이 아니므로 그대로 유지.
+// (compile_tql_from_spec가 중복차단 등으로 저장 실패한 차트를 모델이 그대로 패널에 넣어 'not found' 렌더에러가
+//  나던 문제를 도구 레이어에서 차단 — "안 돌아가는 TQL은 내보내지 않는다" 원칙을 대시보드 패널에도 적용.)
+function validateTqlPaths(mc, charts, cb) {
+  var anyTql = false;
+  for (var i = 0; i < charts.length; i++) {
+    if (charts[i] && charts[i].tql_path) {
+      anyTql = true;
+      charts[i].tql_path = String(charts[i].tql_path).replace(/^\/+/, ''); // 선행 슬래시 정규화
+    }
+  }
+  if (!anyTql) return cb(charts, []);
+
+  // ⚠️ mc.readFile은 **동기**다(client.js: cb가 httpDo 반환 전에 동기 호출). 따라서 비동기 fan-in 패턴
+  // (루프 안에서 remaining++ 후 콜백에서 --remaining===0)을 쓰면 콜백이 매 반복마다 즉시 발화해
+  // remaining이 1→0을 반복 → finish()가 **차트당 1번씩** 불린다. tql_path 차트 6개면 cb가 6번 호출되어
+  // 대시보드가 6번 생성되고 상위 executeToolCalls 콜백이 6갈래로 포크 → 최종답변이 6번 방출된다(deep 분석 한정 버그).
+  // 해법: 전체 pending 수(total)를 읽기 발행 **전에** 고정하고, 모두 resolve된 뒤에만 finish; + finished 가드로 단 1회 보장.
+  var results = [];
+  var pending = [];
+  for (var j = 0; j < charts.length; j++) {
+    if (!charts[j] || !charts[j].tql_path) { results[j] = true; continue; }
+    results[j] = null; // pending
+    pending.push(j);
+  }
+  var total = pending.length;
+  var resolved = 0;
+  var finished = false;
+  for (var pj = 0; pj < pending.length; pj++) {
+    (function (idx, p) {
+      mc.readFile(p, function (err, data) {
+        var body = String(data == null ? '' : data);
+        // 존재 판정: 읽기 성공 + 본문이 not-found 에러 JSON이 아님(파일 API가 200+{success:false}로 줄 수 있음).
+        // 정상 .tql 본문은 raw TQL 텍스트라 "success":false를 포함하지 않음.
+        var ok = !err && body.indexOf('"success":false') < 0 && body.indexOf('"success": false') < 0;
+        results[idx] = ok;
+        resolved++;
+        if (resolved === total) finish(); // 모든 차트가 resolve된 뒤에만(동기 콜백이어도 마지막 1번)
+      });
+    })(pending[pj], charts[pending[pj]].tql_path);
+  }
+  if (total === 0) return finish();
+
+  function finish() {
+    if (finished) return; // 동기/비동기 어느 쪽이든 cb는 정확히 1회
+    finished = true;
+    var kept = [], dropped = [];
+    for (var k = 0; k < charts.length; k++) {
+      if (results[k] === false) dropped.push(charts[k].tql_path);
+      else kept.push(charts[k]);
+    }
+    cb(kept, dropped);
+  }
+}
+
+// inline 차트(table+tag, tql_path 없음)의 tag/column 실재성 검증 — 계산식·파생지표/존재하지 않는 식별자를 도구 레벨에서 드롭.
+// 기본 분석은 계산을 못 해 그런 패널이 빈 차트가 된다(예: column="high-low", "(open+close)/2", "volume_bucket").
+// 프롬프트 금지는 약한 모델(ollama)이 무시하므로 validateTqlPaths와 대칭으로 결정론적 차단. 전 모델 공통(frontier엔 무해).
+// cb(keptCharts, dropped[]). 실재 태그/컬럼 목록을 못 얻으면 그 검사는 통과(과잉드롭 방지).
+function hasExprChars(s, withHyphen) {
+  s = String(s);
+  if (s.indexOf('(') >= 0 || s.indexOf(')') >= 0 || s.indexOf('+') >= 0 || s.indexOf('*') >= 0 || s.indexOf('/') >= 0) return true;
+  // 컬럼명엔 하이픈이 없음 → 하이픈=계산식(high-low). 태그엔 device-0 등 흔하므로 태그 검사에선 제외.
+  if (withHyphen && s.indexOf('-') >= 0) return true;
+  return false;
+}
+function tableColumns(mc, table, cb) {
+  mc.querySQL('SELECT * FROM ' + String(table).toUpperCase() + ' LIMIT 0', '', '', '', function (err, raw) {
+    if (err) return cb([]);
+    try { var resp = JSON.parse(raw); if (resp && resp.data && resp.data.columns) return cb(resp.data.columns); } catch (e) {}
+    cb([]);
+  });
+}
+function validateInlineCharts(mc, charts, cb) {
+  function isInline(c) { return c && !c.tql_path && c.table && c.tag; }
+  var anyInline = false;
+  for (var i = 0; i < charts.length; i++) { if (isInline(charts[i])) { anyInline = true; break; } }
+  if (!anyInline) return cb(charts, []);
+
+  var tables = {};
+  for (var k = 0; k < charts.length; k++) { if (isInline(charts[k])) tables[String(charts[k].table).toUpperCase()] = true; }
+  var tblList = Object.keys(tables);
+  var tagsByTable = {}, colsByTable = {};
+
+  (function resolve(ri) {
+    if (ri >= tblList.length) return finish();
+    var tbl = tblList[ri];
+    detectColumns(mc, tbl, function (cc) {
+      detectTags(mc, tbl, (cc && cc.n) || 'NAME', function (tags) {
+        tagsByTable[tbl] = (tags || []).map(function (t) { return String(t).toUpperCase(); });
+        tableColumns(mc, tbl, function (cols) {
+          colsByTable[tbl] = (cols || []).map(function (x) { return String(x).toUpperCase(); });
+          resolve(ri + 1);
+        });
+      });
+    });
+  })(0);
+
+  // 동일 차트 시그니처: 테이블|정렬태그|컬럼|타입. 제목만 다르고 데이터·표현이 같으면 동일.
+  function chartSig(c) {
+    var tg = String(c.tag).split(',').map(function (t) { return t.trim().toUpperCase(); }).filter(Boolean).sort().join(',');
+    return String(c.table).toUpperCase() + '|' + tg + '|' + String(c.column || '').toUpperCase() + '|' + String(c.type || 'Line').toUpperCase();
+  }
+  function finish() {
+    var kept = [], dropped = [], seen = {};
+    for (var i = 0; i < charts.length; i++) {
+      var c = charts[i];
+      if (!isInline(c)) { kept.push(c); continue; } // tql_path/비-inline은 그대로(별도 검증)
+      var tbl = String(c.table).toUpperCase();
+      var realTags = tagsByTable[tbl] || [], realCols = colsByTable[tbl] || [];
+      var bad = '';
+      // 타입 화이트리스트: 기본 분석 inline 차트는 데이터 차트(Line/Bar/Scatter)만. Text/Gauge/Pie/Geomap/Video 등은
+      // 태그 데이터를 제대로 못 그리거나(Text=정적텍스트) 기본 모드에 부적절 → 드롭. 블랙리스트보다 견고(새 타입도 자동 차단).
+      var ctype = mapChartType(c.type); // 별칭/대소문자 정규화(line→Line, line_multi→Line 등)
+      if (ctype !== 'Line' && ctype !== 'Bar' && ctype !== 'Scatter') {
+        bad = 'type="' + (c.type || '') + '"(기본 분석은 Line/Bar/Scatter만 — Text/Gauge/Pie 등은 데이터 차트 아님)';
+      }
+      if (!bad && c.column) {
+        if (hasExprChars(c.column, true)) bad = 'column="' + c.column + '"(계산식)';
+        else if (realCols.length && realCols.indexOf(String(c.column).toUpperCase()) < 0) bad = 'column="' + c.column + '"(없는 컬럼)';
+      }
+      if (!bad) {
+        var parts = String(c.tag).split(',');
+        for (var p = 0; p < parts.length; p++) {
+          var tg = parts[p].trim();
+          if (!tg) continue;
+          if (hasExprChars(tg, false)) { bad = 'tag="' + tg + '"(계산식)'; break; }
+          if (realTags.length && realTags.indexOf(tg.toUpperCase()) < 0) { bad = 'tag="' + tg + '"(없는 태그)'; break; }
+        }
+      }
+      if (bad) { dropped.push((c.title || '(무제)') + ' — ' + bad); continue; }
+      // 중복제거: (테이블|정렬태그|컬럼|타입)이 같으면 제목만 다른 동일 차트 → 뒤엣것 드롭.
+      // 기본 모드는 계산을 못 해 "추이/분포/평균"이 같은 원시 차트로 붕괴 → 같은 그래프 여러 개 방지.
+      var sig = chartSig(c);
+      if (seen[sig]) { dropped.push((c.title || '(무제)') + ' — 중복(동일 차트)'); continue; }
+      seen[sig] = true;
+      kept.push(c);
+    }
+    cb(kept, dropped);
+  }
+}
+
 function register(registry, mc) {
   registry.register({
     name: 'create_dashboard_with_charts',
@@ -201,7 +392,7 @@ function register(registry, mc) {
         time_start: { type: 'string', description: 'Start time (epoch ms as string)' },
         time_end: { type: 'string', description: 'End time (epoch ms as string)' },
         refresh: { type: 'string', description: 'Auto-refresh interval. Options: "Off", "3 seconds", "5 seconds", "10 seconds", "30 seconds", "1 minute", "5 minutes", "10 minutes", "1 hour". Default: "Off"' },
-        charts: { type: 'string', description: 'JSON array of chart objects: [{title, type, table, tag, column, name_column, time_column, tql_path, color, w, h}]. tag: single tag, OR comma-separated for multi-series comparison charts (e.g. "high,low" or "open,high,low,close"). name_column/time_column: use actual PRIMARY KEY / BASETIME column names from describe_table (default: NAME/TIME)' },
+        charts: { type: 'string', description: 'JSON array of chart objects. PREFERRED: charts compiled via compile_tql_from_spec → reference each by [{title, tql_path}] (e.g. {"title":"Silver OHLC","tql_path":"SILVER/Silver_Candlestick.tql"}). ALWAYS include a title. Candlestick/OHLC and any compiled chart MUST use tql_path (do NOT rebuild as inline tag — an inline OHLC panel will not render). Only for simple ad-hoc charts without a compiled .tql, use inline {title, type, table, tag}: tag = single tag or comma-separated for a multi-line comparison. column/name_column/time_column (SUMMARIZED/PRIMARY KEY/BASETIME) are auto-detected from the table metadata — omit them unless you need to override.' },
       },
       required: ['filename', 'title', 'charts'],
     },
@@ -214,12 +405,50 @@ function register(registry, mc) {
       var chartsStr = argStr(args, 'charts', '[]');
       if (!filename) return cb(null, 'Error: filename is required');
       if (!filename.toLowerCase().endsWith('.dsh')) filename += '.dsh';
+      filename = withTimestamp(filename); // 작성시각 자동 부착(이력/구분). 이후 tableName추론/폴더/쓰기/URL 모두 이 이름 사용.
 
       var charts;
       try { charts = JSON.parse(chartsStr); } catch (e) { return cb(null, 'Error: Invalid charts JSON: ' + e.message); }
       if (!Array.isArray(charts) || charts.length === 0) return cb(null, 'Error: charts must be a non-empty array');
 
+      // 차트 타입 가드: inline 차트의 유효하지 않은 type을 미리 거부(모델이 메시지 보고 교정 → 깨진 .dsh 방지).
+      // tql_path 차트는 makeChartPanel에서 'Tql chart'로 강제되므로 검증 제외. type 미지정은 Line 기본.
+      for (var vi = 0; vi < charts.length; vi++) {
+        if (charts[vi].tql_path || !charts[vi].type) continue;
+        var vr = validateChartType(charts[vi].type);
+        if (vr.error) return cb(null, 'Error: ' + vr.error);
+      }
+
+      // tql_path 참조 차트의 실제 파일 존재를 먼저 검증 — 없는 파일(예: compile_tql_from_spec 중복차단으로
+      // 저장 실패)을 가리키는 댕글링 패널이 들어가 렌더 시 'not found' 에러가 나는 것을 도구 레이어에서 차단.
+      var droppedMsg = '';
+      validateTqlPaths(mc, charts, function (validCharts, droppedPaths) {
+        if (droppedPaths.length > 0) {
+          droppedMsg = '\n[주의] 존재하지 않는 TQL 참조 패널 ' + droppedPaths.length + '개 제외: ' + droppedPaths.join(', ') +
+            ' (compile_tql_from_spec 저장 실패분 — 중복차단 등). 다른 관점의 차트로 다시 만들어 추가하세요.';
+        }
+        if (!validCharts || validCharts.length === 0) {
+          return cb(null, 'Error: 참조한 TQL 파일이 모두 존재하지 않아 대시보드를 만들 수 없습니다. 누락: ' + droppedPaths.join(', ') +
+            '\n→ 차트를 compile_tql_from_spec로 먼저 성공 저장한 뒤 다시 시도하세요(중복차단 메시지가 떴다면 저장 안 된 것).');
+        }
+        // inline 차트 tag/column 실재성 검증 — 계산식·없는 식별자 패널 드롭(빈 차트 방지). 프롬프트 금지의 결정론적 백스톱.
+        validateInlineCharts(mc, validCharts, function (keptInline, droppedInline) {
+          if (droppedInline.length > 0) {
+            droppedMsg += '\n[주의] 비기본타입·계산식·없는 tag/column·중복 패널 ' + droppedInline.length + '개 제외: ' + droppedInline.join('; ') +
+              ' — 기본 분석 차트는 Line/Bar/Scatter + 실재 태그/VALUE만. 같은 차트를 제목만 바꿔 반복하지 말고, 통계요약·스프레드·평균·분포 등은 심층 분석을 사용하세요.';
+          }
+          if (!keptInline || keptInline.length === 0) {
+            return cb(null, 'Error: 모든 차트가 계산식이거나 존재하지 않는 tag/column이라 대시보드를 만들 수 없습니다: ' + droppedInline.join('; ') +
+              '\n→ describe_table에 나온 실재 태그명과 VALUE만 사용하세요(계산 지표는 심층 분석).');
+          }
+          charts = keptInline;
+          buildDashboard();
+        });
+      });
+      return;
+
       // Infer table name from charts
+      function buildDashboard() {
       var tableName = '';
       for (var ci = 0; ci < charts.length; ci++) {
         if (charts[ci].table) { tableName = charts[ci].table; break; }
@@ -234,6 +463,9 @@ function register(registry, mc) {
         if (slashPos > 0) tableName = filename.substring(0, slashPos).toUpperCase();
       }
 
+      // Resolve real column names (PK/BASETIME/SUMMARIZED) per table so non-NAME/TIME/VALUE
+      // schemas work without the model having to thread them in. Populated before panels build.
+      var colsByTable = {};
       // Time range shift: if requested range has no data, shift to MAX(TIME)
       var shiftedMsg = '';
       function afterTimeShift() {
@@ -247,7 +479,8 @@ function register(registry, mc) {
           var w = chartWidth(cType);
           var h = CHART_H_DEFAULT;
           if (x + w > GRID_COLS) { x = 0; y += CHART_H_DEFAULT; }
-          panels.push(makeChartPanel(c.title, cType, c.table || '', c.tag || '', c.column || 'VALUE', c.color || COLORS[i % COLORS.length], tqlPath, x, y, w, h, c.name_column || '', c.time_column || ''));
+          var cols = colsByTable[String(c.table || '').toUpperCase()] || { n: 'NAME', t: 'TIME', v: 'VALUE' };
+          panels.push(makeChartPanel(c.title, cType, c.table || '', c.tag || '', c.column || cols.v, c.color || COLORS[i % COLORS.length], tqlPath, x, y, w, h, c.name_column || cols.n, c.time_column || cols.t));
           x += w;
         }
 
@@ -267,7 +500,7 @@ function register(registry, mc) {
               if (err) return cb(null, 'Error: Failed to save dashboard: ' + err.message);
               var boardPath = filename.replace(/\.dsh$/i, '');
               var dashURL = mc.baseURL + '/web/ui/board/' + boardPath;
-              cb(null, 'Dashboard created: ' + filename + ' (' + panels.length + ' charts)' + shiftedMsg + '\n\n[대시보드 열기](' + dashURL + ')');
+              cb(null, 'Dashboard created: ' + filename + ' (' + panels.length + ' charts)' + shiftedMsg + droppedMsg + '\n\n[대시보드 열기](' + dashURL + ')');
             });
           }
 
@@ -278,53 +511,61 @@ function register(registry, mc) {
         });
       }
 
-      // Check if time range needs shifting
-      if (tableName && timeStart) {
-        var startMs = parseInt(timeStart, 10);
-        if (startMs > 0) {
-          mc.querySQL('SELECT MAX(TIME) FROM ' + tableName, 'ms', '', '', function (err, raw) {
+      // Resolve real PK/BASETIME/SUMMARIZED column names for every referenced table first,
+      // then time-snap + build panels. detectColumns falls back to NAME/TIME/VALUE.
+      var distinctTables = {};
+      for (var dti = 0; dti < charts.length; dti++) {
+        if (charts[dti].table) distinctTables[String(charts[dti].table).toUpperCase()] = true;
+      }
+      if (tableName) distinctTables[String(tableName).toUpperCase()] = true;
+      var tblList = Object.keys(distinctTables);
+
+      (function resolveColsThen(ri) {
+        if (ri < tblList.length) {
+          return detectColumns(mc, tblList[ri], function (c) { colsByTable[tblList[ri]] = c; resolveColsThen(ri + 1); });
+        }
+        // 시간 스냅: 요청 끝이 데이터 범위 밖(미래꼬리/완전과거)이면 데이터 끝 기준으로 기간 유지하며 조정.
+        //  - 요청 끝 ≤ 데이터 max(직접 과거창) → 그대로 존중
+        //  - 요청 끝 > 데이터 max(상대 "최근 N일" 등) → 데이터 끝으로 시프트(빈 꼬리 방지)
+        // bounds는 describe_table가 채운 range_cache 우선 사용(조회 0회), 미스면 1회 조회 후 캐시.
+        function applySnap(minMs, maxMs) {
+          var startMs = parseInt(timeStart, 10);
+          var endMs = parseInt(timeEnd, 10) || startMs;
+          if (minMs > 0 && maxMs > 0 && startMs > 0 && (endMs > maxMs || endMs < minMs)) {
+            var duration = endMs - startMs;
+            if (duration <= 0) duration = 10 * 24 * 3600 * 1000;
+            var newEnd = maxMs;
+            var newStart = Math.max(maxMs - duration, minMs);
+            timeStart = String(newStart);
+            timeEnd = String(newEnd);
+            shiftedMsg = '\n[주의] 요청 기간이 데이터 범위를 벗어나 실제 데이터 끝 기준으로 조정됨: ' + new Date(newStart).toISOString().substring(0, 10) + ' ~ ' + new Date(newEnd).toISOString().substring(0, 10);
+            console.println('[dashboard] Time snapped: ' + new Date(newStart).toISOString() + ' ~ ' + new Date(newEnd).toISOString());
+          }
+          afterTimeShift();
+        }
+
+        if (tableName && timeStart && parseInt(timeStart, 10) > 0) {
+          var cached = rangeCache.get(tableName);
+          if (cached) return applySnap(cached.min, cached.max);
+          var snapTimeCol = (colsByTable[String(tableName).toUpperCase()] || {}).t || 'TIME';
+          mc.querySQL('SELECT MIN(' + snapTimeCol + '), MAX(' + snapTimeCol + ') FROM ' + tableName, 'ms', '', '', function (err, raw) {
             if (err) return afterTimeShift();
+            var minMs = 0, maxMs = 0;
             try {
-              var maxMs = 0;
               var parsed = JSON.parse(raw);
               if (parsed && parsed.data && parsed.data.rows && parsed.data.rows.length > 0) {
-                maxMs = parseInt(String(parsed.data.rows[0][0]), 10);
-              }
-              if (!maxMs) {
-                var lines = raw.split('\n');
-                if (lines.length >= 2) maxMs = parseInt(lines[1].trim(), 10);
-              }
-              if (maxMs > 0 && startMs > maxMs) {
-                var endMs = parseInt(timeEnd, 10) || startMs;
-                var duration = endMs - startMs;
-                if (duration <= 0) duration = 10 * 24 * 3600 * 1000;
-                var minMs = 0;
-                // Also get MIN(TIME) for lower bound
-                mc.querySQL('SELECT MIN(TIME) FROM ' + tableName, 'ms', '', '', function (err2, raw2) {
-                  try {
-                    var p2 = JSON.parse(raw2);
-                    if (p2 && p2.data && p2.data.rows && p2.data.rows.length > 0) minMs = parseInt(String(p2.data.rows[0][0]), 10);
-                  } catch (e2) {
-                    var l2 = (raw2 || '').split('\n');
-                    if (l2.length >= 2) minMs = parseInt(l2[1].trim(), 10);
-                  }
-                  var newEnd = maxMs;
-                  var newStart = Math.max(maxMs - duration, minMs || 0);
-                  timeStart = String(newStart);
-                  timeEnd = String(newEnd);
-                  shiftedMsg = '\n[주의] 요청 기간에 데이터가 없어 실제 데이터 기간으로 자동 조정됨: ' + new Date(newStart).toISOString().substring(0,10) + ' ~ ' + new Date(newEnd).toISOString().substring(0,10);
-                  console.println('[dashboard] Time shifted: ' + new Date(newStart).toISOString() + ' ~ ' + new Date(newEnd).toISOString());
-                  afterTimeShift();
-                });
-                return;
+                minMs = parseInt(String(parsed.data.rows[0][0]), 10);
+                maxMs = parseInt(String(parsed.data.rows[0][1]), 10);
               }
             } catch (e) { /* ignore */ }
-            afterTimeShift();
+            if (minMs > 0 && maxMs > 0) rangeCache.set(tableName, minMs, maxMs);
+            applySnap(minMs, maxMs);
           });
           return;
         }
-      }
-      afterTimeShift();
+        afterTimeShift();
+      })(0);
+      } // buildDashboard
     },
   });
 
@@ -335,16 +576,45 @@ function register(registry, mc) {
     fn: function (args, cb) {
       var filename = argStr(args, 'filename', '');
       if (!filename) return cb(null, 'Error: filename is required');
-      mc.readFile(filename, function (err, data) {
-        if (err) return cb(null, 'Error: ' + err.message);
+      if (!filename.toLowerCase().endsWith('.dsh')) filename += '.dsh';
+
+      function done(fn, data) {
         try {
           var dsh = JSON.parse(data);
           var d = dsh.dashboard || dsh;
           var panels = d.panels || [];
-          var title = d.title || dsh.name || filename;
-          var dashURL = mc.baseURL + '/web/ui/board/' + filename.replace(/\.dsh$/i, '');
+          var title = d.title || dsh.name || fn;
+          var dashURL = mc.baseURL + '/web/ui/board/' + fn.replace(/\.dsh$/i, '');
           cb(null, 'Dashboard: ' + title + '\nPanels: ' + panels.length + '\n\n[대시보드 열기](' + dashURL + ')');
         } catch (e) { cb(null, 'Error: ' + e.message); }
+      }
+
+      // create_dashboard_with_charts가 _YYYYMMDD_HHMMSS를 자동 부착하므로, 모델이 베이스명을 넘기면
+      // 정확 파일이 없을 수 있다 → 같은 폴더에서 최신 타임스탬프 파일로 자동 해소.
+      function resolveLatest() {
+        var slash = filename.lastIndexOf('/');
+        var dir = slash > 0 ? filename.substring(0, slash) : '';
+        var base = (slash > 0 ? filename.substring(slash + 1) : filename)
+          .replace(/\.dsh$/i, '').replace(/_\d{8}(_\d{6})?$/, '');
+        mc.listDir(dir || '/', function (e2, items) {
+          if (e2 || !items) return cb(null, 'Error: dashboard not found: ' + filename);
+          var best = '', bestTs = '';
+          for (var i = 0; i < items.length; i++) {
+            var m = String(items[i].name || '').match(/^(.*)_(\d{8}_\d{6})\.dsh$/i);
+            if (m && m[1].toUpperCase() === base.toUpperCase() && m[2] > bestTs) { bestTs = m[2]; best = items[i].name; }
+          }
+          if (!best) return cb(null, 'Error: dashboard not found: ' + filename);
+          var full = (dir ? dir + '/' : '') + best;
+          mc.readFile(full, function (e3, data) {
+            if (e3) return cb(null, 'Error: ' + e3.message);
+            done(full, data);
+          });
+        });
+      }
+
+      mc.readFile(filename, function (err, data) {
+        if (err) return resolveLatest();
+        done(filename, data);
       });
     },
   });

@@ -1,5 +1,6 @@
 var { argStr } = require('./registry');
-var { expandReportTemplate, loadReportTemplates } = require('./report_templates');
+var { expandReportTemplate, loadReportTemplates, getTemplateMeta, listReportTemplates } = require('./report_templates');
+var { detectColumns } = require('./tql_spec');
 
 // Cache DB-derived params from 1st call so 2nd call (with analysis) can reuse them
 var _paramsCache = {};
@@ -25,16 +26,148 @@ function purgeExpiredCache() {
   }
 }
 
+// Extract routing kind from a template ID: 'R-2-vibration' -> 'R-2', 'C-1-vibration' -> 'C-1', 'R-2' -> 'R-2'.
+// Builtin compute dispatch keys on kind (R-1/R-2/R-3); custom (C-*) never matches -> generic path.
+function templateKind(id) {
+  var m = /^([A-Za-z]-\d+)/.exec(id || '');
+  return m ? m[1] : (id || '');
+}
+
+// Topic slug of a template ID: 'R-2-vibration' / 'C-2-vibration' -> 'vibration'. '' if none.
+function reportTopicOf(id) {
+  var m = /^[A-Za-z]-\d+-(.+)$/.exec(id || '');
+  return m ? m[1].toLowerCase() : '';
+}
+
+// ── Compute catalog ────────────────────────────────────────────────────────
+// Named domain calculations (1st-party curated). A template declares `compute: <name>`
+// in its .md frontmatter; the engine dispatches by lookup (no hardcoded template IDs),
+// so builtin and custom templates are treated identically. Adding a new technique = one
+// entry here (shared release), reused by any template that declares it.
+//   run(ctx, done)    : fetch raw data + assign result into ctx.params, then done()
+//   summarize(params) : build the computed-number summary the LLM reads to write analysis
+// Analysis direction/tone is NOT here — it lives in each template's `guide:` text, and
+// value-dependent tone is delegated to the LLM (given the numbers summarize() emits).
+var COMPUTE = {
+  driving: {
+    run: function (ctx, done) {
+      console.println('  [report] Fetching driving data for ' + ctx.tags.length + ' tags...');
+      fetchDrivingData(ctx.mc, ctx.tableName, ctx.tags, ctx.rollupUnit, ctx.timeWhere, ctx.cols, function (dErr, dData) {
+        ctx.params.DRIVING_DATA_JSON = dData ? JSON.stringify(dData) : '{"per_tag":{},"events":{"accel":[],"brake":[],"turn":[]},"safety_score":0,"summary":{},"thresholds":{}}';
+        done();
+      });
+    },
+    summarize: function (params) {
+      var s = '';
+      if (!params.DRIVING_DATA_JSON) return s;
+      try {
+        var dd = JSON.parse(params.DRIVING_DATA_JSON);
+        s += '\n=== 차트/점수 계산 결과 (리포트에 이미 반영됨, 이 수치 기반으로 분석하세요) ===\n';
+        s += '안전 점수: ' + (dd.safety_score || 0).toFixed(1) + ' / 100\n';
+        var ev = dd.events || {}; var sm = dd.summary || {};
+        s += '총 이벤트: ' + (sm.total_events || 0) + '건 (전체 샘플 ' + (sm.total_samples || 0) + '건 중)\n';
+        s += '  - 급가속/급제동(ACCEL): ' + ((ev.accel || []).length) + '건 (' + ((sm.accel_pct || 0).toFixed(1)) + '%)\n';
+        s += '  - 급정거(BRAKE): ' + ((ev.brake || []).length) + '건 (' + ((sm.brake_pct || 0).toFixed(1)) + '%)\n';
+        s += '  - 급회전(TURN): ' + ((ev.turn || []).length) + '건 (' + ((sm.turn_pct || 0).toFixed(1)) + '%)\n';
+        var th = dd.thresholds || {};
+        if (th.accel) s += '이벤트 감지 임계값: AccX ±' + (th.accel || 0).toFixed(3) + 'g, AccY ±' + (th.brake || 0).toFixed(3) + 'g, GyroZ ±' + (th.turn || 0).toFixed(3) + 'rad/s\n';
+        var pt = dd.per_tag || {}; var ptKeys = Object.keys(pt);
+        if (ptKeys.length > 0) {
+          s += '태그별 롤업 추이 데이터 포인트: ';
+          ptKeys.forEach(function (k) { s += k + '=' + ((pt[k].rollup || {}).times || []).length + '건 '; });
+          s += '\n';
+        }
+      } catch (e) {}
+      return s;
+    }
+  },
+  vibration: {
+    run: function (ctx, done) {
+      console.println('  [report] Fetching vibration data for ' + ctx.tags.length + ' tags...');
+      fetchVibrationData(ctx.mc, ctx.tableName, ctx.tags, ctx.rollupUnit, ctx.timeWhere, ctx.cols, function (vErr, vData) {
+        ctx.params.PER_TAG_DATA_JSON = vData ? JSON.stringify(vData) : '{}';
+        done();
+      });
+    },
+    summarize: function (params) {
+      var s = '';
+      if (!params.PER_TAG_DATA_JSON) return s;
+      try {
+        var vd = JSON.parse(params.PER_TAG_DATA_JSON);
+        s += '\n=== 차트/분석 계산 결과 (리포트에 이미 반영됨, 이 수치 기반으로 분석하세요) ===\n';
+        Object.keys(vd).forEach(function (k) {
+          var tag = vd[k];
+          s += '\n[' + k + ']\n';
+          if (tag.stats) s += '  전체 통계: RMS=' + (tag.stats.rms || 0).toFixed(4) + ', P2P=' + (tag.stats.p2p || 0).toFixed(4) + ', Crest=' + (tag.stats.crest || 0).toFixed(2) + ', MIN=' + (tag.stats.min || 0).toFixed(4) + ', MAX=' + (tag.stats.max || 0).toFixed(4) + '\n';
+          var rollup = tag.rollup || [];
+          if (rollup.length > 0) {
+            var rmsVals = rollup.map(function (r) { return r.rms || 0; });
+            var rmsMin = Math.min.apply(null, rmsVals), rmsMax = Math.max.apply(null, rmsVals);
+            var rmsAvg = rmsVals.reduce(function (a, b) { return a + b; }, 0) / rmsVals.length;
+            s += '  RMS 추이(' + rollup.length + '포인트): 최소=' + rmsMin.toFixed(4) + ', 최대=' + rmsMax.toFixed(4) + ', 평균=' + rmsAvg.toFixed(4) + '\n';
+            if (rmsMax > rmsAvg * 3 && rmsAvg > 0) {
+              var spikeIdx = rmsVals.indexOf(rmsMax);
+              var spikeTime = rollup[spikeIdx] ? rollup[spikeIdx].t : '?';
+              s += '  ★ RMS 급등 감지! ' + spikeTime + ' 시점에서 ' + rmsMax.toFixed(4) + ' (평균 대비 ' + (rmsMax / rmsAvg).toFixed(1) + '배). 이 급등 원인을 반드시 분석하세요.\n';
+            }
+            var seg = Math.max(1, Math.floor(rmsVals.length * 0.2));
+            var earlyAvg = rmsVals.slice(0, seg).reduce(function (a, b) { return a + b; }, 0) / seg;
+            var lateAvg = rmsVals.slice(-seg).reduce(function (a, b) { return a + b; }, 0) / seg;
+            if (earlyAvg > 0) {
+              var trendRatio = lateAvg / earlyAvg;
+              if (trendRatio > 1.5) s += '  ★ RMS 상승 추세! 초반 평균 ' + earlyAvg.toFixed(4) + ' → 후반 평균 ' + lateAvg.toFixed(4) + ' (' + trendRatio.toFixed(1) + '배 증가). 진동 악화 가능성을 분석하세요.\n';
+              else if (trendRatio < 0.5) s += '  RMS 하락 추세: 초반 ' + earlyAvg.toFixed(4) + ' → 후반 ' + lateAvg.toFixed(4) + ' (감소)\n';
+              else s += '  RMS 추세: 안정적 (초반 ' + earlyAvg.toFixed(4) + ' → 후반 ' + lateAvg.toFixed(4) + ')\n';
+            }
+            var p2pVals = rollup.map(function (r) { return r.p2p || 0; });
+            var p2pMax = Math.max.apply(null, p2pVals);
+            var p2pAvg = p2pVals.reduce(function (a, b) { return a + b; }, 0) / p2pVals.length;
+            if (p2pMax > p2pAvg * 3 && p2pAvg > 0) {
+              var p2pSpikeIdx = p2pVals.indexOf(p2pMax);
+              var p2pSpikeTime = rollup[p2pSpikeIdx] ? rollup[p2pSpikeIdx].t : '?';
+              s += '  ★ P2P 급등 감지! ' + p2pSpikeTime + ' 시점에서 ' + p2pMax.toFixed(4) + ' (평균 대비 ' + (p2pMax / p2pAvg).toFixed(1) + '배)\n';
+            }
+          }
+          if (tag.fft) s += '  FFT: ' + (tag.fft.freqs || []).length + '개 주파수 대역, 샘플레이트=' + (tag.fft.sampleRate || 0).toFixed(1) + 'Hz\n';
+        });
+      } catch (e) {}
+      return s;
+    }
+  },
+  finance: {
+    run: function (ctx, done) {
+      console.println('  [report] Fetching finance data...');
+      ctx.params.STOCK_NAME = ctx.stock || ctx.tableName;
+      fetchFinanceData(ctx.mc, ctx.tableName, ctx.tags, ctx.stock, ctx.rollupUnit, ctx.timeWhere, ctx.cols, function (fErr, fData) {
+        if (fData) {
+          ctx.params.TREND_DATA_JSON = JSON.stringify(fData.trend || []);
+          if (fData.stockName) ctx.params.STOCK_NAME = fData.stockName;
+          if (fData.financeSummary) ctx.params._FINANCE_SUMMARY = fData.financeSummary;
+        } else {
+          ctx.params.TREND_DATA_JSON = '[]';
+        }
+        done();
+      });
+    },
+    summarize: function (params) {
+      var s = '\n=== 차트 데이터 기반 분석 요약 (리포트에 이미 반영됨, 이 수치 기반으로 분석하세요) ===\n';
+      s += '종목명: ' + (params.STOCK_NAME || params.TABLE) + '\n';
+      if (params._FINANCE_SUMMARY) s += params._FINANCE_SUMMARY + '\n';
+      return s;
+    }
+  }
+};
+
 function register(registry, mc) {
   loadReportTemplates();
 
   registry.register({
     name: 'save_html_report',
-    description: '데이터를 분석하여 HTML 리포트를 생성합니다. 차트와 심층 분석이 포함된 보고서를 자동으로 만들어줍니다. table만 지정하여 바로 호출하세요.',
+    description: '데이터를 분석하여 HTML 리포트를 생성합니다. 차트와 심층 분석이 포함된 보고서를 자동으로 만들어줍니다. table을 지정해 호출하세요. 사용자가 특정 종목/태그를 언급하면 tag_name에 그 이름을 반드시 함께 전달하세요 — 생략하면 테이블 전체(수천 태그)를 조회해 느려지거나 컨텍스트 초과로 실패할 수 있습니다.',
     parameters: {
       type: 'object',
       properties: {
-        template_id: { type: 'string', description: '템플릿 ID. 운전/차량: R-3, 진동: R-2, 금융: R-1, 범용: R-0', enum: ['R-0', 'R-1', 'R-2', 'R-3'] },
+        template_id: { type: 'string', description: '리포트 템플릿 ID. 시스템 프롬프트의 "사용 가능한 리포트 템플릿" 목록에서 요청 주제에 맞는 ID 선택(주제 맞는 커스텀 C-* 우선, 없으면 빌트인 R-*, 둘 다 안 맞으면 R-0-general). 미지정 시 빌트인은 데이터로 자동 판별.' },
         table: { type: 'string', description: '테이블명 (필수)' },
         tag_count: { type: 'string' }, data_count: { type: 'string' }, time_range: { type: 'string' },
         analysis: { type: 'string', description: '심층 분석 (한국어). ★1차 호출 시 비워두세요!★ 2차 호출 시 심도 있는 분석으로 작성.\n\n' +
@@ -59,7 +192,8 @@ function register(registry, mc) {
           '## 내용: 즉시 조치/단기 개선/중장기 전략으로 구분하여 우선순위별 정리' },
         rollup_unit: { type: 'string', enum: ['sec', 'min', 'hour', 'day', 'week', 'month'] },
         tag_name: { type: 'string', description: '분석 대상 태그명 또는 종목명. 사용자가 특정 대상을 언급하면 반드시 전달.' },
-        time_start: { type: 'string' }, time_end: { type: 'string' },
+        time_start: { type: 'string', description: '분석 기간 시작 (epoch 밀리초 숫자). ★사용자가 기간을 명시적으로 말할 때만 전달(예: "최근 1시간", "어제", "7월 데이터"). 기간 언급이 없으면 절대 넣지 말 것 — 임의의 기간을 추측해 넣지 마세요(전체 데이터 분석 + 자동 롤업).' },
+        time_end: { type: 'string', description: '분석 기간 끝 (epoch 밀리초 숫자). time_start와 함께 전달.' },
       },
       required: ['table'],
     },
@@ -84,7 +218,8 @@ function saveHtmlReport(mc, args, cb) {
   if (!tableName) return cb(null, 'table 파라미터가 필요합니다. 예: table="GOLD"');
   tableName = tableName.toUpperCase();
 
-  var templateID = anyStr(norm, 'template_id') || anyStr(norm, 'templateid') || 'R-0';
+  var templateID = anyStr(norm, 'template_id') || anyStr(norm, 'templateid') || 'R-0-general';
+  var kind = templateKind(templateID);
   var now = new Date();
   var ts = now.getFullYear() + pad2(now.getMonth() + 1) + pad2(now.getDate()) + '_' + pad2(now.getHours()) + pad2(now.getMinutes()) + pad2(now.getSeconds());
   var filename = anyStr(norm, 'filename') || (tableName + '/' + tableName + '_Analysis_Report_' + ts + '.html');
@@ -103,34 +238,40 @@ function saveHtmlReport(mc, args, cb) {
     var cached = getCachedParams(tableName);
     if (cached) {
       console.println('  [report] Cache hit for ' + tableName);
-      // Both present → save
-      if (hasAnalysis && hasReco) {
+      // Accumulate analysis/recommendations across calls so the LLM needn't re-send the
+      // other piece on each retry — store HTML into the cache, save once both are present.
+      if (hasAnalysis) cached.ANALYSIS = mdToHTML(anyStr(norm, 'analysis'));
+      if (hasReco) cached.RECOMMENDATIONS = mdToHTML(anyStr(norm, 'recommendations'));
+      cacheParams(tableName, cached);
+      if (cached.ANALYSIS && cached.RECOMMENDATIONS) {
         var ckeys = Object.keys(cached);
         for (var ci = 0; ci < ckeys.length; ci++) params[ckeys[ci]] = cached[ckeys[ci]];
-        params.ANALYSIS = mdToHTML(anyStr(norm, 'analysis'));
-        params.RECOMMENDATIONS = mdToHTML(anyStr(norm, 'recommendations'));
         params.GENERATED_DATE = formatDateLocal(now);
         return saveToFile(mc, cached._templateID || templateID, params, filename, cb);
       }
-      // One missing → tell LLM what's missing, don't re-query
-      var missing = [];
-      if (!hasAnalysis) missing.push('analysis');
-      if (!hasReco) missing.push('recommendations');
-      return cb(null, '다음 파라미터가 누락되었습니다: ' + missing.join(', ') + '. analysis와 recommendations를 모두 포함하여 다시 호출하세요.');
+      // Only one collected so far → ask ONLY for the missing piece (the other is saved).
+      var stillMissing = cached.ANALYSIS ? 'recommendations' : 'analysis';
+      var alreadyHave = cached.ANALYSIS ? 'analysis' : 'recommendations';
+      return cb(null, alreadyHave + '는 저장됐습니다. 이제 ' + stillMissing + '만 보내면 리포트가 완성됩니다 (다른 파라미터 없이 ' + stillMissing + '만 포함해 다시 호출).');
     }
   }
 
   var timeStart = dateStrToNano(anyStr(norm, 'time_start') || anyStr(norm, 'timestart'));
   var timeEnd = dateStrToNano(anyStr(norm, 'time_end') || anyStr(norm, 'timeend'));
   var timeWhere = '', timeWhereBase = '';
-  if (timeStart && timeEnd) {
-    var tsNano = msToNano(timeStart), teNano = msToNano(timeEnd);
-    timeWhere = ' AND TIME BETWEEN ' + tsNano + ' AND ' + teNano;
-    timeWhereBase = ' WHERE TIME BETWEEN ' + tsNano + ' AND ' + teNano;
+  // 실제 컬럼명(PK/BASETIME/SUMMARIZED). detectColumns가 채우기 전 기본값. NAME/TIME/VALUE 하드코딩 대체.
+  var cols = { n: 'NAME', t: 'TIME', v: 'VALUE' };
+  function buildTimeWhere() {
+    if (timeStart && timeEnd) {
+      var tsNano = msToNano(timeStart), teNano = msToNano(timeEnd);
+      timeWhere = ' AND ' + cols.t + ' BETWEEN ' + tsNano + ' AND ' + teNano;
+      timeWhereBase = ' WHERE ' + cols.t + ' BETWEEN ' + tsNano + ' AND ' + teNano;
+    }
   }
 
   var stock = anyStr(norm, 'tag_name') || anyStr(norm, 'stock') || anyStr(norm, 'tag') || '';
   if (stock) stock = extractStockPrefix(stock);
+  var explicitRollup = !!anyStr(norm, 'rollup_unit');
   var rollupUnit = anyStr(norm, 'rollup_unit') || pickRollupUnit(timeStart, timeEnd);
   var statsCSV = '';
 
@@ -149,7 +290,7 @@ function saveHtmlReport(mc, args, cb) {
       if (cnt > 0) return doStep1();
       // No data in requested range → shift to MAX(TIME)
       console.println('[report] No data in requested time range, shifting to data MAX(TIME)...');
-      mc.querySQL('SELECT MAX(TIME) FROM ' + tableName, '', '', '', function (merr, maxJSON) {
+      mc.querySQL('SELECT MAX(' + cols.t + ') FROM ' + tableName, '', '', '', function (merr, maxJSON) {
         if (!merr && maxJSON) {
           try {
             var p2 = JSON.parse(maxJSON);
@@ -165,8 +306,8 @@ function saveHtmlReport(mc, args, cb) {
                 timeEnd = String(newEndMs);
                 var newTsNano = String(newStartMs) + '000000';
                 var newTeNano = String(newEndMs) + '000000';
-                timeWhere = ' AND TIME BETWEEN ' + newTsNano + ' AND ' + newTeNano;
-                timeWhereBase = ' WHERE TIME BETWEEN ' + newTsNano + ' AND ' + newTeNano;
+                timeWhere = ' AND ' + cols.t + ' BETWEEN ' + newTsNano + ' AND ' + newTeNano;
+                timeWhereBase = ' WHERE ' + cols.t + ' BETWEEN ' + newTsNano + ' AND ' + newTeNano;
                 console.println('[report] Adjusted time range to data: ' + newTsNano + ' ~ ' + newTeNano);
               }
             }
@@ -174,6 +315,26 @@ function saveHtmlReport(mc, args, cb) {
         }
         doStep1();
       });
+    });
+  }
+
+  // No explicit rollup_unit & no user time range → pick rollup from the ACTUAL data span,
+  // so short high-frequency data isn't stuck on the coarse 'min' default (only affects the
+  // ROLLUP trend queries; raw waveform/FFT use LIMIT and are untouched).
+  function refineRollupFromData(next) {
+    if (explicitRollup || (timeStart && timeEnd)) return next();
+    mc.querySQL('SELECT MIN(' + cols.t + '), MAX(' + cols.t + ') FROM ' + tableName, 'ms', '', '', function (e, json) {
+      try {
+        var p = JSON.parse(json);
+        if (p && p.data && p.data.rows && p.data.rows.length > 0) {
+          var mn = parseInt(p.data.rows[0][0], 10), mx = parseInt(p.data.rows[0][1], 10);
+          if (mn && mx && mx > mn) {
+            rollupUnit = pickRollupUnit(String(mn), String(mx));
+            console.println('[report] rollup auto from data span (' + ((mx - mn) / 3600000).toFixed(2) + 'h) → ' + rollupUnit);
+          }
+        }
+      } catch (_e) {}
+      next();
     });
   }
 
@@ -199,28 +360,52 @@ function saveHtmlReport(mc, args, cb) {
         if (filtered.length === 0) {
           filtered = tags.filter(function (t) { return t.toUpperCase().indexOf(upper) >= 0; });
         }
-        if (filtered.length > 0) { tags = filtered; stockWhere = " AND NAME IN ('" + filtered.join("','") + "')"; }
+        if (filtered.length > 0) { tags = filtered; stockWhere = " AND " + cols.n + " IN ('" + filtered.join("','") + "')"; }
       }
 
       params.TAG_LIST_JSON = JSON.stringify(tags);
 
-      if (templateID === 'R-0') {
+      if (kind === 'R-0') {
         var ohlcv = findOHLCVTags(tags, stock);
         if (ohlcv.close && ohlcv.open) {
-          templateID = 'R-1';
+          templateID = 'R-1-finance';
         } else if (detectIMUTags(tags)) {
-          templateID = 'R-3';
+          templateID = 'R-3-driving';
         } else if (detectVibrationTags(tags)) {
-          templateID = 'R-2';
+          templateID = 'R-2-vibration';
         }
-        if (templateID !== 'R-0') console.println('  [report] Auto-detected template: ' + templateID);
+        kind = templateKind(templateID);
+        if (kind !== 'R-0') console.println('  [report] Auto-detected template: ' + templateID);
+      }
+
+      // Custom-over-builtin (same topic): if EXACTLY ONE custom C-*-<topic> exists for this
+      // builtin's topic, route to it deterministically. If several claim the same exact topic it's
+      // ambiguous → keep the model's choice (user disambiguates by name; variants should use
+      // distinct topic slugs e.g. vibration-press / vibration-motor so they don't collide).
+      if (/^R-/.test(templateID)) {
+        var bTopic = reportTopicOf(templateID);
+        if (bTopic) {
+          var allTmpl = [];
+          try { allTmpl = listReportTemplates(); } catch (e) {}
+          var sameTopic = [];
+          for (var ti = 0; ti < allTmpl.length; ti++) {
+            if (allTmpl[ti].custom && reportTopicOf(allTmpl[ti].id) === bTopic) sameTopic.push(allTmpl[ti].id);
+          }
+          if (sameTopic.length === 1) {
+            console.println('[report] custom override: ' + templateID + ' → ' + sameTopic[0] + ' (topic=' + bTopic + ')');
+            templateID = sameTopic[0];
+            kind = templateKind(templateID);
+          } else if (sameTopic.length > 1) {
+            console.println('[report] ambiguous: multiple customs for topic "' + bTopic + '" [' + sameTopic.join(', ') + '] — keeping model-chosen ' + templateID);
+          }
+        }
       }
 
       // Step 2: Get stats
-      var statsSQL = 'SELECT NAME, COUNT(*) as cnt, ROUND(AVG(VALUE),2) as avg, ROUND(MIN(VALUE),2) as min, ROUND(MAX(VALUE),2) as max FROM ' + tableName;
+      var statsSQL = 'SELECT ' + cols.n + ', COUNT(*) as cnt, ROUND(AVG(' + cols.v + '),2) as avg, ROUND(MIN(' + cols.v + '),2) as min, ROUND(MAX(' + cols.v + '),2) as max FROM ' + tableName;
       var whereClause = timeWhereBase || '';
       if (stockWhere) whereClause = whereClause ? whereClause + stockWhere : ' WHERE' + stockWhere.substring(4);
-      statsSQL += whereClause + ' GROUP BY NAME';
+      statsSQL += whereClause + ' GROUP BY ' + cols.n;
 
       console.println('[report] Stats SQL: ' + statsSQL.substring(0, 200));
       mc.querySQL(statsSQL, '', '', '', function (err2, statsResult) {
@@ -238,7 +423,7 @@ function saveHtmlReport(mc, args, cb) {
         }
 
         // Step 3: Get time range (same as Go: no specific tag, Default timeformat)
-        var timeRangeSQL = 'SELECT MIN(TIME), MAX(TIME) FROM ' + tableName + (timeWhereBase || '');
+        var timeRangeSQL = 'SELECT MIN(' + cols.t + '), MAX(' + cols.t + ') FROM ' + tableName + (timeWhereBase || '');
         console.println('[report] TimeRange SQL: ' + timeRangeSQL);
         mc.querySQL(timeRangeSQL, 'Default', 'Asia/Seoul', '', function (err3, timeCSV) {
           console.println('[report] TimeRange result: err=' + (err3 ? err3.message : 'null') + ' csv=' + (timeCSV ? timeCSV.substring(0, 200) : 'empty'));
@@ -250,6 +435,11 @@ function saveHtmlReport(mc, args, cb) {
 
           var rollupLabels = { sec: '초별', min: '분별', hour: '시간별', day: '일별', week: '주별', month: '월별' };
           params.ROLLUP_LABEL = rollupLabels[rollupUnit] || rollupUnit;
+
+          // Resolve this template's declared compute + guide (frontmatter) — builtin & custom alike.
+          var tmplMeta = getTemplateMeta(templateID) || {};
+          var spec = COMPUTE[tmplMeta.compute] || null;
+          var templateGuide = tmplMeta.guide || '';
 
           // Step 4: Template-specific data then finalize
           function afterTemplateData() {
@@ -279,173 +469,14 @@ function saveHtmlReport(mc, args, cb) {
               if (params.DATA_COUNT) summary += '총 데이터 건수: ' + params.DATA_COUNT + '\n';
               if (statsCSV) summary += '태그별 통계:\n' + statsCSV + '\n';
 
-              // 템플릿별 계산 결과 요약 (LLM이 이 수치를 보고 분석 작성)
-              var computedSummary = '';
-              if (templateID === 'R-3' && params.DRIVING_DATA_JSON) {
-                try {
-                  var dd = JSON.parse(params.DRIVING_DATA_JSON);
-                  computedSummary += '\n=== 차트/점수 계산 결과 (리포트에 이미 반영됨, 이 수치 기반으로 분석하세요) ===\n';
-                  computedSummary += '안전 점수: ' + (dd.safety_score || 0).toFixed(1) + ' / 100\n';
-                  var ev = dd.events || {};
-                  var sm = dd.summary || {};
-                  computedSummary += '총 이벤트: ' + (sm.total_events || 0) + '건 (전체 샘플 ' + (sm.total_samples || 0) + '건 중)\n';
-                  computedSummary += '  - 급가속/급제동(ACCEL): ' + ((ev.accel || []).length) + '건 (' + ((sm.accel_pct || 0).toFixed(1)) + '%)\n';
-                  computedSummary += '  - 급정거(BRAKE): ' + ((ev.brake || []).length) + '건 (' + ((sm.brake_pct || 0).toFixed(1)) + '%)\n';
-                  computedSummary += '  - 급회전(TURN): ' + ((ev.turn || []).length) + '건 (' + ((sm.turn_pct || 0).toFixed(1)) + '%)\n';
-                  var th = dd.thresholds || {};
-                  if (th.accel) computedSummary += '이벤트 감지 임계값: AccX ±' + (th.accel || 0).toFixed(3) + 'g, AccY ±' + (th.brake || 0).toFixed(3) + 'g, GyroZ ±' + (th.turn || 0).toFixed(3) + 'rad/s\n';
-                  var pt = dd.per_tag || {};
-                  var ptKeys = Object.keys(pt);
-                  if (ptKeys.length > 0) {
-                    computedSummary += '태그별 롤업 추이 데이터 포인트: ';
-                    ptKeys.forEach(function(k) { computedSummary += k + '=' + ((pt[k].rollup || {}).times || []).length + '건 '; });
-                    computedSummary += '\n';
-                  }
-                } catch (e) {}
-              } else if (templateID === 'R-2' && params.PER_TAG_DATA_JSON) {
-                try {
-                  var vd = JSON.parse(params.PER_TAG_DATA_JSON);
-                  computedSummary += '\n=== 차트/분석 계산 결과 (리포트에 이미 반영됨, 이 수치 기반으로 분석하세요) ===\n';
-                  var vKeys = Object.keys(vd);
-                  vKeys.forEach(function(k) {
-                    var tag = vd[k];
-                    computedSummary += '\n[' + k + ']\n';
-                    if (tag.stats) {
-                      computedSummary += '  전체 통계: RMS=' + (tag.stats.rms || 0).toFixed(4) + ', P2P=' + (tag.stats.p2p || 0).toFixed(4) + ', Crest=' + (tag.stats.crest || 0).toFixed(2) + ', MIN=' + (tag.stats.min || 0).toFixed(4) + ', MAX=' + (tag.stats.max || 0).toFixed(4) + '\n';
-                    }
-                    // Rollup trend analysis: detect spikes/anomalies
-                    var rollup = tag.rollup || [];
-                    if (rollup.length > 0) {
-                      var rmsVals = rollup.map(function(r) { return r.rms || 0; });
-                      var rmsMin = Math.min.apply(null, rmsVals);
-                      var rmsMax = Math.max.apply(null, rmsVals);
-                      var rmsAvg = rmsVals.reduce(function(a, b) { return a + b; }, 0) / rmsVals.length;
-                      computedSummary += '  RMS 추이(' + rollup.length + '포인트): 최소=' + rmsMin.toFixed(4) + ', 최대=' + rmsMax.toFixed(4) + ', 평균=' + rmsAvg.toFixed(4) + '\n';
-                      // Detect spike: if max > avg * 3
-                      if (rmsMax > rmsAvg * 3 && rmsAvg > 0) {
-                        // Find spike location
-                        var spikeIdx = rmsVals.indexOf(rmsMax);
-                        var spikeTime = rollup[spikeIdx] ? rollup[spikeIdx].t : '?';
-                        var spikeRatio = (rmsMax / rmsAvg).toFixed(1);
-                        computedSummary += '  ★ RMS 급등 감지! ' + spikeTime + ' 시점에서 ' + rmsMax.toFixed(4) + ' (평균 대비 ' + spikeRatio + '배). 이 급등 원인을 반드시 분석하세요.\n';
-                      }
-                      // Detect trend: compare first 20% vs last 20%
-                      var seg = Math.max(1, Math.floor(rmsVals.length * 0.2));
-                      var earlyAvg = rmsVals.slice(0, seg).reduce(function(a, b) { return a + b; }, 0) / seg;
-                      var lateAvg = rmsVals.slice(-seg).reduce(function(a, b) { return a + b; }, 0) / seg;
-                      if (earlyAvg > 0) {
-                        var trendRatio = lateAvg / earlyAvg;
-                        if (trendRatio > 1.5) {
-                          computedSummary += '  ★ RMS 상승 추세! 초반 평균 ' + earlyAvg.toFixed(4) + ' → 후반 평균 ' + lateAvg.toFixed(4) + ' (' + trendRatio.toFixed(1) + '배 증가). 진동 악화 가능성을 분석하세요.\n';
-                        } else if (trendRatio < 0.5) {
-                          computedSummary += '  RMS 하락 추세: 초반 ' + earlyAvg.toFixed(4) + ' → 후반 ' + lateAvg.toFixed(4) + ' (감소)\n';
-                        } else {
-                          computedSummary += '  RMS 추세: 안정적 (초반 ' + earlyAvg.toFixed(4) + ' → 후반 ' + lateAvg.toFixed(4) + ')\n';
-                        }
-                      }
-                      // P2P spike
-                      var p2pVals = rollup.map(function(r) { return r.p2p || 0; });
-                      var p2pMax = Math.max.apply(null, p2pVals);
-                      var p2pAvg = p2pVals.reduce(function(a, b) { return a + b; }, 0) / p2pVals.length;
-                      if (p2pMax > p2pAvg * 3 && p2pAvg > 0) {
-                        var p2pSpikeIdx = p2pVals.indexOf(p2pMax);
-                        var p2pSpikeTime = rollup[p2pSpikeIdx] ? rollup[p2pSpikeIdx].t : '?';
-                        computedSummary += '  ★ P2P 급등 감지! ' + p2pSpikeTime + ' 시점에서 ' + p2pMax.toFixed(4) + ' (평균 대비 ' + (p2pMax / p2pAvg).toFixed(1) + '배)\n';
-                      }
-                    }
-                    if (tag.fft) computedSummary += '  FFT: ' + (tag.fft.freqs || []).length + '개 주파수 대역, 샘플레이트=' + (tag.fft.sampleRate || 0).toFixed(1) + 'Hz\n';
-                  });
-                } catch (e) {}
-              } else if (templateID === 'R-1') {
-                computedSummary += '\n=== 차트 데이터 기반 분석 요약 (리포트에 이미 반영됨, 이 수치 기반으로 분석하세요) ===\n';
-                computedSummary += '종목명: ' + (params.STOCK_NAME || tableName) + '\n';
-                if (params._FINANCE_SUMMARY) {
-                  computedSummary += params._FINANCE_SUMMARY + '\n';
-                }
-              }
-              summary += computedSummary;
+              // 계산 결과 요약은 compute 카탈로그가 생성 (LLM이 이 수치로 분석 작성)
+              if (spec && spec.summarize) summary += spec.summarize(params);
 
-              // 템플릿별 분석 방향 지침
-              var domainGuide = '';
-              if (templateID === 'R-3') {
-                var safetyScore = 0;
-                try { safetyScore = JSON.parse(params.DRIVING_DATA_JSON).safety_score || 0; } catch(e) {}
-                var toneGuide = '';
-                if (safetyScore >= 90) {
-                  toneGuide = '  ★★ 안전 점수 ' + safetyScore.toFixed(1) + '점 = 매우 우수. 전체 톤을 긍정적/칭찬 위주로 작성하세요.\n' +
-                    '  - "위험", "긴급", "즉시 교육" 등 과도한 경고 표현 금지\n' +
-                    '  - 잘하고 있는 점을 먼저 언급하고, 소폭 개선 가능한 부분만 부드럽게 제안\n' +
-                    '  - recommendations도 "유지 방법", "더 나은 습관", "참고 사항" 수준으로 작성\n';
-                } else if (safetyScore >= 70) {
-                  toneGuide = '  ★★ 안전 점수 ' + safetyScore.toFixed(1) + '�� = 양호. 균형 잡힌 톤으로 작성하세요.\n' +
-                    '  - 잘하는 부분 인정 + 개선 필요 부분 구체적 제안\n';
-                } else if (safetyScore >= 40) {
-                  toneGuide = '  ★★ 안전 점수 ' + safetyScore.toFixed(1) + '점 = 주의 필요. 개선 방향 중심으로 작성하세요.\n';
-                } else {
-                  toneGuide = '  ★★ 안전 점수 ' + safetyScore.toFixed(1) + '점 = 위험. 심각한 문제점과 즉시 개선 필요사항 중심으로 작성하세요.\n';
-                }
-                domainGuide = '\n★ 분석 관점: 위 안전 점수와 이벤트 수치를 반드시 참조하여 운전 습관/행동 패턴 중심으로 해석하세요.\n' +
-                  toneGuide +
-                  '  - AccX/Y/Z → 가속/제동/코너링 습관 (급가속, 급제동, 급회전 빈도와 강도)\n' +
-                  '  - GyroX/Y/Z → 차량 안정성 (롤링, 피칭, 요잉 패턴)\n' +
-                  '  - Class → 운전 등급 변화 구간과 원인 추정\n' +
-                  '  - recommendations는 실제 운전자가 바로 실천할 수 있는 운전 개선 팁으로 작성\n';
-              } else if (templateID === 'R-2') {
-                // 진동 심각도 판단: 최대 RMS 기준
-                var maxRMS = 0;
-                try {
-                  var vdTone = JSON.parse(params.PER_TAG_DATA_JSON);
-                  Object.keys(vdTone).forEach(function(k) {
-                    var rms = (vdTone[k].stats || {}).rms || 0;
-                    if (rms > maxRMS) maxRMS = rms;
-                  });
-                } catch(e) {}
-                var vibTone = '';
-                if (maxRMS < 1.8) {
-                  vibTone = '  ★★ 최대 RMS ' + maxRMS.toFixed(3) + ' = ISO 10816 기준 양호(Zone A/B). 설비 상태 긍정 평가 위주로 작성하세요.\n' +
-                    '  - "즉시 교체", "긴급 정지" 등 과도한 경고 금지. 예방적 관리/모니터링 유지 방향으로 작성\n';
-                } else if (maxRMS < 4.5) {
-                  vibTone = '  ★★ 최대 RMS ' + maxRMS.toFixed(3) + ' = ISO 10816 기준 주의(Zone C). 균형 잡힌 톤으로 작성하세요.\n' +
-                    '  - 현재 운전 가능하나 점검 계획 수립 필요\n';
-                } else {
-                  vibTone = '  ★★ 최대 RMS ' + maxRMS.toFixed(3) + ' = ISO 10816 기준 위험(Zone D). 즉시 조치 필요사항 중심으로 작성하세요.\n';
-                }
-                domainGuide = '\n★ 분석 관점: 위 RMS/Peak/Crest Factor 수치를 반드시 참조하여 설비 상태 해석하세요.\n' +
-                  vibTone +
-                  '  - Crest Factor로 충격성 진동 여부 판단 (3 이하=정상, 3~6=주의, 6 이상=충격성)\n' +
-                  '  - FFT 주파수 대역에서 특이 피크 → 베어링/기어/불균형 등 고장 모드 추정\n' +
-                  '  - 롤업 추이에서 시간에 따른 악화/안정 판단\n' +
-                  '  - recommendations는 설비 관리자가 취해야 할 점검/교체/모니터링 조치로 작성\n';
-              } else if (templateID === 'R-1') {
-                // 금융 변동률 기반 톤
-                var changePct = 0;
-                try {
-                  var fdTone = JSON.parse(params.TREND_DATA_JSON);
-                  if (fdTone.length >= 2) {
-                    var fFirst = fdTone[0], fLast = fdTone[fdTone.length - 1];
-                    if (fFirst.close && fLast.close) changePct = (fLast.close - fFirst.close) / fFirst.close * 100;
-                  }
-                } catch(e) {}
-                var finTone = '';
-                if (changePct > 10) {
-                  finTone = '  ★★ 기간 수익률 +' + changePct.toFixed(1) + '% = 강세. 상승 요인 분석과 지속 가능성 평가 중심으로 작성하세요.\n' +
-                    '  - 과열 여부/조정 가능성도 언급\n';
-                } else if (changePct > 0) {
-                  finTone = '  ★★ 기간 수익률 +' + changePct.toFixed(1) + '% = 완만한 상승. 균형 잡힌 톤으로 작성하세요.\n';
-                } else if (changePct > -10) {
-                  finTone = '  ★★ 기간 수익률 ' + changePct.toFixed(1) + '% = 완만한 하락. 하락 원인과 반등 가능성 중심으로 작성하세요.\n';
-                } else {
-                  finTone = '  ★★ 기간 수익률 ' + changePct.toFixed(1) + '% = 급락. 리스크 요인과 방어 전략 중심으로 작성하세요.\n';
-                }
-                domainGuide = '\n★ 분석 관점: 위 기간 변동률과 거래량을 반드시 참조하여 시장 동향 해석하세요.\n' +
-                  finTone +
-                  '  - 가격 추세 (상승/하락/횡보) 판단\n' +
-                  '  - 거래량 변화와 가격 움직임의 상관관계\n' +
-                  '  - recommendations는 투자 판단에 참고할 수 있는 시장 전망과 전략으로 작성\n';
-              }
+              // 분석 방향/톤 지침: 템플릿이 frontmatter guide로 선언 (값-의존 톤은 위 수치 보고 LLM이 스스로 판단)
+              var domainGuide = templateGuide ? ('\n★ 분석 지침 (아래 방향으로, 위 수치 수준에 맞는 톤을 스스로 판단해 작성):\n' + templateGuide + '\n') : '';
               var msg = '데이터를 조회했습니다. 아래 통계와 계산 결과를 기반으로 analysis와 recommendations를 작성하여 다시 호출하세요.\n' +
                 '★ analysis: 최소 5개 ## 섹션, 각 2~3문단. 마크다운 필수.\n' +
-                '★ recommendations: 7개 이상 번호 항목. 즉시/단기/중장기로 우선순위 구��. �� 항목에 근거 수치+실행방안+기대효과.\n' +
+                '★ recommendations: 7개 이상 번호 항목. 즉시/단기/중장기로 우선순위 구분. 각 항목에 근거 수치+실행방안+기대효과.\n' +
                 domainGuide + '\n' + summary;
               return cb(null, msg);
             }
@@ -453,33 +484,8 @@ function saveHtmlReport(mc, args, cb) {
             saveToFile(mc, templateID, params, filename, cb);
           }
 
-          if (templateID === 'R-3') {
-            console.println('  [report] Fetching R-3 driving data for ' + tags.length + ' tags...');
-            fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, function (dErr, dData) {
-              if (dData) params.DRIVING_DATA_JSON = JSON.stringify(dData);
-              else params.DRIVING_DATA_JSON = '{"per_tag":{},"events":{"accel":[],"brake":[],"turn":[]},"safety_score":0,"summary":{},"thresholds":{}}';
-              afterTemplateData();
-            });
-          } else if (templateID === 'R-2') {
-            console.println('  [report] Fetching R-2 vibration data for ' + tags.length + ' tags...');
-            fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, function (vErr, vData) {
-              if (vData) params.PER_TAG_DATA_JSON = JSON.stringify(vData);
-              else params.PER_TAG_DATA_JSON = '{}';
-              afterTemplateData();
-            });
-          } else if (templateID === 'R-1') {
-            console.println('  [report] Fetching R-1 finance data...');
-            params.STOCK_NAME = stock || tableName;
-            fetchFinanceData(mc, tableName, tags, stock, rollupUnit, timeWhere, function (fErr, fData) {
-              if (fData) {
-                params.TREND_DATA_JSON = JSON.stringify(fData.trend || []);
-                if (fData.stockName) params.STOCK_NAME = fData.stockName;
-                if (fData.financeSummary) params._FINANCE_SUMMARY = fData.financeSummary;
-              } else {
-                params.TREND_DATA_JSON = '[]';
-              }
-              afterTemplateData();
-            });
+          if (spec && spec.run) {
+            spec.run({ mc: mc, tableName: tableName, tags: tags, rollupUnit: rollupUnit, timeWhere: timeWhere, cols: cols, stock: stock, params: params }, afterTemplateData);
           } else {
             afterTemplateData();
           }
@@ -489,7 +495,7 @@ function saveHtmlReport(mc, args, cb) {
 
     if (tags.length === 0) {
       // Fallback tag query
-      mc.querySQL('SELECT NAME FROM ' + tableName + (timeWhereBase || '') + ' GROUP BY NAME', '', '', '', function (err1b, tagCSV2) {
+      mc.querySQL('SELECT ' + cols.n + ' FROM ' + tableName + (timeWhereBase || '') + ' GROUP BY ' + cols.n, '', '', '', function (err1b, tagCSV2) {
         tags = parseTagList(err1b ? '' : tagCSV2);
         afterTags(tags);
       });
@@ -499,7 +505,11 @@ function saveHtmlReport(mc, args, cb) {
   });
   } // end doStep1
 
-  checkTimeRangeAndProceed();
+  detectColumns(mc, tableName, function (c) {
+    cols = c;
+    buildTimeWhere();
+    refineRollupFromData(checkTimeRangeAndProceed);
+  });
 }
 
 // --- Save to file ---
@@ -533,7 +543,7 @@ function saveToFile(mc, templateID, params, filename, cb) {
 }
 
 // --- R-3 Driving Data Fetcher (aligned with Go report.go) ---
-function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cb) {
+function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cols, cb) {
   var perTag = {};
   var tagIdx = 0;
 
@@ -542,9 +552,9 @@ function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cb) {
     if (tagIdx >= tags.length) return fetchThresholds();
     var tag = tags[tagIdx++];
 
-    var rollupSQL = "SELECT ROLLUP('" + rollupUnit + "', 1, TIME) as t, AVG(VALUE) as v FROM " + tableName +
-      " WHERE NAME='" + tag + "'" + (timeWhere || '') +
-      " GROUP BY ROLLUP('" + rollupUnit + "', 1, TIME) ORDER BY t";
+    var rollupSQL = "SELECT ROLLUP('" + rollupUnit + "', 1, " + cols.t + ") as t, AVG(" + cols.v + ") as v FROM " + tableName +
+      " WHERE " + cols.n + "='" + tag + "'" + (timeWhere || '') +
+      " GROUP BY ROLLUP('" + rollupUnit + "', 1, " + cols.t + ") ORDER BY t";
     mc.querySQL(rollupSQL, 'Default', '', '', function (err, rollupJSON) {
       var rollup = [];
       if (!err && rollupJSON) {
@@ -560,7 +570,7 @@ function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cb) {
       }
 
       // Raw waveform (4096 points, same as Go)
-      var rawSQL = "SELECT TIME, VALUE FROM " + tableName + " WHERE NAME='" + tag + "'" + (timeWhere || '') + " ORDER BY TIME LIMIT 4096";
+      var rawSQL = "SELECT " + cols.t + ", " + cols.v + " FROM " + tableName + " WHERE " + cols.n + "='" + tag + "'" + (timeWhere || '') + " ORDER BY " + cols.t + " LIMIT 4096";
       mc.querySQL(rawSQL, 'ms', '', '', function (err2, rawJSON) {
         var raw = parseRawCSV(rawJSON);
         perTag[tag] = { raw: raw, rollup: rollup };
@@ -584,7 +594,7 @@ function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cb) {
     var actualTag = findTagCI(tags, axisInfo.axis);
     if (!actualTag) return fetchThresholds();
 
-    var statSQL = "SELECT ROUND(AVG(VALUE),6), ROUND(STDDEV(VALUE),6) FROM " + tableName + " WHERE NAME='" + actualTag + "'" + (timeWhere || '');
+    var statSQL = "SELECT ROUND(AVG(" + cols.v + "),6), ROUND(STDDEV(" + cols.v + "),6) FROM " + tableName + " WHERE " + cols.n + "='" + actualTag + "'" + (timeWhere || '');
     mc.querySQL(statSQL, '', '', '', function (err, statJSON) {
       if (!err && statJSON) {
         try {
@@ -612,7 +622,7 @@ function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cb) {
     if (!actualTag || !thresholds[axisInfo.axis]) return fetchEvents();
 
     var th = thresholds[axisInfo.axis];
-    var eventSQL = "SELECT TIME, VALUE FROM " + tableName + " WHERE NAME='" + actualTag + "'" + (timeWhere || '') + " ORDER BY TIME LIMIT 50000";
+    var eventSQL = "SELECT " + cols.t + ", " + cols.v + " FROM " + tableName + " WHERE " + cols.n + "='" + actualTag + "'" + (timeWhere || '') + " ORDER BY " + cols.t + " LIMIT 50000";
     mc.querySQL(eventSQL, 'ms', '', '', function (err, eventJSON) {
       if (!err && eventJSON) {
         var parsed = parseRawCSV(eventJSON);
@@ -640,7 +650,7 @@ function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cb) {
     var actualTag = findTagCI(tags, countAxes[cntAxIdx++]);
     if (!actualTag) return countSamples();
 
-    var cntSQL = "SELECT COUNT(*) FROM " + tableName + " WHERE NAME='" + actualTag + "'" + (timeWhere || '');
+    var cntSQL = "SELECT COUNT(*) FROM " + tableName + " WHERE " + cols.n + "='" + actualTag + "'" + (timeWhere || '');
     mc.querySQL(cntSQL, '', '', '', function (err, cntJSON) {
       if (!err && cntJSON) {
         try {
@@ -678,7 +688,7 @@ function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cb) {
       safety_score: safetyScore,
       thresholds: thresholdInfo,
       summary: {
-        total_events: totalEvents,
+        total_events: totalEvents, 
         accel_count: eventsData.accel.length,
         brake_count: eventsData.brake.length,
         turn_count: eventsData.turn.length,
@@ -719,7 +729,7 @@ function findTagCI(tags, name) {
 }
 
 // --- R-2 Vibration Data Fetcher ---
-function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cb) {
+function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cols, cb) {
   var perTag = {};
   var tagIdx = 0;
 
@@ -727,16 +737,16 @@ function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cb) {
     if (tagIdx >= tags.length) return enrichStats();
     var tag = tags[tagIdx++];
 
-    var rawSQL = "SELECT TIME, VALUE FROM " + tableName + " WHERE NAME='" + tag + "'" + (timeWhere || '') + " ORDER BY TIME LIMIT 4096";
+    var rawSQL = "SELECT " + cols.t + ", " + cols.v + " FROM " + tableName + " WHERE " + cols.n + "='" + tag + "'" + (timeWhere || '') + " ORDER BY " + cols.t + " LIMIT 4096";
     mc.querySQL(rawSQL, 'ms', '', '', function (err, rawJSON) {
       var raw = parseRawCSV(rawJSON);
 
       // ROLLUP with AVG, MIN, MAX, SUMSQ, COUNT (same column order as Go)
-      var rollupSQL = "SELECT ROLLUP('" + rollupUnit + "', 1, TIME) as t, ROUND(AVG(VALUE),6) as avg_val, " +
-        "ROUND(MIN(VALUE),6) as min_val, ROUND(MAX(VALUE),6) as max_val, " +
-        "SUMSQ(VALUE) as sumsq, COUNT(VALUE) as cnt FROM " + tableName +
-        " WHERE NAME='" + tag + "'" + (timeWhere || '') +
-        " GROUP BY ROLLUP('" + rollupUnit + "', 1, TIME) ORDER BY ROLLUP('" + rollupUnit + "', 1, TIME)";
+      var rollupSQL = "SELECT ROLLUP('" + rollupUnit + "', 1, " + cols.t + ") as t, ROUND(AVG(" + cols.v + "),6) as avg_val, " +
+        "ROUND(MIN(" + cols.v + "),6) as min_val, ROUND(MAX(" + cols.v + "),6) as max_val, " +
+        "SUMSQ(" + cols.v + ") as sumsq, COUNT(" + cols.v + ") as cnt FROM " + tableName +
+        " WHERE " + cols.n + "='" + tag + "'" + (timeWhere || '') +
+        " GROUP BY ROLLUP('" + rollupUnit + "', 1, " + cols.t + ") ORDER BY ROLLUP('" + rollupUnit + "', 1, " + cols.t + ")";
       mc.querySQL(rollupSQL, 'Default', '', '', function (err2, rollupJSON) {
         var rollup = [];
         if (!err2 && rollupJSON) {
@@ -757,7 +767,7 @@ function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cb) {
         }
 
         // FFT: separate query with 131072 points (2^17), no timeformat → nanoseconds for sampleRate calc
-        var fftSQL = "SELECT TIME, VALUE FROM " + tableName + " WHERE NAME='" + tag + "'" + (timeWhere || '') + " ORDER BY TIME LIMIT 131072";
+        var fftSQL = "SELECT " + cols.t + ", " + cols.v + " FROM " + tableName + " WHERE " + cols.n + "='" + tag + "'" + (timeWhere || '') + " ORDER BY " + cols.t + " LIMIT 131072";
         mc.querySQL(fftSQL, '', '', '', function (err3, fftJSON) {
           var fftRaw = parseRawCSV(fftJSON);
           var fft = computeFFT(fftRaw.times_ms, fftRaw.values, 4096);
@@ -975,7 +985,7 @@ function computeFFT(timestamps, vals, maxBins) {
 }
 
 // --- R-1 Finance Data Fetcher ---
-function fetchFinanceData(mc, tableName, tags, stock, rollupUnit, timeWhere, cb) {
+function fetchFinanceData(mc, tableName, tags, stock, rollupUnit, timeWhere, cols, cb) {
   var ohlcv = findOHLCVTags(tags, stock);
   var stockName = stock || '';
   if (!stockName && ohlcv.close) {
@@ -1014,9 +1024,9 @@ function fetchFinanceData(mc, tableName, tags, stock, rollupUnit, timeWhere, cb)
     var tag = fieldMap[field];
     var decimals = field === 'volume' ? 0 : 2;
 
-    var sql = "SELECT ROLLUP('" + rollupUnit + "', 1, TIME) as t, ROUND(AVG(VALUE)," + decimals + ") as v FROM " + tableName +
-      " WHERE NAME='" + tag + "'" + (timeWhere || '') +
-      " GROUP BY ROLLUP('" + rollupUnit + "', 1, TIME) ORDER BY ROLLUP('" + rollupUnit + "', 1, TIME)";
+    var sql = "SELECT ROLLUP('" + rollupUnit + "', 1, " + cols.t + ") as t, ROUND(AVG(" + cols.v + ")," + decimals + ") as v FROM " + tableName +
+      " WHERE " + cols.n + "='" + tag + "'" + (timeWhere || '') +
+      " GROUP BY ROLLUP('" + rollupUnit + "', 1, " + cols.t + ") ORDER BY ROLLUP('" + rollupUnit + "', 1, " + cols.t + ")";
     mc.querySQL(sql, 'Default', '', '', function (err, json) {
       var data = [];
       if (!err && json) {
@@ -1273,6 +1283,13 @@ function mdToHTML(text) {
     return s;
   }
 
+  // 구분행( |---|---| 형태 — 파이프/대시/콜론/공백만 + 대시 1개 이상 )
+  function isSeparatorRow(s) { return /^[\s|:\-]+$/.test(s) && s.indexOf('-') >= 0 && s.indexOf('|') >= 0; }
+  // 표 행을 셀 배열로 분해 (양끝 파이프 제거 후 | 로 split)
+  function splitRow(s) {
+    return s.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map(function (c) { return c.trim(); });
+  }
+
   var lines = text.split('\n');
   var result = [];
   var inUL = false;
@@ -1309,6 +1326,40 @@ function mdToHTML(text) {
       if (!inUL) { result.push('<ul style="margin:4px 0 8px 28px;list-style-type:disc;">'); inUL = true; }
       result.push('<li style="margin-bottom:5px;">' + inlineFmt(trimmed.replace(/^[-*]\s+/, '')) + '</li>');
       continue;
+    }
+
+    // Markdown table: 헤더행 + 구분행(|---|) + 데이터행. 행 사이 빈 줄도 허용(LLM이 \n\n로 출력하는 케이스 방어).
+    if (trimmed.indexOf('|') >= 0) {
+      var sepIdx = i + 1;
+      while (sepIdx < lines.length && lines[sepIdx].trim() === '') sepIdx++;
+      if (sepIdx < lines.length && isSeparatorRow(lines[sepIdx].trim())) {
+        closeUL();
+        var headCells = splitRow(trimmed);
+        var bodyRows = [];
+        var p = sepIdx + 1;
+        while (p < lines.length) {
+          var lt = lines[p].trim();
+          if (lt === '') { p++; continue; }   // 행 사이 빈 줄 건너뜀
+          if (lt.indexOf('|') < 0) break;      // 표 종료
+          bodyRows.push(splitRow(lt));
+          p++;
+        }
+        var thHtml = '';
+        for (var hc = 0; hc < headCells.length; hc++) {
+          thHtml += '<th style="border:1px solid #cbd5e0;padding:8px 10px;background:#f7fafc;color:#1a365d;font-weight:700;text-align:left;">' + inlineFmt(headCells[hc]) + '</th>';
+        }
+        var bodyHtml = '';
+        for (var br = 0; br < bodyRows.length; br++) {
+          bodyHtml += '<tr>';
+          for (var dc = 0; dc < bodyRows[br].length; dc++) {
+            bodyHtml += '<td style="border:1px solid #e2e8f0;padding:8px 10px;color:#2d3748;">' + inlineFmt(bodyRows[br][dc]) + '</td>';
+          }
+          bodyHtml += '</tr>';
+        }
+        result.push('<table style="width:100%;border-collapse:collapse;margin:12px 0;font-size:13px;"><thead><tr>' + thHtml + '</tr></thead><tbody>' + bodyHtml + '</tbody></table>');
+        i = p - 1; // 소비한 표 행들만큼 메인 루프 인덱스 이동
+        continue;
+      }
     }
 
     // Normal paragraph

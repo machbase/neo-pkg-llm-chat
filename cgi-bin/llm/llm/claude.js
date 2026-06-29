@@ -127,49 +127,56 @@ function buildSystemBlocks(system) {
   return [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
 }
 
+// tool_use ↔ tool_result 매칭을 인덱스 추론이 아니라 FIFO 큐로 보장한다.
+// assistant turn마다 tool_use에 순번 id를 부여해 큐에 넣고, 뒤따르는 tool 메시지가 순서대로 pop해 같은 id를 쓴다.
+// → 가드가 메시지를 주입('cancelled' tool)·삭제(toolCall drop)해도 짝이 안 깨짐(이전 인덱스 추론 버그 = Claude 400 'unexpected tool_use_id').
 function messagesToClaude(messages) {
   var result = [];
+  var pendingIds = [];   // 직전 assistant의 tool_use id들(결과 대기), 순서대로
+  var seq = 0;
   for (var i = 0; i < messages.length; i++) {
     var msg = messages[i];
     if (msg.role === 'system') continue;
+
     if (msg.role === 'user') {
       result.push({ role: 'user', content: msg.content });
     } else if (msg.role === 'assistant') {
       if (msg.toolCalls && msg.toolCalls.length > 0) {
         var blocks = [];
         if (msg.content) blocks.push({ type: 'text', text: msg.content });
+        pendingIds = [];   // 새 assistant 턴 → 이 턴의 tool_use가 곧 이어질 tool_result와 짝
         for (var j = 0; j < msg.toolCalls.length; j++) {
           var tc = msg.toolCalls[j];
-          blocks.push({ type: 'tool_use', id: 'call_' + i + '_' + j, name: tc.function.name, input: tc.function.arguments || {} });
+          var id = 'call_' + (seq++);
+          blocks.push({ type: 'tool_use', id: id, name: tc.function.name, input: tc.function.arguments || {} });
+          pendingIds.push(id);
         }
         result.push({ role: 'assistant', content: blocks });
       } else {
         result.push({ role: 'assistant', content: msg.content });
+        pendingIds = [];   // tool_use 없는 assistant → 대기 짝 없음
       }
     } else if (msg.role === 'tool') {
-      if (result.length > 0) {
+      if (pendingIds.length > 0) {
+        var tid = pendingIds.shift();   // 직전 assistant tool_use와 순서대로 1:1
         var prev = result[result.length - 1];
-        if (prev.role === 'user' && Array.isArray(prev.content)) {
-          prev.content.push({ type: 'tool_result', tool_use_id: findToolUseId(result, i, messages), content: msg.content });
-          continue;
+        if (prev && prev.role === 'user' && Array.isArray(prev.content)) {
+          prev.content.push({ type: 'tool_result', tool_use_id: tid, content: msg.content });
+        } else {
+          result.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: tid, content: msg.content }] });
+        }
+      } else {
+        // 짝 없는 tool 결과(가드 주입 꼬임 등) → tool_result로 내보내면 Claude 400 → 텍스트로 강등(orphan 방지)
+        var prevO = result[result.length - 1];
+        if (prevO && prevO.role === 'user' && Array.isArray(prevO.content)) {
+          prevO.content.push({ type: 'text', text: String(msg.content || '') });
+        } else {
+          result.push({ role: 'user', content: String(msg.content || '') });
         }
       }
-      result.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: findToolUseId(result, i, messages), content: msg.content }] });
     }
   }
   return result;
-}
-
-function findToolUseId(result, msgIdx, messages) {
-  var toolIdx = 0;
-  for (var j = msgIdx - 1; j >= 0; j--) { if (messages[j].role === 'tool') toolIdx++; else break; }
-  for (var j = msgIdx - toolIdx - 1; j >= 0; j--) {
-    if (messages[j].role === 'assistant' && messages[j].toolCalls && messages[j].toolCalls.length > 0) {
-      if (toolIdx < messages[j].toolCalls.length) return 'call_' + j + '_' + toolIdx;
-      break;
-    }
-  }
-  return 'call_0_0';
 }
 
 function toolDefsToClaude(toolDefs) {

@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 import type { Message, PkgProvider, PkgSelectedModel } from '../../types/chat';
 import { ChatMessageList } from './ChatMessageList';
 import { PromptSuggestionsPanel } from './PromptSuggestionsPanel';
+import { FavoritesPanel } from './FavoritesPanel';
+import { useFavorites } from '../../hooks/useFavorites';
 import Icon from '../common/Icon';
 import neoLogo from '../../assets/image/neowFavicon';
 
@@ -18,6 +20,7 @@ const SUGGESTION_CHIPS: SuggestionChip[] = [
     { icon: 'sell', label: '태그 목록 보여줘', prompt: 'Example 테이블의 태그 리스트 조회해줘' },
     { icon: 'menu_book', label: 'Rollup이 뭐야?', prompt: 'Rollup 이 뭐야?' },
     { icon: 'info', label: '서버 상태 확인 해줘', prompt: '서버 상태 알려줘' },
+    { icon: 'trending_up', label: '데이터 예측 해줘', prompt: 'Example 테이블의 test 태그 데이터 예측해줘' },
     {
         icon: 'dashboard', label: '분석 대시보드 만들어줘', children: [
             { icon: 'monitoring', label: '분석 대시보드', prompt: 'Example 테이블 데이터의 분석 대시보드 만들어줘' },
@@ -92,11 +95,18 @@ export const ChatView = ({
     const [chipChildren, setChipChildren] = useState<SuggestionChip[] | null>(null);
     const [isPromptPanelOpen, setIsPromptPanelOpen] = useState(false);
     const [promptPanelPos, setPromptPanelPos] = useState<{ left: number; bottom: number; width: number; maxHeight: number } | null>(null);
+    const [isFavPanelOpen, setIsFavPanelOpen] = useState(false);
+    const [favPanelPos, setFavPanelPos] = useState<{ left: number; bottom: number; width: number; maxHeight: number } | null>(null);
     const modelBtnRef = useRef<HTMLButtonElement>(null);
     const inputWrapRef = useRef<HTMLDivElement>(null);
+    const inputContainerRef = useRef<HTMLDivElement>(null);
     const promptPanelRef = useRef<HTMLDivElement>(null);
     const promptToggleBtnRef = useRef<HTMLButtonElement>(null);
+    const favPanelRef = useRef<HTMLDivElement>(null);
+    const favToggleBtnRef = useRef<HTMLButtonElement>(null);
     const [dropdownPos, setDropdownPos] = useState<{ left: number; bottom: number } | null>(null);
+
+    const { favorites, addFavorite, removeFavorite, reorderFavorites } = useFavorites();
 
     useEffect(() => {
         wasEmptyRef.current = messages.length === 0;
@@ -125,24 +135,80 @@ export const ChatView = ({
         };
     }, [isPromptPanelOpen]);
 
+    useEffect(() => {
+        if (!isFavPanelOpen) return;
+        const handleClick = (e: MouseEvent) => {
+            const target = e.target as HTMLElement;
+            if (
+                !favPanelRef.current?.contains(target) &&
+                !favToggleBtnRef.current?.contains(target)
+            ) {
+                setIsFavPanelOpen(false);
+            }
+        };
+        const handleKey = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') setIsFavPanelOpen(false);
+        };
+        document.addEventListener('mousedown', handleClick);
+        document.addEventListener('keydown', handleKey);
+        return () => {
+            document.removeEventListener('mousedown', handleClick);
+            document.removeEventListener('keydown', handleKey);
+        };
+    }, [isFavPanelOpen]);
+
+    // Keep an open popover aligned to the input box when the window is resized.
+    useEffect(() => {
+        if (!isPromptPanelOpen && !isFavPanelOpen) return;
+        const reposition = () => {
+            if (isPromptPanelOpen) {
+                const pos = computePanelPos(promptToggleBtnRef.current);
+                if (pos) setPromptPanelPos(pos);
+            }
+            if (isFavPanelOpen) {
+                const pos = computePanelPos(favToggleBtnRef.current);
+                if (pos) setFavPanelPos(pos);
+            }
+        };
+        window.addEventListener('resize', reposition);
+        return () => window.removeEventListener('resize', reposition);
+    }, [isPromptPanelOpen, isFavPanelOpen]);
+
+    // Position a toolbar popover above its trigger button, aligned to the visible
+    // input box (not the wrapper, which also spans the gap + settings gear on the right).
+    const computePanelPos = (btn: HTMLElement | null) => {
+        const box = inputContainerRef.current ?? inputWrapRef.current;
+        if (!box || !btn) return null;
+        const boxRect = box.getBoundingClientRect();
+        const btnRect = btn.getBoundingClientRect();
+        return {
+            left: boxRect.left,
+            bottom: window.innerHeight - btnRect.top + 8,
+            width: boxRect.width,
+            maxHeight: Math.max(180, btnRect.top - 24),
+        };
+    };
+
     const handleTogglePromptPanel = () => {
         if (isPromptPanelOpen) {
             setIsPromptPanelOpen(false);
             return;
         }
-        const wrap = inputWrapRef.current;
-        const btn = promptToggleBtnRef.current;
-        if (wrap && btn) {
-            const wrapRect = wrap.getBoundingClientRect();
-            const btnRect = btn.getBoundingClientRect();
-            setPromptPanelPos({
-                left: wrapRect.left + 12,
-                bottom: window.innerHeight - btnRect.top + 8,
-                width: wrapRect.width - 24,
-                maxHeight: Math.max(180, btnRect.top - 24),
-            });
-        }
+        const pos = computePanelPos(promptToggleBtnRef.current);
+        if (pos) setPromptPanelPos(pos);
+        setIsFavPanelOpen(false);
         setIsPromptPanelOpen(true);
+    };
+
+    const handleToggleFavPanel = () => {
+        if (isFavPanelOpen) {
+            setIsFavPanelOpen(false);
+            return;
+        }
+        const pos = computePanelPos(favToggleBtnRef.current);
+        if (pos) setFavPanelPos(pos);
+        setIsPromptPanelOpen(false);
+        setIsFavPanelOpen(true);
     };
 
     useEffect(() => {
@@ -250,9 +316,8 @@ export const ChatView = ({
         if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     }, []);
 
-    const handlePickPrompt = useCallback((prompt: string) => {
+    const fillInputWithPrompt = useCallback((prompt: string) => {
         setInputValue(prompt);
-        setIsPromptPanelOpen(false);
         requestAnimationFrame(() => {
             const el = textareaRef.current;
             if (el) {
@@ -262,6 +327,16 @@ export const ChatView = ({
             }
         });
     }, [setInputValue]);
+
+    const handlePickPrompt = useCallback((prompt: string) => {
+        setIsPromptPanelOpen(false);
+        fillInputWithPrompt(prompt);
+    }, [fillInputWithPrompt]);
+
+    const handlePickFavorite = useCallback((prompt: string) => {
+        setIsFavPanelOpen(false);
+        fillInputWithPrompt(prompt);
+    }, [fillInputWithPrompt]);
 
     const handleClearMessages = () => handleClearSession();
 
@@ -361,7 +436,28 @@ export const ChatView = ({
                         </div>,
                         document.body
                     )}
-                    <div className={`chat-input-container ${isDisconnected ? 'chat-input-container--disconnected' : ''}`}>
+                    {isFavPanelOpen && favPanelPos && createPortal(
+                        <div
+                            ref={favPanelRef}
+                            className="chat-fav-panel-popup"
+                            style={{
+                                left: favPanelPos.left,
+                                bottom: favPanelPos.bottom,
+                                width: favPanelPos.width,
+                                ['--chat-prompt-max-height' as string]: `${favPanelPos.maxHeight}px`,
+                            }}
+                        >
+                            <FavoritesPanel
+                                favorites={favorites}
+                                onPick={handlePickFavorite}
+                                onAdd={addFavorite}
+                                onRemove={removeFavorite}
+                                onReorder={reorderFavorites}
+                            />
+                        </div>,
+                        document.body
+                    )}
+                    <div ref={inputContainerRef} className={`chat-input-container ${isDisconnected ? 'chat-input-container--disconnected' : ''}`}>
                         <div className="chat-input-row">
                             <textarea
                                 ref={textareaRef}
@@ -437,6 +533,19 @@ export const ChatView = ({
                                         document.body
                                     )}
                                 </div>
+
+                                {/* Favorites toggle */}
+                                <button
+                                    ref={favToggleBtnRef}
+                                    type="button"
+                                    className={`chat-fav-toggle-btn ${isFavPanelOpen ? 'chat-fav-toggle-btn--active' : ''}`}
+                                    onClick={handleToggleFavPanel}
+                                    title="즐겨찾기"
+                                    aria-expanded={isFavPanelOpen}
+                                >
+                                    <Icon name="star" className="icon-sm chat-fav-star" />
+                                    <span>즐겨찾기</span>
+                                </button>
 
                                 {/* Example prompts toggle */}
                                 <button

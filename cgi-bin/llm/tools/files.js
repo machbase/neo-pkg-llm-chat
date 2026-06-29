@@ -53,6 +53,12 @@ function register(registry, mc) {
     fn: function (args, cb) {
       var filename = argStr(args, 'filename', '');
       if (!filename) return cb(null, 'Error: filename is required');
+      // Block path traversal / absolute paths (eval #5, 3a). Timer cleanup deletes
+      // NAME/NAME.tql and the NAME folder — both are relative paths with no '..', so allowed.
+      var norm = filename.replace(/\\/g, '/');
+      if (norm.indexOf('..') >= 0 || norm.charAt(0) === '/' || /^[A-Za-z]:/.test(norm)) {
+        return cb(null, '거부됨: 상위/절대 경로 파일은 삭제할 수 없습니다(보안 정책). 작업 산출물 경로만 허용됩니다.');
+      }
       mc.deleteFile(filename, function (err) {
         if (err) return cb(null, 'Error: ' + err.message);
         cb(null, 'Deleted: ' + filename);

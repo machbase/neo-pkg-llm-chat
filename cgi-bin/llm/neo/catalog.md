@@ -2,13 +2,6 @@
 
 | path | title_ko | keywords |
 |------|----------|----------|
-| api/api-grpc/grpc-csharp.md | C# gRPC 클라이언트 | protobuf,X.509,TLS handshake,MachRpc stub |
-| api/api-grpc/grpc-exec.md | gRPC Exec 쿼리 실행 | DDL DML,parameter binding,success failure |
-| api/api-grpc/grpc-guide.md | gRPC API 개요 | proto file,protobuf,low-level API |
-| api/api-grpc/grpc-java.md | Java gRPC 클라이언트 | protoc code generation,Maven,stream blocking stub |
-| api/api-grpc/grpc-python.md | Python gRPC 클라이언트 | grpc_tools protoc,gRPC channel,streaming writer |
-| api/api-grpc/grpc-query.md | gRPC Query 다중 레코드 | result handle,rows close,rows fetch loop |
-| api/api-grpc/grpc-queryrow.md | gRPC QueryRow 단일 레코드 | single record fetch,count aggregate |
 | api/api-http/http-create-drop-table.md | HTTP DDL 테이블 관리 | tag table creation,summarized statistics |
 | api/api-http/http-csharp.md | HTTP C# 클라이언트 | HttpClient,URL encoding,CSV JSON format |
 | api/api-http/http-go.md | HTTP Go 클라이언트 | net/http,URL escape,JSON POST body |
@@ -79,9 +72,9 @@
 | dbms/sdk-integration/sdk-integration-nodejs.md | Node.js 연동 | npm-package,node-driver,SQL-execution |
 | dbms/sdk-integration/sdk-integration-python.md | Python SDK | machbaseAPI,pip-install,execute-query |
 | dbms/sql-reference/sql-reference-datatypes.md | 데이터 타입 | short,integer,long,double,varchar,datetime,IPv4,IPv6 |
-| dbms/sql-reference/sql-reference-ddl.md | DDL 데이터 정의 | CREATE-TABLE,DROP-TABLE,ALTER-TABLE,CREATE-INDEX,CREATE-VIEW,DROP-VIEW |
+| dbms/sql-reference/sql-reference-ddl.md | DDL 데이터 정의 | CREATE TABLE,CREATE TAG TABLE,IF NOT EXISTS,PRIMARY KEY,BASETIME,SUMMARIZED,METADATA COLUMN,METADATA ADD COLUMN,METADATA DROP COLUMN,WITH ROLLUP,VOLATILE,LOOKUP,SEQUENCE,TAG_PARTITION_COUNT,MINMAX_CACHE_SIZE,NOT NULL,CREATE INDEX,INDEX_TYPE,DROP INDEX,CREATE ROLLUP,DROP ROLLUP,ALTER ROLLUP,ALTER TABLE,ADD COLUMN,DROP COLUMN,RENAME COLUMN,MODIFY COLUMN,RENAME TO,ADD RETENTION,DROP RETENTION,CREATE RETENTION,TRUNCATE TABLE,DROP TABLE,CREATE TABLESPACE |
 | dbms/sql-reference/sql-reference-view.md | SQL VIEW 참조 | CREATE VIEW,DROP VIEW,stored VIEW,SHOW VIEWS,M$SYS_VIEWS,EXPLAIN,BINARY decode,nested VIEW |
-| dbms/sql-reference/sql-reference-dml.md | DML 데이터 조작 | INSERT,UPDATE,DELETE,APPEND |
+| dbms/sql-reference/sql-reference-dml.md | DML 데이터 조작 | INSERT,INSERT VALUES,INSERT column list,INSERT METADATA,ON DUPLICATE KEY UPDATE,UPSERT,INSERT SELECT,UPDATE,UPDATE METADATA,DELETE,DELETE WHERE,DELETE BEFORE,DELETE OLDEST,DELETE EXCEPT,DELETE METADATA,tag_name delete,tag_time delete,LOAD DATA INFILE,CSV import,APPEND |
 | dbms/sql-reference/sql-reference-functions.md | SQL 함수 목록 | ABS,AVG,COUNT,SUM,DATE_TRUNC,EXTRACT,TO_CHAR,JSON |
 | dbms/sql-reference/sql-reference-select-hint.md | SELECT 힌트 | PARALLEL,FULL,NO_INDEX,ROLLUP_TABLE,SCAN_FORWARD |
 | dbms/sql-reference/sql-reference-select.md | SELECT 구문 | FROM,WHERE,GROUP-BY,ORDER-BY,JOIN,UNION,DURATION,PIVOT |
@@ -133,6 +126,7 @@
 | dbms/tools-reference/tools-reference-machsql.md | machsql 대화형 SQL 도구 | machsql,CLI,SHOW,HEREDOC,query,script,timezone |
 | dbms/tools-reference/tools-reference-machloader.md | machloader 데이터 임포트/익스포트 | machloader,CSV,import,export,schema,dateformat,APPEND,replace |
 | dbms/tools-reference/tools-reference-machdeployeradmin.md | Deployer 관리 도구 | machdeployeradmin,Cluster_Edition,startup,shutdown,createdb |
+| dbms/tools-reference/tools-reference-machclusterctl.md | machclusterctl 클러스터 관리 도구 | machclusterctl,Cluster_Edition,cluster.yaml,install,apply,validate,YAML_topology |
 | dbms/troubleshooting/troubleshooting-common-issues.md | 일반 문제 해결 | connection-error,memory-error,disk-space,slow-query |
 | dbms/troubleshooting/troubleshooting-error-code.md | 오류 코드 목록 | error-code-reference,PIVOT오류,메모리오류 |
 | dbms/troubleshooting/troubleshooting-memory-error.md | 메모리 부족 오류 | MAX_QPX_MEM,메모리제한,out-of-memory |
@@ -161,7 +155,7 @@
 | jsh/javascript-vizspec-module.md | JSH VizSpec 모듈 | vizspec,ADVN,Builder,toEChartsOption,toSVG,toPNG,toTUILines,sparkline |
 | jsh/javascript-tail-module.md | JSH Tail 모듈 | tail,file follower,poll,SSE adapter,log monitoring,setInterval |
 | jsh/javascript-system-module.md | 시스템 유틸리티 | Log,parseTime,timezone,location,now |
-| operations/address-ports.md | 바인드주소 및 포트 | bind address,listening port,shell,mqtt,http,grpc |
+| operations/address-ports.md | 바인드주소 및 포트 | bind address,listening port,shell,mqtt,http |
 | operations/command-line.md | 명령줄 옵션 | machbase-neo serve,flags,--host,--config,session limit |
 | operations/metrics.md | 성능 메트릭 수집 | statz,latency percentile,HTTP metrics,MQTT,query time |
 | operations/server-config.md | 서버 설정 파일 | machbase-neo.conf,HCL,listeners,logging,preferences |
@@ -225,7 +219,6 @@
 | report/vibration-report-templates.md | 진동 분석 리포트 템플릿 | RMS,FFT,ISO_10816,Crest_Factor,가속도파형,진동분석 |
 | report/driving-report-templates.md | 운전행동 분석 리포트 템플릿 | IMU,안전점수,급가속급제동,자이로,Class분포,운전행동 |
 | sdk-go/machcli.md | Go CGo 네이티브 클라이언트 | machcli,CGo,C-library-wrapper,native-port-5656,NewDatabase,MaxOpenConn |
-| sdk-go/machrpc.md | Go gRPC 클라이언트 패키지 | machrpc,gRPC-client,TLS-certificate,client-cert,Appender,BulkInsert |
 | sdk-go/machgo.md | Go Pure 네이티브 클라이언트 | machgo,pure-Go,no-CGo,neo-client,native-port-5656,cross-platform |
 | sdk-go/sqldriver.md | Go 표준 sql 패키지 드라이버 | machbase-driver,go-database/sql,neo-client,DSN,sql.Open,native-TCP-5656 |
 | jsh/javascript-commands.md | JSH 명령어 레퍼런스 | cd,ls,cat,mkdir,rm,env,alias,setenv,pkg,servicectl,echo,tail,wc,mqtt_pub,nats_pub |
