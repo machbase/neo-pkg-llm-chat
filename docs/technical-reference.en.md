@@ -54,18 +54,43 @@ humidity
 pressure
 ```
 
+## describe_table()
+
+*Syntax*: `describe_table( table_name [, profile] )`
+
+Get the table type (TAG / LOG) and column structure (name, type, role such as PRIMARY KEY / BASETIME / SUMMARIZED), plus whether ROLLUP tables exist. The agentic loop calls this before generating TQL/SQL so it knows the real column names. Includes an ownership check.
+
+- `table_name` *string* required, table name to describe
+- `profile` *boolean* for TAG tables, also return the tag list, per-tag statistics (count / avg / min / max), and the data time range in milliseconds. Useful when building dashboards. Default: `false`
+
+### Example: Describe a Table
+
+```text
+describe_table(table_name="EXAMPLE", profile=true)
+```
+
+```text
+[EXAMPLE] type: TAG
+- NAME (varchar) PRIMARY KEY
+- TIME (datetime) BASETIME
+- VALUE (double) SUMMARIZED
+ROLLUP: available (3 rollup tables)
+...
+```
+
 ## execute_sql_query()
 
-*Syntax*: `execute_sql_query( sql_query [, format, timeformat, timezone] )`
+*Syntax*: `execute_sql_query( sql_query [, format, timeformat, timezone, limit] )`
 
 Execute an SQL query directly on Machbase Neo.
 
 - `sql_query` *string* required, SQL query to execute
-- `format` *string* output format. Default: `csv`
-- `timeformat` *string* time format. Default: `default`
-- `timezone` *string* timezone. Default: `Local`
+- `format` *string* output format: `csv` (default) or `json`
+- `timeformat` *string* time format: `default`, `ms`, `us`, `ns`
+- `timezone` *string* timezone (for example `UTC`, `Asia/Seoul`)
+- `limit` *integer* maximum rows to return. Default: `500`
 
-> Note: `UPDATE` statements are blocked for safety. When SQL execution fails, the tool returns a parsed error message.
+> Note: `UPDATE`, `DELETE`, and `DROP` statements are blocked for safety. When SQL execution fails, the tool returns a parsed error message.
 
 ### Example: Tag Statistics
 
@@ -96,12 +121,11 @@ MIN(TIME),MAX(TIME)
 
 ## execute_tql_script()
 
-*Syntax*: `execute_tql_script( tql_content [, timeout_seconds] )`
+*Syntax*: `execute_tql_script( tql_content )`
 
-Execute a TQL (Transforming Query Language) script on Machbase Neo. It returns chart HTML or CSV data depending on the SINK function used in the script.
+Execute a TQL (Transforming Query Language) script on Machbase Neo. It returns chart HTML or CSV data depending on the SINK function used in the script. Output longer than 5000 characters is truncated.
 
 - `tql_content` *string* required, TQL script content
-- `timeout_seconds` *integer* execution timeout. Default: `60`
 
 ### Example: Execute TQL with CSV Output
 
@@ -134,20 +158,6 @@ CHART(
 ```
 
 The tool returns the rendered chart as an HTML fragment.
-
-## validate_chart_tql()
-
-*Syntax*: `validate_chart_tql( tql_script )`
-
-Validate a TQL chart script by executing it and checking for errors.
-
-- `tql_script` *string* required, TQL script to validate
-
-Returns one of:
-
-- `VALIDATION OK: TQL executed successfully (N bytes output)`
-- `VALIDATION WARNING: TQL returned empty result`
-- `VALIDATION FAILED: error details`
 
 ## save_tql_file()
 
@@ -184,33 +194,83 @@ If validation fails:
 TQL validation failed (not saved): MACH-ERR 2044 ...
 ```
 
+## compile_tql_from_spec()
+
+*Syntax*: `compile_tql_from_spec( spec [, filename] )`
+
+Compile execution-verified TQL from an analysis intent (IR JSON) instead of hand-writing raw TQL. The tool auto-injects the real column names and ROLLUP availability from the database, validates tag names, corrects the time range to the actual data boundaries, and returns TQL that is guaranteed to run. This is the preferred way to generate chart TQL.
+
+- `spec` *object* required, analysis intent. Key fields:
+  - `kind` — `metrics` (single tag, one or more aggregates), `tags` (multi-tag comparison), `ohlc` (candlestick / price), or `geomap` (coordinates / map)
+  - `table`, `tag` / `tags`, `timeRange: { start, end }`
+  - `rollup` — bucket unit (`sec`, `min`, `hour`, `day`, `week`, `month`) or `null` for raw
+  - `metrics` — for `kind=metrics`, e.g. `[{ "agg": "avg", "label": "..." }]` (agg: avg / max / min / sum / count / sumsq / raw)
+  - `output` *optional* — `{ chartType: "line" | "bar", title, subtitle }`
+- `filename` *string* optional, save path `"TABLE/name.tql"` (English only). If provided, the TQL is saved for dashboard use (reference it from `charts` via `tql_path`). If omitted, the verified TQL text is returned in the answer.
+
+### Example: Compile and Save a Chart
+
+```text
+compile_tql_from_spec(
+    spec={"kind":"metrics","table":"GOLD","tag":"close","rollup":"day",
+          "metrics":[{"agg":"avg","label":"Average"}]},
+    filename="GOLD/avg_trend.tql"
+)
+```
+
+## forecast_table()
+
+*Syntax*: `forecast_table( spec [, filename] )`
+
+Forecast future values for a table's tag. The tool automatically selects a model (linear / quadratic / seasonal Holt-Winters), anchors the forecast to the last observed value, and adds a 95% confidence band. It returns a trend / confidence (R²) / forecast summary. When one tag is passed it forecasts that tag; with 2–5 tags it returns a per-tag trend summary; more than 5 tags prompts you to narrow down.
+
+- `spec` *object* required, forecast intent. Key fields:
+  - `table` *required*
+  - `tag` — single tag to forecast (omit for auto / summary / prompt), or `tags: ["a","b"]` for multi-tag comparison
+  - `rollup` — bucket unit (`sec` … `month`), auto-selected from the range if omitted
+  - `timeRange: { start, end }` — training window (whole dataset if omitted)
+  - `horizon` — number of future buckets to forecast (defaults to 25% of the training length)
+  - `method` — `auto` (default), `linear`, `quadratic`, or `holtwinters`
+  - `output` *optional* — `{ title, subtitle }`
+- `filename` *string* optional, save path `"TABLE/name.tql"` (English only). If provided, saves a live-recomputing `.tql` (for a dashboard `tql_path`); if omitted, renders an inline forecast chart in the answer.
+
+### Example: Forecast and Save
+
+```text
+forecast_table(
+    spec={"table":"GOLD","tag":"close","rollup":"day","horizon":30},
+    filename="GOLD/close_forecast.tql"
+)
+```
+
 ## create_dashboard_with_charts()
 
-*Syntax*: `create_dashboard_with_charts( filename [, title, time_start, time_end, charts] )`
+*Syntax*: `create_dashboard_with_charts( filename, title, charts [, time_start, time_end, refresh] )`
 
 Create a dashboard with multiple chart panels in a single call.
 
 - `filename` *string* required, dashboard path (for example `GOLD/Gold_Analysis.dsh`)
-- `title` *string* dashboard title. Default: `Dashboard`
-- `time_start` *string* time range start. Default: `now-1h`
-- `time_end` *string* time range end. Default: `now`
-- `charts` *string* JSON array of chart definitions
+- `title` *string* required, dashboard title
+- `charts` *string* required, JSON array of chart definitions
+- `time_start` *string* time range start (epoch ms as string). Auto-fitted to the data when omitted
+- `time_end` *string* time range end (epoch ms as string). Auto-fitted to the data when omitted
+- `refresh` *string* auto-refresh interval (`Off`, `3 seconds`, `10 seconds`, `1 minute`, `1 hour`, …). Default: `Off`
 
-Each chart object in the `charts` array:
+Each chart object in the `charts` array. The preferred form references a TQL file compiled with `compile_tql_from_spec` / `forecast_table`:
 
 ```json
-{
-  "title": "Chart Title",
-  "type": "Line",
-  "table": "TABLE_NAME",
-  "tag": "tag1,tag2",
-  "column": "VALUE",
-  "color": "#5470c6",
-  "tql_path": "FOLDER/chart.tql"
-}
+{ "title": "Average Trend", "tql_path": "GOLD/avg_trend.tql" }
 ```
 
-Supported chart types: `Line`, `Bar`, `Scatter`, `Pie`, `Gauge`, `Tql chart`
+For a simple ad-hoc chart without a compiled `.tql`, use an inline definition. The `column`, name, and time columns are auto-detected from the table metadata, so omit them unless you need to override:
+
+```json
+{ "title": "Temperature", "type": "Line", "table": "EXAMPLE", "tag": "temperature" }
+```
+
+Supported chart types: `Line`, `Bar`, `Scatter`, `Pie`, `Gauge`, `Text`, `Geomap`, `Video`, `Tql chart`
+
+> Note: Candlestick / OHLC and any compiled chart must use `tql_path`. An inline OHLC panel will not render. Inline (basic-analysis) charts are restricted to `Line` / `Bar` / `Scatter` with real tags.
 
 ### Example: Create Dashboard with TQL Charts
 
@@ -300,12 +360,6 @@ Update an existing chart panel in a dashboard.
 - `new_tag` *string* new tag name(s)
 - `new_column` *string* new column name
 - `new_color` *string* new color
-
-## list_dashboards()
-
-*Syntax*: `list_dashboards()`
-
-List all dashboards in the Machbase Neo Web UI. It returns the paths of all `.dsh` files.
 
 ## get_dashboard()
 
@@ -401,32 +455,38 @@ UNIT selection depends on data duration:
 
 ## save_html_report()
 
-*Syntax*: `save_html_report( table [, template_id, tag_count, data_count, time_range, analysis] )`
+*Syntax*: `save_html_report( table [, template_id, tag_name, analysis, recommendations, rollup_unit, time_start, time_end, tag_count, data_count, time_range] )`
 
 Generate an HTML analysis report with charts and deep analysis. The tool internally performs data retrieval, FFT/statistical calculations, chart generation, and HTML file creation.
 
 - `table` *string* required, table name (for example `GOLD`)
-- `template_id` *string* report template. Default: `R-0`
-- `tag_count` *string* number of tags
-- `data_count` *string* total data count
-- `time_range` *string* time range description
-- `analysis` *string* deep analysis text
+- `template_id` *string* report template ID. If omitted, a built-in template is auto-detected from the data
+- `tag_name` *string* target tag or symbol name. Pass it whenever the user mentions a specific target — omitting it scans the whole table (thousands of tags) and can be slow or exceed context
+- `analysis` *string* deep analysis text (markdown). Leave empty on the first call; fill it on the second call
+- `recommendations` *string* overall findings and recommendations (markdown). Leave empty on the first call
+- `rollup_unit` *string* one of `sec`, `min`, `hour`, `day`, `week`, `month`
+- `time_start` *string* analysis start (epoch ms). Pass only when the user gives an explicit period
+- `time_end` *string* analysis end (epoch ms), paired with `time_start`
+- `tag_count` / `data_count` / `time_range` *string* optional descriptive metadata
 
 ### Report Templates
 
+Built-in templates live under `neo/report/`; custom `C-*` templates can be dropped into `neo/report/custom/`.
+
 | Template ID | Type | Description |
-| :---: | :--- | :--- |
-| `R-0` | General | Basic statistical analysis with trend charts |
-| `R-1` | Financial | Price bands, volatility, and log-scale analysis |
-| `R-2` | Vibration | RMS, FFT spectrum, envelope, and crest factor |
-| `R-3` | Driving | Speed/RPM correlation and driving pattern analysis |
+| :--- | :--- | :--- |
+| `R-0-general` | General | Basic statistical analysis with trend charts |
+| `R-1-finance` | Financial | Price bands, volatility, and log-scale analysis |
+| `R-2-vibration` | Vibration | RMS, FFT spectrum, envelope, and crest factor |
+| `R-3-driving` | Driving | Speed/RPM correlation and driving pattern analysis |
+| `C-1-energy` | Custom (example) | Energy-analysis custom report template |
 
 ### Example: Generate a Financial Report
 
-First call — the tool queries the data and returns a chart analysis summary:
+First call — the tool queries the data and returns a chart analysis summary (leave `analysis` empty):
 
 ```text
-save_html_report(table="GOLD", template_id="R-1")
+save_html_report(table="GOLD", template_id="R-1-finance", tag_name="close")
 ```
 
 ```text
@@ -439,8 +499,10 @@ Second call — the tool generates the final HTML report:
 ```text
 save_html_report(
     table="GOLD",
-    template_id="R-1",
-    analysis="Gold price from 2023-09-20 to 2025-12-13 ..."
+    template_id="R-1-finance",
+    tag_name="close",
+    analysis="Gold price from 2023-09-20 to 2025-12-13 ...",
+    recommendations="1. ..."
 )
 ```
 
@@ -601,21 +663,48 @@ Delete a file or empty folder from the Machbase Neo file system.
 
 - `filename` *string* required, file path to delete
 
-## get_full_document_content()
+## list_available_documents()
 
-*Syntax*: `get_full_document_content( file_identifier )`
+*Syntax*: `list_available_documents()`
 
-Get the full content of a specific manual document. If the file is not found, the tool suggests related manual documents from the catalog.
+List all available manual documentation files in Machbase Neo. It returns the documentation catalog (paths, titles, keywords).
 
-- `file_identifier` *string* required, relative path (for example `sql/sql-rollup.md`)
+## search_documents()
 
-### Example: Read Rollup Documentation
+*Syntax*: `search_documents( keyword )`
+
+Search the documentation catalog by keyword and return matching document paths. Use this before `get_full_document_content` to find the right document. If nothing matches, the full catalog is returned so the model can pick manually.
+
+- `keyword` *string* required, search keyword (for example `PIVOT`, `ROLLUP`, `TQL`, `chart`)
+
+### Example: Search Documents
 
 ```text
-get_full_document_content(file_identifier="sql/sql-rollup.md")
+search_documents(keyword="ROLLUP")
 ```
 
-Returns the full markdown content of the Rollup manual document.
+```text
+Found 2 document(s):
+- sql/sql-rollup.md (ROLLUP) [rollup, aggregate]
+- tql/tql-sink.md (TQL Sink) [chart, rollup]
+```
+
+## get_full_document_content()
+
+*Syntax*: `get_full_document_content( file_identifier [, section] )`
+
+Get manual document content. If the document is large, passing a `section` keyword returns only that section at full length, so deep sections (for example `ADD COLUMN` inside a large DDL doc) are not cut off. Without `section`, a large document returns its section list so you can choose one.
+
+- `file_identifier` *string* required, document path from the catalog (copy it verbatim)
+- `section` *string* a section-header keyword to return only that section in full (for example `ADD COLUMN`, `RETENTION`, `TO_CHAR`)
+
+### Example: Read a Specific Section
+
+```text
+get_full_document_content(file_identifier="sql/sql-rollup.md", section="ADD COLUMN")
+```
+
+Returns only the matching section of the manual document at full length.
 
 ## get_document_sections()
 
@@ -682,31 +771,6 @@ debug_mcp_status()
 ```text
 Status: OK
 Machbase: http://127.0.0.1:5654
-COUNT(*)
-152
-```
-
-## update_connection()
-
-*Syntax*: `update_connection( [host, port, user, password] )`
-
-Update Machbase Neo connection settings at runtime. Only the provided fields are changed, and omitted fields keep their current values.
-
-- `host` *string* Machbase Neo host (for example `192.168.1.100`)
-- `port` *string* Machbase Neo port (for example `5654`)
-- `user` *string* user name
-- `password` *string* password
-
-### Example: Change Connection
-
-```text
-update_connection(host="192.168.1.100", port="5654")
-```
-
-```text
-Connection updated successfully.
-Machbase: http://192.168.1.100:5654
-User: SYS
 COUNT(*)
 152
 ```

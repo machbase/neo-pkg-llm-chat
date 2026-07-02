@@ -54,18 +54,43 @@ humidity
 pressure
 ```
 
+## describe_table()
+
+*Syntax*: `describe_table( table_name [, profile] )`
+
+테이블 유형(TAG / LOG)과 컬럼 구조(이름, 타입, 역할: PRIMARY KEY / BASETIME / SUMMARIZED), ROLLUP 테이블 존재 여부를 조회합니다. 에이전틱 루프는 TQL/SQL을 생성하기 전에 실제 컬럼명을 파악하기 위해 이 도구를 먼저 호출합니다. 소유권 검사를 포함합니다.
+
+- `table_name` *string* 필수, 조회할 테이블명
+- `profile` *boolean* TAG 테이블일 때 태그 목록, 태그별 통계(건수 / 평균 / 최소 / 최대), 데이터 시간 범위(밀리초)까지 함께 반환합니다. 대시보드 구성 시 유용합니다. 기본값: `false`
+
+### 예제: 테이블 구조 조회
+
+```text
+describe_table(table_name="EXAMPLE", profile=true)
+```
+
+```text
+[EXAMPLE] type: TAG
+- NAME (varchar) PRIMARY KEY
+- TIME (datetime) BASETIME
+- VALUE (double) SUMMARIZED
+ROLLUP: available (3 rollup tables)
+...
+```
+
 ## execute_sql_query()
 
-*Syntax*: `execute_sql_query( sql_query [, format, timeformat, timezone] )`
+*Syntax*: `execute_sql_query( sql_query [, format, timeformat, timezone, limit] )`
 
 Machbase Neo에서 SQL 쿼리를 직접 실행합니다.
 
 - `sql_query` *string* 필수, 실행할 SQL 쿼리
-- `format` *string* 출력 형식. 기본값: `csv`
-- `timeformat` *string* 시간 형식. 기본값: `default`
-- `timezone` *string* 타임존. 기본값: `Local`
+- `format` *string* 출력 형식: `csv`(기본) 또는 `json`
+- `timeformat` *string* 시간 형식: `default`, `ms`, `us`, `ns`
+- `timezone` *string* 타임존 (예: `UTC`, `Asia/Seoul`)
+- `limit` *integer* 반환할 최대 행 수. 기본값: `500`
 
-> 참고: 안전을 위해 `UPDATE` 구문은 차단됩니다. SQL 실행 실패 시 파싱된 에러 메시지를 반환합니다.
+> 참고: 안전을 위해 `UPDATE`, `DELETE`, `DROP` 구문은 차단됩니다. SQL 실행 실패 시 파싱된 에러 메시지를 반환합니다.
 
 ### 예제: 태그별 통계
 
@@ -96,12 +121,11 @@ MIN(TIME),MAX(TIME)
 
 ## execute_tql_script()
 
-*Syntax*: `execute_tql_script( tql_content [, timeout_seconds] )`
+*Syntax*: `execute_tql_script( tql_content )`
 
-Machbase Neo에서 TQL (Transforming Query Language) 스크립트를 실행합니다. 스크립트에 사용된 SINK 함수에 따라 차트 HTML 또는 CSV 데이터를 반환합니다.
+Machbase Neo에서 TQL (Transforming Query Language) 스크립트를 실행합니다. 스크립트에 사용된 SINK 함수에 따라 차트 HTML 또는 CSV 데이터를 반환합니다. 출력이 5000자를 넘으면 잘립니다.
 
 - `tql_content` *string* 필수, TQL 스크립트 내용
-- `timeout_seconds` *integer* 실행 타임아웃. 기본값: `60`
 
 ### 예제: CSV 출력으로 TQL 실행
 
@@ -134,20 +158,6 @@ CHART(
 ```
 
 도구는 렌더링된 차트를 HTML 프래그먼트로 반환합니다.
-
-## validate_chart_tql()
-
-*Syntax*: `validate_chart_tql( tql_script )`
-
-TQL 차트 스크립트를 실행하여 오류를 검증합니다.
-
-- `tql_script` *string* 필수, 검증할 TQL 스크립트
-
-반환 값:
-
-- `VALIDATION OK: TQL executed successfully (N bytes output)`
-- `VALIDATION WARNING: TQL returned empty result`
-- `VALIDATION FAILED: 에러 상세`
 
 ## save_tql_file()
 
@@ -184,33 +194,83 @@ File saved successfully: GOLD/avg_trend.tql
 TQL validation failed (not saved): MACH-ERR 2044 ...
 ```
 
+## compile_tql_from_spec()
+
+*Syntax*: `compile_tql_from_spec( spec [, filename] )`
+
+raw TQL을 직접 작성하는 대신, 분석 의도(IR JSON)로부터 실행 검증된 TQL을 컴파일합니다. 도구가 DB에서 실제 컬럼명과 ROLLUP 가용성을 자동 주입하고, 태그명을 검증하며, 시간 범위를 실제 데이터 경계로 보정해 반드시 실행되는 TQL을 반환합니다. 차트 TQL 생성 시 권장되는 방식입니다.
+
+- `spec` *object* 필수, 분석 의도. 주요 필드:
+  - `kind` — `metrics`(단일 태그, 1개 이상 집계), `tags`(여러 태그 비교), `ohlc`(캔들차트 / 시세), `geomap`(좌표 / 지도)
+  - `table`, `tag` / `tags`, `timeRange: { start, end }`
+  - `rollup` — 버킷 단위(`sec`, `min`, `hour`, `day`, `week`, `month`) 또는 raw면 `null`
+  - `metrics` — `kind=metrics`용, 예: `[{ "agg": "avg", "label": "..." }]` (agg: avg / max / min / sum / count / sumsq / raw)
+  - `output` *선택* — `{ chartType: "line" | "bar", title, subtitle }`
+- `filename` *string* 선택, 저장 경로 `"TABLE/name.tql"`(영어만). 주면 대시보드용으로 저장(`charts`의 `tql_path`로 참조), 생략하면 검증된 TQL 텍스트를 답변으로 반환합니다.
+
+### 예제: 차트 컴파일 및 저장
+
+```text
+compile_tql_from_spec(
+    spec={"kind":"metrics","table":"GOLD","tag":"close","rollup":"day",
+          "metrics":[{"agg":"avg","label":"Average"}]},
+    filename="GOLD/avg_trend.tql"
+)
+```
+
+## forecast_table()
+
+*Syntax*: `forecast_table( spec [, filename] )`
+
+특정 테이블 태그의 이후 값을 예측합니다. 도구가 모델(선형 / 2차 / 계절성 Holt-Winters)을 자동 선택하고, 마지막 관측값에서 이어지도록 앵커링하며, 95% 신뢰밴드를 추가합니다. 추세 / 신뢰도(R²) / 예측값 요약을 반환합니다. 태그 1개면 그 태그를 예측하고, 2~5개면 태그별 추세 요약표를, 5개 초과면 좁혀 달라고 되묻습니다.
+
+- `spec` *object* 필수, 예측 의도. 주요 필드:
+  - `table` *필수*
+  - `tag` — 예측할 단일 태그(생략 시 자동 / 요약 / 되묻기), 또는 `tags: ["a","b"]`로 여러 태그 비교
+  - `rollup` — 버킷 단위(`sec` … `month`), 생략 시 범위 기반 자동 선택
+  - `timeRange: { start, end }` — 학습 기간(생략 시 데이터 전체)
+  - `horizon` — 예측할 미래 버킷 수(생략 시 학습 길이의 25%)
+  - `method` — `auto`(기본), `linear`, `quadratic`, `holtwinters`
+  - `output` *선택* — `{ title, subtitle }`
+- `filename` *string* 선택, 저장 경로 `"TABLE/name.tql"`(영어만). 주면 라이브 재계산 `.tql`로 저장(대시보드 `tql_path`용), 생략하면 인라인 예측 차트를 답변에 렌더합니다.
+
+### 예제: 예측 및 저장
+
+```text
+forecast_table(
+    spec={"table":"GOLD","tag":"close","rollup":"day","horizon":30},
+    filename="GOLD/close_forecast.tql"
+)
+```
+
 ## create_dashboard_with_charts()
 
-*Syntax*: `create_dashboard_with_charts( filename [, title, time_start, time_end, charts] )`
+*Syntax*: `create_dashboard_with_charts( filename, title, charts [, time_start, time_end, refresh] )`
 
 여러 차트 패널을 포함한 대시보드를 한 번에 생성합니다.
 
 - `filename` *string* 필수, 대시보드 경로 (예: `GOLD/Gold_Analysis.dsh`)
-- `title` *string* 대시보드 제목. 기본값: `Dashboard`
-- `time_start` *string* 시간 범위 시작. 기본값: `now-1h`
-- `time_end` *string* 시간 범위 종료. 기본값: `now`
-- `charts` *string* 차트 정의 JSON 배열
+- `title` *string* 필수, 대시보드 제목
+- `charts` *string* 필수, 차트 정의 JSON 배열
+- `time_start` *string* 시간 범위 시작 (epoch ms 문자열). 생략 시 데이터에 맞게 자동 조정
+- `time_end` *string* 시간 범위 종료 (epoch ms 문자열). 생략 시 데이터에 맞게 자동 조정
+- `refresh` *string* 자동 새로고침 간격 (`Off`, `3 seconds`, `10 seconds`, `1 minute`, `1 hour` 등). 기본값: `Off`
 
-`charts` 배열의 각 차트 객체:
+`charts` 배열의 각 차트 객체. 권장 형태는 `compile_tql_from_spec` / `forecast_table`로 컴파일한 TQL 파일을 참조하는 방식입니다:
 
 ```json
-{
-  "title": "차트 제목",
-  "type": "Line",
-  "table": "테이블명",
-  "tag": "tag1,tag2",
-  "column": "VALUE",
-  "color": "#5470c6",
-  "tql_path": "폴더/chart.tql"
-}
+{ "title": "평균 추세", "tql_path": "GOLD/avg_trend.tql" }
 ```
 
-지원하는 차트 유형: `Line`, `Bar`, `Scatter`, `Pie`, `Gauge`, `Tql chart`
+컴파일된 `.tql` 없이 간단한 임시 차트를 넣을 때는 인라인 정의를 사용합니다. `column`, name/time 컬럼은 테이블 메타데이터에서 자동 감지되므로 재정의가 필요할 때만 명시하세요:
+
+```json
+{ "title": "온도", "type": "Line", "table": "EXAMPLE", "tag": "temperature" }
+```
+
+지원하는 차트 유형: `Line`, `Bar`, `Scatter`, `Pie`, `Gauge`, `Text`, `Geomap`, `Video`, `Tql chart`
+
+> 참고: 캔들차트 / OHLC 및 모든 컴파일된 차트는 반드시 `tql_path`를 사용해야 합니다(인라인 OHLC 패널은 렌더되지 않음). 인라인(기본 분석) 차트는 실재 태그를 가진 `Line` / `Bar` / `Scatter`로 제한됩니다.
 
 ### 예제: TQL 차트로 대시보드 생성
 
@@ -300,12 +360,6 @@ add_chart_to_dashboard(
 - `new_tag` *string* 새 태그명
 - `new_column` *string* 새 컬럼명
 - `new_color` *string* 새 색상
-
-## list_dashboards()
-
-*Syntax*: `list_dashboards()`
-
-Machbase Neo 웹 UI의 모든 대시보드 목록을 조회합니다. 모든 `.dsh` 파일 경로를 반환합니다.
 
 ## get_dashboard()
 
@@ -401,32 +455,38 @@ UNIT 선택 기준:
 
 ## save_html_report()
 
-*Syntax*: `save_html_report( table [, template_id, tag_count, data_count, time_range, analysis] )`
+*Syntax*: `save_html_report( table [, template_id, tag_name, analysis, recommendations, rollup_unit, time_start, time_end, tag_count, data_count, time_range] )`
 
 차트와 심층 분석이 포함된 HTML 분석 리포트를 생성합니다. 도구 내부에서 데이터 조회, FFT/통계 계산, 차트 생성, HTML 파일 생성을 모두 수행합니다.
 
 - `table` *string* 필수, 테이블명 (예: `GOLD`)
-- `template_id` *string* 리포트 템플릿. 기본값: `R-0`
-- `tag_count` *string* 태그 수
-- `data_count` *string* 총 데이터 건수
-- `time_range` *string* 시간 범위 설명
-- `analysis` *string* 심층 분석 텍스트
+- `template_id` *string* 리포트 템플릿 ID. 생략 시 데이터를 보고 빌트인 템플릿을 자동 판별
+- `tag_name` *string* 분석 대상 태그명 또는 종목명. 사용자가 특정 대상을 언급하면 반드시 전달 — 생략하면 테이블 전체(수천 태그)를 조회해 느려지거나 컨텍스트를 초과할 수 있음
+- `analysis` *string* 심층 분석 텍스트(마크다운). 1차 호출 시 비워두고, 2차 호출 시 작성
+- `recommendations` *string* 종합 소견 및 권고(마크다운). 1차 호출 시 비워둠
+- `rollup_unit` *string* `sec`, `min`, `hour`, `day`, `week`, `month` 중 하나
+- `time_start` *string* 분석 시작(epoch ms). 사용자가 기간을 명시할 때만 전달
+- `time_end` *string* 분석 끝(epoch ms), `time_start`와 함께 전달
+- `tag_count` / `data_count` / `time_range` *string* 선택, 설명용 메타데이터
 
 ### 리포트 템플릿
 
+빌트인 템플릿은 `neo/report/` 아래에 있으며, 커스텀 `C-*` 템플릿은 `neo/report/custom/`에 드롭할 수 있습니다.
+
 | 템플릿 ID | 유형 | 설명 |
-| :---: | :--- | :--- |
-| `R-0` | 범용 | 기본 통계 분석 및 추세 차트 |
-| `R-1` | 금융 | 가격 밴드, 변동성, 로그 스케일 분석 |
-| `R-2` | 진동 | RMS, FFT 스펙트럼, 엔벨로프, 크레스트 팩터 |
-| `R-3` | 운전 | 속도/RPM 상관관계, 주행 패턴 분석 |
+| :--- | :--- | :--- |
+| `R-0-general` | 범용 | 기본 통계 분석 및 추세 차트 |
+| `R-1-finance` | 금융 | 가격 밴드, 변동성, 로그 스케일 분석 |
+| `R-2-vibration` | 진동 | RMS, FFT 스펙트럼, 엔벨로프, 크레스트 팩터 |
+| `R-3-driving` | 운전 | 속도/RPM 상관관계, 주행 패턴 분석 |
+| `C-1-energy` | 커스텀(예시) | 에너지 분석 커스텀 리포트 템플릿 |
 
 ### 예제: 금융 분석 리포트 생성
 
-1차 호출 — 도구가 데이터를 조회하고 차트 분석 요약을 반환합니다:
+1차 호출 — 도구가 데이터를 조회하고 차트 분석 요약을 반환합니다(`analysis`는 비워둠):
 
 ```text
-save_html_report(table="GOLD", template_id="R-1")
+save_html_report(table="GOLD", template_id="R-1-finance", tag_name="close")
 ```
 
 ```text
@@ -439,8 +499,10 @@ Please call again with this summary in the analysis parameter.
 ```text
 save_html_report(
     table="GOLD",
-    template_id="R-1",
-    analysis="금 가격은 2023-09-20부터 2025-12-13까지 ..."
+    template_id="R-1-finance",
+    tag_name="close",
+    analysis="금 가격은 2023-09-20부터 2025-12-13까지 ...",
+    recommendations="1. ..."
 )
 ```
 
@@ -601,21 +663,48 @@ Machbase Neo 파일 시스템에서 파일 또는 빈 폴더를 삭제합니다.
 
 - `filename` *string* 필수, 삭제할 파일 경로
 
-## get_full_document_content()
+## list_available_documents()
 
-*Syntax*: `get_full_document_content( file_identifier )`
+*Syntax*: `list_available_documents()`
 
-특정 메뉴얼 문서의 전체 내용을 조회합니다. 파일을 찾지 못하면 카탈로그에서 관련 메뉴얼 문서를 제안합니다.
+Machbase Neo에서 사용 가능한 모든 메뉴얼 문서 목록을 조회합니다. 문서 카탈로그(경로, 제목, 키워드)를 반환합니다.
 
-- `file_identifier` *string* 필수, 상대 경로 (예: `sql/sql-rollup.md`)
+## search_documents()
 
-### 예제: Rollup 문서 읽기
+*Syntax*: `search_documents( keyword )`
+
+키워드로 문서 카탈로그를 검색해 일치하는 문서 경로를 반환합니다. `get_full_document_content`로 문서를 열기 전에 이 도구로 올바른 문서를 찾습니다. 일치가 없으면 전체 카탈로그를 반환해 직접 고를 수 있게 합니다.
+
+- `keyword` *string* 필수, 검색 키워드 (예: `PIVOT`, `ROLLUP`, `TQL`, `chart`)
+
+### 예제: 문서 검색
 
 ```text
-get_full_document_content(file_identifier="sql/sql-rollup.md")
+search_documents(keyword="ROLLUP")
 ```
 
-롤업 메뉴얼 문서의 전체 마크다운 내용을 반환합니다.
+```text
+Found 2 document(s):
+- sql/sql-rollup.md (ROLLUP) [rollup, aggregate]
+- tql/tql-sink.md (TQL Sink) [chart, rollup]
+```
+
+## get_full_document_content()
+
+*Syntax*: `get_full_document_content( file_identifier [, section] )`
+
+메뉴얼 문서 내용을 조회합니다. 문서가 크면 `section` 키워드를 주어 해당 섹션만 전체 길이로 반환하므로, 큰 DDL 문서 안의 깊은 섹션(예: `ADD COLUMN`)이 잘리지 않습니다. `section` 없이 큰 문서를 조회하면 섹션 목록을 반환해 고르게 합니다.
+
+- `file_identifier` *string* 필수, 카탈로그의 문서 경로(그대로 복사)
+- `section` *string* 해당 섹션만 전체 길이로 반환할 섹션 헤더 키워드 (예: `ADD COLUMN`, `RETENTION`, `TO_CHAR`)
+
+### 예제: 특정 섹션 읽기
+
+```text
+get_full_document_content(file_identifier="sql/sql-rollup.md", section="ADD COLUMN")
+```
+
+일치하는 섹션만 전체 길이로 반환합니다.
 
 ## get_document_sections()
 
@@ -682,31 +771,6 @@ debug_mcp_status()
 ```text
 Status: OK
 Machbase: http://127.0.0.1:5654
-COUNT(*)
-152
-```
-
-## update_connection()
-
-*Syntax*: `update_connection( [host, port, user, password] )`
-
-런타임에 Machbase Neo 연결 설정을 변경합니다. 제공된 필드만 변경되고 생략된 필드는 현재 값을 유지합니다.
-
-- `host` *string* Machbase Neo 호스트 (예: `192.168.1.100`)
-- `port` *string* Machbase Neo 포트 (예: `5654`)
-- `user` *string* 사용자 이름
-- `password` *string* 비밀번호
-
-### 예제: 연결 변경
-
-```text
-update_connection(host="192.168.1.100", port="5654")
-```
-
-```text
-Connection updated successfully.
-Machbase: http://192.168.1.100:5654
-User: SYS
 COUNT(*)
 152
 ```

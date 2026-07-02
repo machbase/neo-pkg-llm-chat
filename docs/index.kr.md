@@ -44,26 +44,47 @@ Machbase Neo 좌측 사이드 패널에는 사용 가능한 패키지 목록이 
 
 ### 질문 유형 감지
 
-- "리포트", "보고서", "report"가 포함된 질문
+- "리포트", "보고서", "report", "summary report"가 포함된 질문
   - 리포트 모드로 분류되어 HTML 분석 리포트 생성 흐름을 사용합니다.
-- "심층", "다각도", "FFT", "RMS"가 포함된 질문
-  - 고급 모드로 분류되어 사전 정의 TQL 차트 템플릿을 우선 사용합니다.
+- "심층", "다각도", "고급", "스펙트럼", "엔벨로프", "FFT", "RMS", "advanced", "spectrum", "envelope", "anomaly"가 포함된 질문
+  - 고급 모드로 분류되어 분석 의도(IR)로 컴파일된 심층 차트를 생성합니다.
 - 그 외 분석/대시보드 요청
   - 기본 모드로 분류되어 테이블 기반 차트 생성 흐름을 사용합니다.
 
-### 가드 시스템
+### 보정(Fixer) 레이어
 
-가드 시스템은 실행 중 LLM의 일반적인 실수를 자동으로 보정합니다.
+도구가 실행되기 전에, Fixer 레이어가 LLM의 일반적인 실수를 자동 보정하여 호출이 성공하도록 만듭니다.
+
+| Fixer | 설명 |
+| :--- | :--- |
+| 인자 정규화 | 도구 호출의 잘못되거나 오타난 파라미터명을 수정 |
+| `validateTagInArgs` | 호출에 사용된 태그명이 실제 테이블에 존재하는지 검증 |
+| 시간 범위 보정 | `time_start` / `time_end`를 실제 데이터 범위에 맞게 조정 |
+| TQL 수정 | 실행 전 흔한 TQL 문법 문제를 보정 |
+
+### 가드 파이프라인
+
+가드 파이프라인은 에이전틱 루프 주변에서 동작 가드를 실행합니다. pre-tool 가드는 도구 실행 전에, post-loop 가드는 모델이 종료하려 할 때 동작합니다.
+
+pre-tool 가드:
 
 | 가드 | 설명 |
 | :--- | :--- |
-| `fixToolCalls` | 도구 호출의 잘못된 파라미터명을 자동 수정 |
-| `guardDashboardEarlyCall` | TQL 차트 파일 저장 전 대시보드 생성을 방지 |
-| `guardChartOmission` | 필요한 차트 템플릿 저장 없이 종료하려 할 때 재촉 |
-| `guardReportOmission` | 리포트 모드에서 `save_html_report` 호출 없이 종료하려 할 때 재촉 |
-| `guardConsecutiveFailure` | 연속 실패 시 무한 재시도 대신 건너뛰기 |
-| `validateTagInArgs` | TQL 스크립트에 사용된 태그명이 실제 테이블에 존재하는지 검증 |
-| 시간 범위 보정 | `time_start` / `time_end`를 실제 데이터 범위에 맞게 자동 조정 |
+| `consecutive_failure` | 같은 도구가 2회 연속 실패하면 무한 재시도 대신 건너뜀 |
+| `dashboard_early` | 모든 TQL 템플릿 저장 전 대시보드 생성을 방지(고급 모드) |
+| `redundant_finalize` | 대시보드 URL 발급(=완성) 후의 추가 마무리 호출을 차단(고아 파일 방지) |
+
+post-loop 가드:
+
+| 가드 | 설명 |
+| :--- | :--- |
+| `dashboard_omission` | 도구를 하나도 안 부르고 "대시보드 생성했다"는 거짓 완료 보고를 차단 |
+| `chart_omission` | 고급 분석이 끝났는데 대시보드에 차트가 빠졌을 때 재촉 |
+| `report_omission` | 리포트 모드인데 `save_html_report`가 호출되지 않았을 때 재촉 |
+| `dashboard_answer` | 성공적으로 만든 대시보드 URL을 최종 답변이 빠뜨렸을 때 구제 |
+| `tql_inject` (tql_omission) | 검증된 ```tql 차트가 최종 답변에 온전히 포함되도록 보장 |
+| `raw_tql` | 도구 결과에 없는 = 손으로 쓴 ```tql을 탐지해 컴파일러로 재유도 |
+| `fake_tql_answer` | 최종 답변의 지어낸/환각 TQL 문법을 차단 |
 
 ## 이 문서에서 다루는 내용
 

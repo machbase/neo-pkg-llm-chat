@@ -44,26 +44,47 @@ The agentic loop is the core execution engine of this package. When a user sends
 
 ### Query Type Detection
 
-- Questions containing `"report"` or its Korean equivalents
+- Questions containing `report` / `summary report` or their Korean equivalents (`리포트`, `보고서`)
   - Classified as report mode and use the HTML analysis report flow.
-- Questions containing `"in-depth"`, `"multi-angle"`, `"FFT"`, or `"RMS"` or their Korean equivalents
-  - Classified as advanced mode and prioritize predefined TQL chart templates.
+- Questions containing `advanced`, `spectrum`, `envelope`, `anomaly`, `vibration analysis`, `FFT`, or `RMS` or their Korean equivalents (`심층`, `다각도`, `고급`, `스펙트럼`, `엔벨로프`)
+  - Classified as advanced mode and produce in-depth charts compiled from analysis intent (IR).
 - Other analysis or dashboard requests
   - Classified as basic mode and use the table-based chart flow.
 
-### Guard System
+### Correction (Fixer) Layer
 
-The guard system automatically corrects common LLM mistakes during execution.
+Before a tool runs, the fixer layer auto-corrects common LLM mistakes so the call can succeed.
+
+| Fixer | Description |
+| :--- | :--- |
+| Argument normalization | Corrects wrong or misspelled parameter names in tool calls |
+| `validateTagInArgs` | Checks whether tag names used in a call exist in the actual table |
+| Time range correction | Adjusts `time_start` / `time_end` to match actual data boundaries |
+| TQL fix | Repairs common TQL syntax issues before execution |
+
+### Guard Pipeline
+
+The guard pipeline runs behavioral guards around the agentic loop. Pre-tool guards run before a tool executes; post-loop guards run when the model tries to finish.
+
+Pre-tool guards:
 
 | Guard | Description |
 | :--- | :--- |
-| `fixToolCalls` | Automatically corrects wrong parameter names in tool calls |
-| `guardDashboardEarlyCall` | Prevents dashboard creation before TQL chart files are saved |
-| `guardChartOmission` | Re-prompts the model when required chart templates are missing |
-| `guardReportOmission` | Re-prompts the model when `save_html_report` is skipped in report mode |
-| `guardConsecutiveFailure` | Skips repeated failures instead of retrying forever |
-| `validateTagInArgs` | Checks whether tag names used in TQL scripts exist in the actual table |
-| Time range correction | Automatically adjusts `time_start` / `time_end` to match actual data boundaries |
+| `consecutive_failure` | Skips a tool after it fails twice in a row instead of retrying forever |
+| `dashboard_early` | Prevents dashboard creation before all TQL templates are saved (advanced mode) |
+| `redundant_finalize` | Blocks extra finalize calls after the dashboard URL was already issued (avoids orphan files) |
+
+Post-loop guards:
+
+| Guard | Description |
+| :--- | :--- |
+| `dashboard_omission` | Catches a false "dashboard created" claim when no tool was actually called |
+| `chart_omission` | Re-prompts when advanced analysis finished but charts are missing from the dashboard |
+| `report_omission` | Re-prompts when report mode is active but `save_html_report` was never called |
+| `dashboard_answer` | Recovers a successfully created dashboard URL that the final answer left out |
+| `tql_inject` (tql_omission) | Ensures the validated ```tql chart is present and intact in the final answer |
+| `raw_tql` | Detects hand-written ```tql that came from no tool result and redirects to the compiler |
+| `fake_tql_answer` | Blocks fabricated / hallucinated TQL syntax in the final answer |
 
 ## What This Documentation Covers
 

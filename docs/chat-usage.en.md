@@ -46,10 +46,10 @@ Examples:
 
 Depending on the question text, the internal execution mode may change automatically.
 
-- `"report"` or its Korean equivalents
+- `report` / `summary report` or their Korean equivalents (`리포트`, `보고서`)
   - Prioritizes the HTML report generation flow.
-- `"in-depth"`, `"multi-angle"`, `"FFT"`, `"RMS"` or their Korean equivalents
-  - Prioritizes the advanced analysis flow using predefined TQL templates.
+- `advanced`, `spectrum`, `envelope`, `anomaly`, `FFT`, `RMS` or their Korean equivalents (`심층`, `다각도`, `고급`, `스펙트럼`, `엔벨로프`)
+  - Prioritizes the advanced analysis flow (in-depth charts compiled from analysis intent).
 - General query, analysis, or dashboard requests
   - Use the basic analysis flow.
 
