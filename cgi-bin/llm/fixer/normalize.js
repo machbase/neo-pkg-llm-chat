@@ -5,7 +5,7 @@ var aliasMap = {
   execute_tql_script: { script: 'tql_content', content: 'tql_content', code: 'tql_content' },
   execute_sql_query: { sql: 'sql_query', query: 'sql_query' },
   list_table_tags: { table: 'table_name', name: 'table_name', table_id: 'table_name' },
-  get_full_document_content: { file_path: 'file_identifier', doc_name: 'file_identifier', path: 'file_identifier', document_path: 'file_identifier', doc_path: 'file_identifier' },
+  get_full_document_content: { file_path: 'file_identifier', doc_name: 'file_identifier', path: 'file_identifier', document_path: 'file_identifier', doc_path: 'file_identifier', section_filter: 'section', section_name: 'section', header: 'section' },
   get_document_sections: { file_path: 'file_identifier', doc_name: 'file_identifier', path: 'file_identifier', document_path: 'file_identifier', doc_path: 'file_identifier' },
   extract_code_blocks: { file_path: 'file_identifier', doc_name: 'file_identifier', path: 'file_identifier', document_path: 'file_identifier', doc_path: 'file_identifier' },
   create_folder: { name: 'folder_name', path: 'folder_name' },

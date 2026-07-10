@@ -39,6 +39,16 @@ function reportTopicOf(id) {
   return m ? m[1].toLowerCase() : '';
 }
 
+// Same template intent? Exact ID, else same topic (R-2-vibration ≒ C-2-vibration — 1차 호출의
+// custom override로 kind만 바뀐 경우), else same kind. 2차 호출의 명시적 template_id가 캐시된
+// 파이프라인 결과를 무효화해야 하는지 판정에 사용.
+function sameTemplateIntent(a, b) {
+  if (a === b) return true;
+  var ta = reportTopicOf(a), tb = reportTopicOf(b);
+  if (ta && tb) return ta === tb;
+  return templateKind(a) === templateKind(b);
+}
+
 // ── Compute catalog ────────────────────────────────────────────────────────
 // Named domain calculations (1st-party curated). A template declares `compute: <name>`
 // in its .md frontmatter; the engine dispatches by lookup (no hardcoded template IDs),
@@ -184,11 +194,12 @@ function register(registry, mc) {
           '- 구체적 수치를 근거로 제시 (예: AccX 최대 5.86g는 ISO 기준 위험 수준)' },
         recommendations: { type: 'string', description: '종합 소견 및 권고 (한국어). ★1차 호출 시 비워두세요!★ 심도 있는 분석 기반의 보고서 형식으로 작성.\n\n' +
           '## 형식: 마크다운, 최소 7개 번호 항목 (1. 2. ...)\n' +
-          '## 각 항목 구성:\n' +
+          '## 각 항목은 아래 세 요소를 **모두, 같은 순서로** 포함 (하나라도 빠뜨리지 말 것 — 모든 항목 형식 통일):\n' +
           '- **제목** (볼드)\n' +
-          '- 근거 데이터 수치 인용\n' +
-          '- 구체적 실행 방안 (누가, 무엇을, 언제, 어떻게)\n' +
-          '- 기대 효과\n\n' +
+          '- **근거**: 조회한 데이터 수치를 인용한 판단 근거 (1~2문장)\n' +
+          '- **실행방안**: 구체적 행동 (누가·무엇을·언제·어떻게, 수치 포함)\n' +
+          '- **기대효과**: 그 행동의 예상 결과\n' +
+          '※ 항목마다 실행방안 또는 기대효과 중 하나만 쓰지 말고 **둘 다** 반드시 포함하세요.\n\n' +
           '## 내용: 즉시 조치/단기 개선/중장기 전략으로 구분하여 우선순위별 정리' },
         rollup_unit: { type: 'string', enum: ['sec', 'min', 'hour', 'day', 'week', 'month'] },
         tag_name: { type: 'string', description: '분석 대상 태그명 또는 종목명. 사용자가 특정 대상을 언급하면 반드시 전달.' },
@@ -234,8 +245,21 @@ function saveHtmlReport(mc, args, cb) {
   // 2nd call: use cached DB params to skip re-querying
   var hasAnalysis = !!anyStr(norm, 'analysis');
   var hasReco = !!anyStr(norm, 'recommendations');
+  var explicitTemplateID = anyStr(norm, 'template_id') || anyStr(norm, 'templateid');
+  var carryAnalysis = '', carryReco = '';
   if (hasAnalysis || hasReco) {
     var cached = getCachedParams(tableName);
+    // 2차 호출의 명시적 template_id가 캐시된 템플릿과 다른 의도면(예: 1차 template_id 누락으로
+    // R-0-general 캐시 → 2차 R-2-vibration 지정) 캐시를 버리고 풀 파이프라인 재실행 — 새 템플릿의
+    // compute(차트 데이터)까지 다시 뽑아야 하므로 templateID만 바꿔치기하면 안 됨.
+    // 이전 호출에서 모아둔 analysis/recommendations 조각은 승계.
+    if (cached && explicitTemplateID && cached._templateID && !sameTemplateIntent(explicitTemplateID, cached._templateID)) {
+      console.println('  [report] Template switch: cached ' + cached._templateID + ' → requested ' + explicitTemplateID + ', re-running full pipeline');
+      carryAnalysis = cached.ANALYSIS || '';
+      carryReco = cached.RECOMMENDATIONS || '';
+      delete _paramsCache[tableName];
+      cached = null;
+    }
     if (cached) {
       console.println('  [report] Cache hit for ' + tableName);
       // Accumulate analysis/recommendations across calls so the LLM needn't re-send the
@@ -371,7 +395,7 @@ function saveHtmlReport(mc, args, cb) {
           templateID = 'R-1-finance';
         } else if (detectIMUTags(tags)) {
           templateID = 'R-3-driving';
-        } else if (detectVibrationTags(tags)) {
+        } else if (detectVibrationTags(tags, tableName)) {
           templateID = 'R-2-vibration';
         }
         kind = templateKind(templateID);
@@ -455,6 +479,9 @@ function saveHtmlReport(mc, args, cb) {
             if (!params.TIME_RANGE && anyStr(norm, 'time_range')) params.TIME_RANGE = anyStr(norm, 'time_range');
             if (anyStr(norm, 'analysis')) params.ANALYSIS = mdToHTML(anyStr(norm, 'analysis'));
             if (anyStr(norm, 'recommendations')) params.RECOMMENDATIONS = mdToHTML(anyStr(norm, 'recommendations'));
+            // 템플릿 전환 재실행 시 이전 호출에서 모아둔 조각 승계 (이미 HTML 변환된 상태라 그대로 사용)
+            if (!params.ANALYSIS && carryAnalysis) params.ANALYSIS = carryAnalysis;
+            if (!params.RECOMMENDATIONS && carryReco) params.RECOMMENDATIONS = carryReco;
 
             if (!params.DATA_COUNT && statsCSV) {
               var total = calcTotalCount(statsCSV);
@@ -476,7 +503,7 @@ function saveHtmlReport(mc, args, cb) {
               var domainGuide = templateGuide ? ('\n★ 분석 지침 (아래 방향으로, 위 수치 수준에 맞는 톤을 스스로 판단해 작성):\n' + templateGuide + '\n') : '';
               var msg = '데이터를 조회했습니다. 아래 통계와 계산 결과를 기반으로 analysis와 recommendations를 작성하여 다시 호출하세요.\n' +
                 '★ analysis: 최소 5개 ## 섹션, 각 2~3문단. 마크다운 필수.\n' +
-                '★ recommendations: 7개 이상 번호 항목. 즉시/단기/중장기로 우선순위 구분. 각 항목에 근거 수치+실행방안+기대효과.\n' +
+                '★ recommendations: 7개 이상 번호 항목. 즉시/단기/중장기로 우선순위 구분. **각 항목은 [근거 수치 → 실행방안 → 기대효과] 세 요소를 모두, 같은 형식으로 포함**(하나만 쓰지 말 것 — 전 항목 통일).\n' +
                 domainGuide + '\n' + summary;
               return cb(null, msg);
             }
@@ -1208,10 +1235,13 @@ function detectIMUTags(tags) {
   return found >= 3;
 }
 
-function detectVibrationTags(tags) {
+function detectVibrationTags(tags, tableName) {
   var vibKeywords = ['vib', 'vibration', 'bearing', 'sensor', 'accel', 'velocity', 'displacement'];
-  for (var i = 0; i < tags.length; i++) {
-    var lower = tags[i].toLowerCase();
+  // 태그명이 C1/C2처럼 무의미해도 테이블명(BEARING 등)으로 감지되도록 둘 다 검사
+  var names = tags.slice();
+  if (tableName) names.push(tableName);
+  for (var i = 0; i < names.length; i++) {
+    var lower = String(names[i]).toLowerCase();
     for (var j = 0; j < vibKeywords.length; j++) {
       if (lower.indexOf(vibKeywords[j]) >= 0) return true;
     }
@@ -1271,7 +1301,21 @@ function pickRollupUnit(startMs, endMs) { if (!startMs || !endMs) return 'min'; 
 function parseTagList(csvData) { if (!csvData) return []; try { var p = JSON.parse(csvData); if (p && p.data && p.data.rows) return p.data.rows.map(function (r) { return r[0]; }).filter(function (t) { return t; }); } catch (e) {} var lines = csvData.split('\n'); var tags = []; for (var i = 1; i < lines.length; i++) { var t = lines[i].trim(); if (t && t !== 'NAME') tags.push(t); } return tags; }
 function parseStatsCSV(csvData) { var rows = [], items = []; try { var p = JSON.parse(csvData); if (p && p.data && p.data.rows) { for (var i = 0; i < p.data.rows.length; i++) { var r = p.data.rows[i]; if (r.length < 5) continue; rows.push('<tr><td>' + r[0] + '</td><td class="num">' + r[1] + '</td><td class="num">' + r[2] + '</td><td class="num">' + r[3] + '</td><td class="num">' + r[4] + '</td></tr>'); items.push({ name: r[0], count: r[1], avg: r[2], min: r[3], max: r[4] }); } } } catch (e) {} return { rows: rows, items: items }; }
 function parseTimeRangeCSV(csvData) { try { var p = JSON.parse(csvData); if (p && p.data && p.data.rows && p.data.rows.length > 0) { var row = p.data.rows[0]; if (row[0] == null || row[1] == null) return ''; var s0 = String(row[0]), s1 = String(row[1]); if (s0 === 'null' || s1 === 'null' || !s0 || !s1) return ''; return s0.substring(0, 19) + ' ~ ' + s1.substring(0, 19); } } catch (e) {} return ''; }
-function findOHLCVTags(tags, stock) { var result = {}; var fields = ['open', 'high', 'low', 'close', 'volume']; if (stock) { var prefix = stock.toUpperCase() + '_'; tags.forEach(function (t) { var upper = t.toUpperCase(); if (upper.indexOf(prefix) !== 0) return; var suffix = t.substring(prefix.length).toLowerCase(); if (fields.indexOf(suffix) >= 0) result[suffix] = t; }); } else { var lower = {}; tags.forEach(function (t) { lower[t.toLowerCase()] = t; }); fields.forEach(function (f) { if (lower[f]) result[f] = lower[f]; }); } return result; }
+function findOHLCVTags(tags, stock) {
+  var result = {}; var fields = ['open', 'high', 'low', 'close', 'volume'];
+  if (stock) {
+    var prefix = stock.toUpperCase() + '_';
+    tags.forEach(function (t) { var upper = t.toUpperCase(); if (upper.indexOf(prefix) !== 0) return; var suffix = t.substring(prefix.length).toLowerCase(); if (fields.indexOf(suffix) >= 0) result[suffix] = t; });
+  }
+  // 접두어(SILVER_open 등) 매칭 실패 또는 stock 미지정 → bare 이름(open/high/low/close/volume)으로 폴백.
+  // silver 테이블처럼 태그가 SILVER_open이 아니라 open/high/low/close 그대로면 접두어 검색이 0건 → 차트가 안 나오던 버그.
+  // 멀티종목 테이블(SILVER_open, GOLD_open)은 접두어로 이미 채워져 폴백 미발동(bare 'open' 태그도 없음).
+  if (!result.close || !result.open) {
+    var lower = {}; tags.forEach(function (t) { lower[t.toLowerCase()] = t; });
+    fields.forEach(function (f) { if (!result[f] && lower[f]) result[f] = lower[f]; });
+  }
+  return result;
+}
 function extractStockPrefix(tagVal) { var c = tagVal.split(',')[0].trim(); ['_close', '_open', '_high', '_low', '_volume', '_adj_close'].forEach(function (s) { var idx = c.toLowerCase().indexOf(s); if (idx > 0) c = c.substring(0, idx); }); return c.toUpperCase(); }
 function calcTotalCount(csvData) { var total = 0; try { var p = JSON.parse(csvData); if (p && p.data && p.data.rows) p.data.rows.forEach(function (r) { if (r.length >= 2) total += parseInt(r[1], 10) || 0; }); } catch (e) {} return total; }
 function mdToHTML(text) {

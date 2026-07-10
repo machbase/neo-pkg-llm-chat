@@ -3,6 +3,160 @@ var { extractUserTables, checkTableOwnership } = require('./ownership');
 var rangeCache = require('./range_cache');
 var security = require('./security');
 
+// Machbase SQL 방언 자동교정 — 약한 모델이 자주 틀리는 "기계적으로 항상 틀린" 형태를 실행 전에 결정론적으로 바로잡는다.
+// 프롬프트(규칙 안내)는 확률적이라 약한 모델이 안 지킴 → 도구 실행 직전 교정이 확실한 방어(normalizeHan/normalizeSpec와 동일 철학).
+var TRUNC_UNIT = /^(sec|min|hour|day|week|month|year)$/i;
+function sanitizeSql(sql) {
+  var before = sql;
+  // DATE_TRUNC(col, 'unit') → DATE_TRUNC('unit', col). Machbase는 단위가 먼저. 뒤집힌 형태만 매칭(올바른 형태는 첫 인자가
+  // 따옴표라 제외돼 오탐 0). 이 실수가 ERR-2037 → EXTRACT(EPOCH) 헛짚음 → "계산 불가" 환각으로 이어지던 사슬의 뿌리.
+  sql = sql.replace(/DATE_TRUNC\s*\(\s*([^,'()]+?)\s*,\s*'([A-Za-z]+)'\s*\)/gi, function (m, col, unit) {
+    return TRUNC_UNIT.test(unit) ? "DATE_TRUNC('" + unit.toLowerCase() + "', " + col.trim() + ")" : m;
+  });
+  if (sql !== before) console.println('[SQL] DATE_TRUNC 인자순서 자동교정(sanitizeSql)');
+  // 한글(비ASCII) 컬럼 별칭 → 안전한 ASCII 별칭. Machbase는 별칭에 한글 불가(ERR-2010) → 약한 모델의 `AS 변동폭` 같은
+  // 실수가 에러→재시도 degeneration의 첫 도미노가 됨. 별칭은 결과값에 무관한 표시 라벨이라 이름만 바꾸는 건 무조건 안전.
+  // AS 뒤 한글 식별자와, 그 별칭을 참조하는 GROUP BY/ORDER BY/HAVING의 동일 토큰까지 함께 치환(문자열 리터럴 속 한글은
+  // 실무상 없음 — 태그명·값은 영문). split/join 리터럴 치환이라 정규식 이스케이프 불필요.
+  var aliasRe = /\bAS\s+"?([가-힣][^\s,()"']*)"?/gi, aliasMap = {}, ai = 0, am;
+  while ((am = aliasRe.exec(sql)) !== null) { if (!aliasMap[am[1]]) aliasMap[am[1]] = 'col' + (++ai); }
+  var aliasKeys = Object.keys(aliasMap);
+  if (aliasKeys.length) {
+    aliasKeys.forEach(function (kw) { sql = sql.split('"' + kw + '"').join(aliasMap[kw]).split(kw).join(aliasMap[kw]); });
+    console.println('[SQL] 한글 별칭 → ASCII 자동교정(sanitizeSql): ' + aliasKeys.join(', '));
+  }
+  // 버킷 GROUP BY(DATE_TRUNC/ROLLUP) + SELECT/ORDER BY의 raw TIME → 무조건 ERR-2044로 실패가 확정된 쿼리.
+  // 에러 힌트(HINT_GROUPBY)로는 약한 모델이 ORDER BY만 고치고 SELECT의 raw TIME은 못 고침(S10 라이브 실측) →
+  // raw TIME을 GROUP BY의 버킷식으로 결정론 치환. 실패 확정 쿼리만 건드리므로 "무조건 옳은 교정" 원칙 유지.
+  // 서브쿼리(FROM ( )가 있으면 절 경계가 모호해 스킵(힌트 폴백). t.TIME/AS TIME/함수 안 TIME은 치환 제외.
+  var fixed = fixRawTimeWithBucketGroupBy(sql);
+  if (fixed !== sql) { console.println('[SQL] 버킷 GROUP BY + raw TIME → 버킷식 자동교정(sanitizeSql)'); sql = fixed; }
+  return sql;
+}
+
+// SELECT-list의 괄호깊이 0 단독 컬럼 토큰 수집(함수명·AS 별칭·점표기 제외, 평면 쿼리 전용) —
+// 버킷 GROUP BY에서 2044를 확정시키는 bare NAME/VALUE 진단용(sanitize NAME 추가 + 2044 동적 힌트 공용).
+var SELECT_KEYWORDS = { SELECT: 1, DISTINCT: 1, ALL: 1, AS: 1, CASE: 1, WHEN: 1, THEN: 1, ELSE: 1, END: 1, AND: 1, OR: 1, NOT: 1, NULL: 1, TRUE: 1, FALSE: 1 };
+function bareSelectCols(sql) {
+  var s = String(sql || '');
+  if (/FROM\s*\(/i.test(s)) return [];
+  var selM = s.match(/^\s*SELECT\b([\s\S]*?)\bFROM\b/i);
+  if (!selM) return [];
+  var seg = selM[1], cols = [], depth = 0, inStr = false, i = 0, prevUp = '';
+  while (i < seg.length) {
+    var ch = seg.charAt(i);
+    if (inStr) { if (ch === "'") inStr = false; i++; continue; }
+    if (ch === "'") { inStr = true; i++; continue; }
+    if (ch === '(') { depth++; i++; continue; }
+    if (ch === ')') { depth--; i++; continue; }
+    if (/[A-Za-z_]/.test(ch)) {
+      var m = seg.slice(i).match(/^[A-Za-z_][A-Za-z0-9_]*/);
+      var word = m[0], up = word.toUpperCase();
+      var nextNonSpace = ((seg.slice(i + word.length).match(/^\s*(\S)/) || [])[1]) || '';
+      var prevCh = i > 0 ? seg.charAt(i - 1) : '';
+      if (depth === 0 && !SELECT_KEYWORDS[up] && nextNonSpace !== '(' && nextNonSpace !== '.' &&
+          prevCh !== '.' && prevUp !== 'AS' && cols.indexOf(up) < 0) cols.push(up);
+      prevUp = up; i += word.length; continue;
+    }
+    i++;
+  }
+  return cols;
+}
+
+// SELECT-list/ORDER BY 절의 괄호깊이 0인 단독 TIME 토큰을 버킷식으로 치환. 전체 SQL을 단일 패스로 걸으며
+// 절 상태(select/orderby)를 추적 — 세그먼트 잘라붙이기(split/join)는 " TIME" 같은 짧은 조각이 다른 위치까지
+// 치환돼 이중 래핑되는 버그가 있어 금지. 함수 인자 속 TIME(depth>0)·t.TIME·AS TIME(별칭)은 건드리지 않는다.
+function fixRawTimeWithBucketGroupBy(sql) {
+  var s = String(sql || '');
+  if (/FROM\s*\(/i.test(s)) return sql;                                  // 서브쿼리 → 스킵
+  var gb = s.match(/\bGROUP\s+BY\b([\s\S]*?)(?:\bORDER\s+BY\b|\bHAVING\b|\bLIMIT\b|$)/i);
+  if (!gb) return sql;
+  var bucket = (gb[1].match(/(?:DATE_TRUNC|ROLLUP)\s*\((?:[^()]|\([^()]*\))*\)/i) || [])[0];
+  if (!bucket) return sql;                                                // 버킷 GROUP BY 아님 → 스킵
+  if (/\bTIME\b/i.test(gb[1].replace(/(?:DATE_TRUNC|ROLLUP)\s*\((?:[^()]|\([^()]*\))*\)/gi, ''))) return sql; // GROUP BY에 raw TIME도 있으면(합법일 수 있음) 스킵
+  var out = '', depth = 0, inStr = false, i = 0, clause = '', prevWordUp = '';
+  while (i < s.length) {
+    var ch = s.charAt(i);
+    if (inStr) { out += ch; if (ch === "'") inStr = false; i++; continue; }
+    if (ch === "'") { inStr = true; out += ch; i++; continue; }
+    if (ch === '(') { depth++; out += ch; i++; continue; }
+    if (ch === ')') { depth--; out += ch; i++; continue; }
+    if (/[A-Za-z_]/.test(ch)) {
+      var m = s.slice(i).match(/^[A-Za-z_][A-Za-z0-9_]*/);
+      var word = m[0], up = word.toUpperCase();
+      if (depth === 0) {
+        if (up === 'SELECT') clause = 'select';
+        else if (up === 'FROM' || up === 'LIMIT' || up === 'HAVING') clause = '';
+        else if (up === 'BY' && prevWordUp === 'ORDER') clause = 'orderby';
+        else if (up === 'BY' && prevWordUp === 'GROUP') clause = 'groupby';
+        else if (up === 'TIME' && (clause === 'select' || clause === 'orderby')) {
+          var prevCh = (out.match(/(\S)\s*$/) || [])[1] || '';
+          var nextCh = s.charAt(i + word.length);
+          if (prevCh !== '.' && nextCh !== '.' && prevWordUp !== 'AS') {
+            out += bucket; prevWordUp = up; i += word.length; continue;
+          }
+        }
+      }
+      out += word; prevWordUp = up; i += word.length; continue;
+    }
+    out += ch; i++;
+  }
+  // 잔여 bare NAME(비집계 식별컬럼)이 SELECT에 있는데 GROUP BY에 없으면 → GROUP BY에 추가.
+  // 2044 확정 쿼리의 정석 해석(선택한 식별컬럼 = 그룹핑 컬럼)이라 무위험. VALUE는 의미(AVG? MAX-MIN?)를
+  // 추측해야 해서 재작성 금지 — 2044 동적 힌트로 위임(S1/S7 라이브 실측).
+  if (bareSelectCols(out).indexOf('NAME') >= 0) {
+    var gb2 = out.match(/\bGROUP\s+BY\b([\s\S]*?)(?:\bORDER\s+BY\b|\bHAVING\b|\bLIMIT\b|$)/i);
+    if (gb2 && !/\bNAME\b/i.test(gb2[1])) {
+      out = out.replace(/(\bGROUP\s+BY\b)([\s\S]*?)(\bORDER\s+BY\b|\bHAVING\b|\bLIMIT\b|$)/i, function (_all, a, b, c) {
+        return a + b.replace(/\s+$/, '') + ', NAME ' + c;
+      });
+    }
+  }
+  return out;
+}
+
+// 알려진 오류코드에 교정 힌트를 붙여 모델이 올바른 형태로 재시도하게 한다(원문 에러만 주면 약한 모델이 "기능 제한"으로 포기).
+function hintForError(reason, sql) {
+  var r = String(reason || '');
+  var s = String(sql || '');
+  var HINT_TRUNC = ' (힌트: 시간버킷은 DATE_TRUNC(\'hour\', TIME) — 단위 먼저. ROLLUP 있으면 ROLLUP(\'hour\',1,TIME) 우선. STDDEV는 ROLLUP 불가라 DATE_TRUNC+GROUP BY)';
+  var HINT_TAG = ' (힌트: 태그 이름을 컬럼처럼 쓰지 마세요. 태그 필터는 WHERE NAME=\'태그명\', 값 조건은 VALUE 컬럼을 씁니다. 예: WHERE NAME=\'TAG01\' AND VALUE > 12 AND VALUE < 15)';
+  var HINT_GROUPBY = ' (힌트: ERR-2044는 DATE_TRUNC/ROLLUP 고장이 아닙니다 — GROUP BY에서 정상 작동합니다. 원인은 SELECT나 ORDER BY에서 raw TIME을 쓴 것입니다. 시간버킷으로 그룹했으면 ORDER BY·SELECT의 시간도 raw TIME 대신 같은 버킷식(또는 그 별칭)을 쓰세요. 예: SELECT DATE_TRUNC(\'hour\',TIME) AS bucket, MAX(VALUE)-MIN(VALUE) AS band FROM ... GROUP BY DATE_TRUNC(\'hour\',TIME) ORDER BY bucket)';
+  // 특정 에러코드를 먼저 판정한다. 에러 reason은 문제의 SQL 전체를 echo하므로, 텍스트 매칭(예: /DATE_TRUNC/)을
+  // 코드보다 먼저 두면 ERR-2010(별칭) 오류인데 SQL에 DATE_TRUNC 단어가 있다는 이유로 엉뚱한 DATE_TRUNC 힌트로
+  // 샌다(S8 라이브 실측: 한글 별칭 변동폭 오류에 DATE_TRUNC 힌트가 나와 모델이 회복 못 함). 텍스트 매칭은 폴백으로.
+  if (/2129/.test(r)) return ' (힌트: 서수 GROUP BY 1 미지원 → GROUP BY엔 표현식/별칭 전체를 쓰세요)';
+  if (/2010/.test(r)) {
+    // ± INTERVAL '따옴표' 산술이 원인일 땐 토큰('86400' 등)만 보면 별칭 오진단 → 모델이 회복 못 함(S5 r3 라이브 실측).
+    // (따옴표 없는 INTERVAL 1 DAY는 정상 동작 — 라이브 확인 — 이라 따옴표 형태만 잡음)
+    if (/[-+]\s*INTERVAL\s*'/i.test(s)) return ' (힌트: INTERVAL \'숫자\' 단위 문법이 오류를 냈습니다. INTERVAL 1 DAY처럼 따옴표 없이 쓰거나, TO_DATE(\'YYYY-MM-DD HH24:MI:SS\') 리터럴 두 개로 범위를 직접 쓰세요. 질문에 기간이 명시되지 않았다면 TIME 필터를 아예 빼고 전체 기간으로 조회하세요.)';
+    // ERR-2010 "near token (X FROM ..." → X가 문제의 별칭. 한글이냐 예약어냐를 구분해야 모델이 회복함.
+    // 기존엔 무조건 "한글 별칭"이라 해서 AS RANGE(예약어) 오류를 오진단 → 모델이 RANGE를 계속 고집하며 무한 실패.
+    var m2010 = r.match(/near token \(\s*([^\s)]+)/);
+    var tok = m2010 ? m2010[1] : '';
+    if (tok && /[^\x00-\x7F]/.test(tok)) return ' (힌트: 별칭 "' + tok + '"이 한글입니다 — 컬럼 별칭은 영어만 됩니다. 예: AS band)';
+    if (tok) return ' (힌트: 별칭 "' + tok + '"이 예약어이거나 허용되지 않는 이름입니다. RANGE·VALUE·TIME·NAME·DATE 같은 예약어를 피해 평범한 영어 별칭을 쓰세요. 예: AS band, AS diff, AS val_range)';
+    return ' (힌트: 컬럼 별칭은 예약어(RANGE·VALUE·TIME 등)·한글을 피하고 평범한 영어 단어를 쓰세요. 예: AS band)';
+  }
+  if (/2056/.test(r)) return HINT_TAG;
+  if (/2044/.test(r)) {
+    // 문제의 bare 컬럼을 콕 집어 안내 — 범용 raw TIME 설명만으론 약한 모델이 VALUE/NAME 케이스를 못 고침(S7/S8 라이브 실측).
+    var _bare = bareSelectCols(s), _extra = '';
+    if (_bare.indexOf('VALUE') >= 0) _extra += ' 특히 이 쿼리는 SELECT에 raw VALUE가 있습니다 — GROUP BY 집계에서는 집계함수로 감싸야 합니다(평균은 AVG(VALUE), 변동폭은 MAX(VALUE)-MIN(VALUE)).';
+    if (_bare.indexOf('NAME') >= 0) _extra += ' SELECT의 NAME은 GROUP BY 목록에 NAME을 추가하면 됩니다.';
+    return HINT_GROUPBY + _extra;
+  }
+  if (/2037/.test(r)) return HINT_TRUNC;
+  // MACHCLI-ERR-300 "Invalid date value" — 잘못된 날짜 리터럴/TO_DATE 오용(예: 두 번째 인자에 'INTERVAL DAY + 1').
+  // S5 r1 라이브 실측: 힌트 없이는 모델이 같은 SQL만 반복하다 교착.
+  if (/MACHCLI-ERR-300|Invalid date value/i.test(r)) return ' (힌트: 날짜 리터럴/형식 오류입니다. TO_DATE(\'2024-01-01\') 또는 TO_DATE(\'2024-01-01 09:00:00\', \'YYYY-MM-DD HH24:MI:SS\') 형태만 쓰세요. TO_DATE의 두 번째 인자는 형식 문자열만 가능하며 INTERVAL 식은 넣을 수 없습니다. 질문에 기간이 명시되지 않았다면 TIME 필터를 아예 빼고 전체 기간으로 조회하세요.)';
+  // 코드로 못 잡은 경우에만 텍스트 휴리스틱 폴백(에러코드 없는 변형 대비)
+  if (/Column name .* not found/i.test(r)) return HINT_TAG;
+  if (/Not a GROUP BY expression/i.test(r)) return HINT_GROUPBY;
+  if (/DATE_TRUNC/i.test(r)) return HINT_TRUNC;
+  return '';
+}
+
 function register(registry, mc) {
   // list_tables
   registry.register({
@@ -134,6 +288,9 @@ function register(registry, mc) {
             }
             if (rollupCount > 0) out += 'ROLLUP: available (' + rollupCount + ' rollup tables)\n';
             else out += 'ROLLUP: not available\n';
+            // 태그별 요약통계 가상뷰 — 항상 존재(TAG 테이블). 태그별 개수/최소/최대/기간 질문에서 모델이
+            // GROUP BY 조합을 직접 만들다 컬럼을 빼먹는 것(S9 r2 라이브 실측: MIN/MAX(VALUE) 누락) 방지.
+            out += 'STAT: v$' + upperTable + '_stat (per-tag WHOLE-RANGE summary: name, row_count, min_value, max_value, min_time, max_time) — 태그별 "전체 기간" 개수·최소·최대·기간 요약 전용. 시간별/일별 등 시간 버킷 집계에는 사용 금지 — 그 경우 ROLLUP/DATE_TRUNC를 쓰세요\n';
             if (!profile) return cb(null, out.trim());
             appendProfile(mc, upperTable, nameCol || 'NAME', timeCol || 'TIME', valueCol || 'VALUE', out, cb);
           });
@@ -158,8 +315,12 @@ function register(registry, mc) {
       required: ['sql_query'],
     },
     fn: function (args, cb) {
-      var sql = argStr(args, 'sql_query', '');
-      if (!sql) return cb(null, 'Error: sql_query is required');
+      var rawSql = argStr(args, 'sql_query', '');
+      if (!rawSql) return cb(null, 'Error: sql_query is required');
+      var sql = sanitizeSql(rawSql); // 방언 자동교정(DATE_TRUNC 인자순서 등) — 약한 모델 기계적 실수 결정론 방어
+      // 교정됐으면 실제 실행 SQL을 같은 포맷으로 로그 — 평가 채점기(raw의 sql_query: 라인 재실행)가
+      // 모델의 원본(실행 불가)이 아니라 실제 실행된 쿼리를 검증할 수 있게.
+      if (sql !== rawSql) console.println('  |- sql_query: ' + sql);
 
       var upper = sql.toUpperCase().trim();
       // Defense-in-depth (also enforced at registry.execute chokepoint): refuse mutation/
@@ -182,11 +343,11 @@ function register(registry, mc) {
         if (ownerErr) return cb(null, 'Error: ' + ownerErr.message);
         // Always request JSON from Machbase, format to CSV in code if needed
         mc.querySQL(finalSQL, timeformat, timezone, '', function (err, result) {
-          if (err) return cb(null, 'Error: ' + err.message);
+          if (err) return cb(null, 'Error: ' + err.message + hintForError(err.message, finalSQL));
           if (format === 'json') return cb(null, result);
           try {
             var parsed = JSON.parse(result);
-            if (!parsed.success) return cb(null, 'Error: ' + parsed.reason);
+            if (!parsed.success) return cb(null, 'Error: ' + parsed.reason + hintForError(parsed.reason, finalSQL));
             var cols = parsed.data.columns;
             var rows = parsed.data.rows;
             var out = cols.join(',') + '\n';
@@ -261,4 +422,4 @@ function appendProfile(mc, table, nameCol, timeCol, valueCol, out, cb) {
   });
 }
 
-module.exports = { register };
+module.exports = { register, bareSelectCols };

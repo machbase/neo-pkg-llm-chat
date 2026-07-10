@@ -1,3 +1,7 @@
+// jsh CLI 모드(machbase-neo jsh main.js) 단독 실행 시 process가 전역이 아니라 일부 lib(path.resolve→cwd) ·
+// 모듈이 bare `process` 참조에서 실패한다(서버 모드는 런처가 세팅해줘서 안 남). 최상단에서 전역 보장.
+try { if (typeof globalThis !== 'undefined' && typeof globalThis.process === 'undefined') globalThis.process = require('process'); } catch (e) {}
+
 var config = require('./config/config');
 var logger = require('./logger/logger');
 

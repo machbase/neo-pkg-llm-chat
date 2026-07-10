@@ -60,14 +60,14 @@ function createRegistry() {
     //  · 순수 문서 질문(예측이 뭐야/사용법)은 제외해 DocLookup으로 보냄.
     //  · 대시보드/리포트 요청은 제외 → 아래 Basic/Advanced/Report로 라우팅(거기에도 forecast_table 노출됨).
     if (containsKeyword(lower, ['예측', '예상', '전망', '이후 데이터', '미래 값', '향후', 'forecast', 'predict', 'prediction', 'extrapolat'])
-      && !containsKeyword(lower, ['뭐야', '뭔가요', '란?', '이란', '사용법', '문법', '설명해', 'what is', 'how to'])
+      && !containsKeyword(lower, ['뭐야', '뭐임', '뭔데', '뭐냐', '뭐지', '뭔가요', '란?', '이란', '사용법', '문법', '설명해', 'what is', 'how to'])
       && !containsKeyword(lower, ['대시보드', 'dashboard', '리포트', '보고서', 'report'])) {
       return skills['CodeExec'];
     }
 
     // 5. CodeExec — 실행 의도 확실한 키워드 (DocLookup 키워드 없을 때만)
     var hasDocKw = containsKeyword(lower, [
-      '뭐야', '뭔가요', '란?', '이란', '사용법', '문법', '예제', '알려줘', '설명해', '어떻게', '방법',
+      '뭐야', '뭐임', '뭔데', '뭐냐', '뭐지', '뭔가요', '란?', '이란', '사용법', '문법', '예제', '알려줘', '설명해', '어떻게', '방법',
       'how to', 'what is', 'what are', 'explain', 'usage', 'example', 'syntax', 'help me understand',
       '문서', '매뉴얼', 'manual', 'doc', 'documentation', 'reference',
     ]);
@@ -78,9 +78,10 @@ function createRegistry() {
       return skills['CodeExec'];
     }
 
-    // 6. DocLookup
+    // 6. DocLookup — '뭐임/뭔데/뭐냐/뭐지'는 구어 개념질문("tql 이 뭐임")이 General로 새서 가드가
+    //    전부 무력화되던 라우팅 구멍(2026-07-02 라이브 재현) 때문에 추가.
     if (containsKeyword(lower, [
-      '뭐야', '뭔가요', '란?', '이란', '사용법', '문법', '예제', '알려줘', '설명해', '어떻게',
+      '뭐야', '뭐임', '뭔데', '뭐냐', '뭐지', '뭔가요', '란?', '이란', '사용법', '문법', '예제', '알려줘', '설명해', '어떻게',
       'how to', 'what is', 'what are', 'explain', 'usage', 'example', 'syntax', 'help me understand',
     ]) || containsKeyword(lower, ['문서', '매뉴얼', 'manual', 'doc', 'documentation', 'reference'])) {
       return skills['DocLookup'];

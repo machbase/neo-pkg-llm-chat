@@ -7,18 +7,12 @@ var DEFAULT_MODEL = 'qwen3.5:9b';
 function createOllamaClient(baseURL, model) {
   return {
     baseURL: baseURL || 'http://127.0.0.1:11434', model: model || DEFAULT_MODEL, type: 'ollama',
-    // numKeep=6100: 컨텍스트가 num_ctx 초과 시 프롬프트 앞쪽 6100토큰 유지(큰 시스템 프롬프트 KV 캐시 재사용 → 초기/반복 처리 속도).
-    // 수동으로 정한 검증값 — 흔들지 말 것.
-    temperature: 0, numPredict: 4096, numCtx: 40960, numGPU: 36, numKeep: 6100,
+    // numKeep=1400: 오버플로(num_ctx 초과) 시 앞쪽 1400토큰 보존 = core 세그먼트(Role/Safety/스키마/SQL/에러/금지 ≈1300) + 마진.
+    // core는 catalog/문서와 무관하게 불변이라 고정값이 stale 안 됨. catalog는 뒤쪽이라 오버플로 시 evict 허용
+    // (라우팅용이라 지킬 가치 낮음 → 최근 도구 결과를 대신 보존). ※구 6100은 full시스템 기준이라 catalog 성장으로 stale됐던 값.
+    temperature: 0, numPredict: 4096, numCtx: 40960, numGPU: 36, numKeep: 1400,
     chat: function (messages, toolDefs, cb) { ollamaChat(this, messages, toolDefs, cb); },
     chatSync: function (messages, toolDefs) { return ollamaChatSync(this, messages, toolDefs); },
-    // ⚠️ 미사용(의도적): 어디서도 호출 안 함. 스킬별 num_keep 동적 조정 시도였으나, 위 수동 6100이 검증값이라
-    // per-skill 값(6900 등)은 미적용 상태로 둠. 동적 튜닝이 필요해지면 continueMessages에서 호출해 와이어링.
-    setNumKeep: function (skillName) {
-      var map = { AdvancedAnalysis: 6900, BasicAnalysis: 6100, Report: 5500, DocLookup: 5500 };
-      this.numKeep = map[skillName] || 6100;
-      console.println('[Ollama] num_keep set to ' + this.numKeep + ' (skill: ' + skillName + ')');
-    },
   };
 }
 
@@ -26,6 +20,9 @@ function ollamaChat(client, messages, toolDefs, cb) {
   var reqBody = {
     model: client.model, messages: messagesToOllama(messages),
     tools: toolDefs && toolDefs.length > 0 ? toolDefs : undefined, stream: false,
+    // qwen3.5 등 네이티브 thinking 모델: 신버전 ollama(0.17+)는 프롬프트 /no_think을 무시하고 think 파라미터로만 제어.
+    // think:false로 thinking 비활성 → 답변 내용 동일하면서 호출당 수백 토큰+수초 절약(확인: eval_count 820→5).
+    think: false,
     options: { temperature: client.temperature, num_predict: client.numPredict, num_ctx: client.numCtx, num_gpu: client.numGPU, num_keep: client.numKeep },
   };
   var body = JSON.stringify(reqBody);
@@ -49,6 +46,7 @@ function ollamaChatSync(client, messages, toolDefs) {
   var reqBody = {
     model: client.model, messages: messagesToOllama(messages),
     tools: toolDefs && toolDefs.length > 0 ? toolDefs : undefined, stream: false,
+    think: false,     // ollamaChat 참조: 네이티브 thinking 비활성(프롬프트 /no_think은 신버전 ollama가 무시)
     options: { temperature: client.temperature, num_predict: client.numPredict, num_ctx: client.numCtx, num_gpu: client.numGPU, num_keep: client.numKeep },
   };
   var body = JSON.stringify(reqBody);

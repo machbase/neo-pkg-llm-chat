@@ -135,7 +135,9 @@ var ROUTING_STOPWORDS = {
   '리포트': 1, 'report': 1, '보고서': 1, '분석': 1, 'analysis': 1, '데이터': 1, 'data': 1,
   '커스텀': 1, 'custom': 1, '템플릿': 1, 'template': 1, '기본': 1, 'general': 1,
   '표': 1, 'table': 1, '테이블': 1, '차트': 1, 'chart': 1, '작성': 1, '생성': 1, '만들': 1,
-  '샘플': 1, 'sample': 1, '예시': 1, 'example': 1, '요약': 1, 'summary': 1
+  '샘플': 1, 'sample': 1, '예시': 1, 'example': 1, '요약': 1, 'summary': 1,
+  // 빌트인 제목 전부에 등장("~ 데이터 종합 분석 리포트") → 남겨두면 '종합' 포함 질문이 전 템플릿 multi-hit돼 주제 매칭 무효화
+  '종합': 1
 };
 function routingTokens(s) {
   return String(s).toLowerCase().split(/[^a-z0-9가-힣]+/).filter(function (t) {
@@ -143,10 +145,9 @@ function routingTokens(s) {
   });
 }
 
-// 쿼리에 매칭되는 커스텀 템플릿 id (slug + 제목 토큰, generic stopword 제외). 정확히 1개면 그 id, 아니면 ''.
-// 약한 모델(ollama)이 커스텀을 이름으로 못 고를 때, 도구-레벨에서 결정론적으로 template_id를 주입하기 위함.
-// 고유 주제 커스텀(C-2-energy 등)만 매칭됨 — 중립 'sample'은 stopword라 미매칭(데모는 이름선택 전용 유지).
-function matchCustomByQuery(query) {
+// 쿼리에 매칭되는 템플릿 id (slug + 제목 토큰, generic stopword 제외). 정확히 1개면 그 id, 아니면 ''.
+// 약한 모델(ollama)이 template_id를 못 고를 때, 도구-레벨에서 결정론적으로 주입하기 위함.
+function matchByQuery(query, customOnly) {
   if (!query) return '';
   var q = String(query).toLowerCase();
   ensureCache();
@@ -154,7 +155,8 @@ function matchCustomByQuery(query) {
   var keys = Object.keys(_meta);
   for (var i = 0; i < keys.length; i++) {
     var m = _meta[keys[i]];
-    if (!m || !m.custom) continue;
+    if (!m) continue;
+    if (customOnly ? !m.custom : m.custom) continue;
     var slug = (/^[A-Za-z]-\d+-(.+)$/.exec(m.id) || [])[1] || '';
     var kws = routingTokens(slug).concat(routingTokens(m.title || ''));
     for (var k = 0; k < kws.length; k++) {
@@ -164,4 +166,11 @@ function matchCustomByQuery(query) {
   return hits.length === 1 ? hits[0] : '';
 }
 
-module.exports = { loadReportTemplates: loadReportTemplates, expandReportTemplate: expandReportTemplate, listReportTemplates: listReportTemplates, getTemplateMeta: getTemplateMeta, matchCustomByQuery: matchCustomByQuery };
+// 커스텀 전용 — 고유 주제 커스텀(C-2-energy 등)만 매칭. 중립 'sample'은 stopword라 미매칭(데모는 이름선택 전용 유지).
+function matchCustomByQuery(query) { return matchByQuery(query, true); }
+
+// 빌트인 전용 — 질문의 주제어("진동 리포트" 등)가 빌트인 제목/슬러그 토큰과 매칭되면 그 id.
+// 테이블/태그명이 도메인과 무관해도(BEARING 태그 C1/C2 등) 사용자의 말 자체로 템플릿을 결정론적으로 잡는 경로.
+function matchBuiltinByQuery(query) { return matchByQuery(query, false); }
+
+module.exports = { loadReportTemplates: loadReportTemplates, expandReportTemplate: expandReportTemplate, listReportTemplates: listReportTemplates, getTemplateMeta: getTemplateMeta, matchCustomByQuery: matchCustomByQuery, matchBuiltinByQuery: matchBuiltinByQuery };
