@@ -1,6 +1,6 @@
 // compileTIR — TIR(의도 JSON) → 보장된 TQL.
 //
-// 이 파일이 "지식"을 소유한다(예전엔 conventions.md 안의 글이었던 것).
+// 이 파일이 TQL 문법/함정 "지식"을 소유한다.
 // 모든 TQL 함정이 여기 코드로 한 번씩만 박혀 있어, 출력은 항상 검증된 패턴을 따른다:
 //   - SRC→MAP→SINK 순서 (SQL → SCRIPT → 싱크)
 //   - 시간축 [timestamp, value] 페어 → column(0) (TIME 객체 직접 산술 안 함)
@@ -12,8 +12,6 @@
 // 구조(컴파일러 프론트엔드/백엔드 분리):
 //   buildSource(spec)  → SQL          ← 싱크 무관, 공유
 //   SINKS[sink]        → script+sink  ← 플러그형 백엔드 (현재 chart만, 차후 csv/insert/json 추가)
-//
-// 라이브 검증: 2026-06-08, Neo MCP 0.7.3 (SILVER) — raw=GROUP BY 불필요 확정.
 
 var validate = require('./schema').validate;
 var algoSource = require('../forecast_algo').algoSource; // forecast 예측 엔진 소스(SCRIPT에 구워넣음 → 워커와 동일 로직, 라이브 재계산)
@@ -104,12 +102,12 @@ function sqlMetricsRaw(spec) {
     var bx = "DATE_TRUNC('" + (pickUnit(rangeMs(spec)) || 'hour') + "', " + c.t + ")";
     return 'SELECT ' + bx + ', AVG(' + c.v + ') FROM ' + up(spec.table) + whereC + ' GROUP BY ' + bx + ' ORDER BY ' + bx;
   }
-  // raw (라이브 확정: GROUP BY 불필요) + lttb 렌더
+  // raw(GROUP BY 불필요) + lttb 렌더
   return 'SELECT ' + c.t + ', ' + c.v + ' FROM ' + up(spec.table) + whereC + ' ORDER BY ' + c.t;
 }
 
 // ── OHLC(캔들) ──
-// 라이브 확정(2026-06-10, SILVER): FIRST(t,v)/LAST(t,v)/MIN/MAX 지원. ROLLUP은 NAME과 불가(2264)이고 FIRST/LAST는
+// FIRST(t,v)/LAST(t,v)/MIN/MAX 지원. ROLLUP은 NAME과 불가(2264)이고 FIRST/LAST는
 // ROLLUP 집계도 아니므로 **항상 DATE_TRUNC + GROUP BY NAME**. 버킷 라벨은 TO_CHAR로 SQL이 문자열 생성(category 축 →
 // 시간축 나노초 오버플로우 함정 회피). 단위별 포맷 토큰은 버킷이 유일하게 식별되도록.
 var OHLC_FMT = { sec: 'YYYY-MM-DD HH24:MI:SS', min: 'YYYY-MM-DD HH24:MI', hour: 'YYYY-MM-DD HH24', day: 'YYYY-MM-DD', week: 'YYYY-MM-DD', month: 'YYYY-MM' };
@@ -144,9 +142,21 @@ function sqlTags(spec) {
 
 // ── forecast(예측) ── 단일 태그의 버킷 평균 이력. SCRIPT가 이 이력으로 회귀를 라이브 재계산하므로
 // 차트를 열 때마다 현재 데이터로 예측이 갱신된다(스냅샷 아님). 버킷 단위는 범위에 맞춰 클램프.
-// 차트처럼 클램프하지 않음 — 회귀는 점 수에 무관하고 실측선은 lttb로 다운샘플되므로,
-// 사용자가 고른 버킷 단위를 존중하고 없을 때만 범위 기반 자동 선택.
-function forecastUnit(spec) { return spec.rollup || pickUnit(rangeMs(spec)) || 'day'; }
+// 예측용 버킷 단위 — **차트용 pickUnit보다 잘게** 잡는다.
+//   차트는 점 폭주를 막으려 거칠게(2.4년 → month=30점) 잡지만, 예측은 **버킷이 많아야 모델이 배운다**
+//   (30점으론 10개 모델을 학습·검증할 수 없어 MAPE가 30~47%로 뭉갬). 목표: 대략 100~1500 버킷.
+//   사용자가 rollup을 명시하면 그대로 존중.
+function forecastUnit(spec) {
+  if (spec.rollup) return spec.rollup;
+  var ms = rangeMs(spec);
+  if (!ms) return 'day';
+  var h = ms / 1000 / 3600;
+  if (h < 0.5) return 'sec';           // ~30분 미만 (BEARING 3.4분 실측 데이터 → min이면 4버킷뿐, sec이면 206버킷)
+  if (h < 48) return 'min';            // ~2일 미만
+  if (h < 24 * 60) return 'hour';      // ~2개월 미만
+  if (h < 24 * 365 * 3) return 'day';  // ~3년 미만 (SILVER 2.4년 → 725버킷)
+  return 'week';                       // 그 이상
+}
 function sqlForecast(spec) {
   var c = colset(spec);
   var rx = aggTimeExpr(spec, forecastUnit(spec)); // ROLLUP 있으면 ROLLUP, 없으면 DATE_TRUNC
@@ -235,6 +245,11 @@ function seriesInfo(spec) {
 // SCRIPT 빌더 (한 시리즈=단일 라인, 여러 시리즈=3-block 누적)
 // ════════════════════════════════════════════════════
 
+// SQL 문자열 컬럼(NAME 등)은 SCRIPT(goja)에 NullString 구조체 {string, valid}로 들어온다 —
+// String()/valueOf()/==/=== 전부 "[object Object]"가 되어 키·비교가 조용히 전부 miss(빈 차트).
+// 유일한 추출 경로는 .string. 숫자 컬럼·집계값은 순수 숫자, TIME은 페어에 그대로 넣으면 직렬화됨.
+var STR_HELPER = 'function _str(v){ return (v && typeof v === "object" && v.string !== undefined) ? v.string : String(v); }';
+
 function scriptSingle() {
   return 'SCRIPT({ $.yield([$.values[0], $.values[1]]) })';
 }
@@ -269,9 +284,11 @@ function scriptTags(tags) {
   }
   return 'SCRIPT({\n' +
     '    var s = {};\n' +
+    '    ' + STR_HELPER + '\n' +
     '},{\n' +
-    '    if (!s[$.values[1]]) s[$.values[1]] = [];\n' +
-    '    s[$.values[1]].push([$.values[0], $.values[2]]);\n' +
+    '    var k = _str($.values[1]);\n' +
+    '    if (!s[k]) s[k] = [];\n' +
+    '    s[k].push([$.values[0], $.values[2]]);\n' +
     '},{\n' +
     '    ' + decls.join(' ') + '\n' +
     '    var n = Math.max(' + lenExprs.join(', ') + ');\n' +
@@ -286,10 +303,11 @@ function scriptOHLC(o) {
   return 'SCRIPT({\n' +
     '    var M = {}, order = [];\n' +
     '    var T_O = ' + JSON.stringify(String(o.open)) + ', T_H = ' + JSON.stringify(String(o.high)) + ', T_L = ' + JSON.stringify(String(o.low)) + ', T_C = ' + JSON.stringify(String(o.close)) + ';\n' +
+    '    ' + STR_HELPER + '\n' +
     '},{\n' +
-    // ⚠️ $.values[1](NAME)은 원시 문자열이 아니라 String 객체 → 엄격비교(===) 실패. String()로 강제 변환 필수.
-    //    값(FIRST/LAST/MIN/MAX)도 ECharts 캔들이 숫자를 요구하므로 Number()로 정규화.
-    '    var d = String($.values[0]), nm = String($.values[1]);\n' +
+    // ⚠️ d(TO_CHAR 버킷라벨)와 nm(NAME) 둘 다 문자열 컬럼 = NullString 구조체 —
+    //    String()은 "[object Object]"라 키잉/비교 전 _str(.string 추출) 필수. 값(FIRST/LAST/MIN/MAX)은 캔들이 숫자를 요구해 Number() 정규화.
+    '    var d = _str($.values[0]), nm = _str($.values[1]);\n' +
     '    if (!M[d]) { M[d] = { o: null, c: null, l: null, h: null }; order.push(d); }\n' +
     '    if (nm === T_O) M[d].o = Number($.values[2]);\n' +   // FIRST
     '    if (nm === T_C) M[d].c = Number($.values[3]);\n' +   // LAST
@@ -341,6 +359,7 @@ function buildForecastLive(spec) {
     horizon: (spec.horizon != null && parseInt(spec.horizon, 10) >= 1) ? parseInt(spec.horizon, 10) : null,
     lookback: (spec.lookback != null && parseInt(spec.lookback, 10) >= 2) ? parseInt(spec.lookback, 10) : null,
     period: (spec.period != null && parseInt(spec.period, 10) >= 2) ? parseInt(spec.period, 10) : 0,
+    board: false, // 저장 .tql은 렌더 시 리더보드 불필요(모델이 이미 확정) → 후보 전부 백테스트하는 비용 생략
   };
   return 'SCRIPT({\n' +
     '    var ts = [], ys = [];\n' +
@@ -532,4 +551,4 @@ function compileSafe(spec) {
   }
 }
 
-module.exports = { compileTIR, compileSafe, buildSource, SINKS, toDateLiteral };
+module.exports = { compileTIR, compileSafe, buildSource, SINKS, toDateLiteral, forecastUnit };

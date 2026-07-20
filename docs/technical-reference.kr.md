@@ -11,13 +11,13 @@ weight: 40
 
 *Syntax*: `list_tables()`
 
-Machbase Neo에서 사용 가능한 테이블 목록을 조회합니다. 현재 사용자가 소유한 모든 테이블을 CSV 형식으로 반환합니다.
+Machbase Neo에서 사용 가능한 테이블 목록을 조회합니다. 현재 사용자가 소유한 모든 테이블 이름을 한 줄에 하나씩 반환합니다.
 
 ### 예제: 테이블 목록 조회
 
 채팅에서 질문: "테이블 리스트 조회 해줘"
 
-도구가 내부적으로 실행하는 SQL:
+도구가 내부적으로 실행하는 SQL(소유자는 현재 접속 사용자로 결정):
 
 ```sql
 SELECT st.NAME FROM m$sys_tables AS st
@@ -26,8 +26,7 @@ WHERE su.NAME = 'SYS' AND st.FLAG = 0
 ORDER BY st.NAME
 ```
 
-```csv
-NAME
+```text
 EXAMPLE
 GOLD
 SENSOR
@@ -47,11 +46,8 @@ SENSOR
 list_table_tags(table_name="EXAMPLE")
 ```
 
-```csv
-NAME
-temperature
-humidity
-pressure
+```text
+[EXAMPLE] temperature, humidity, pressure
 ```
 
 ## describe_table()
@@ -170,10 +166,9 @@ Machbase Neo에 TQL 또는 SQL 스크립트 파일을 저장합니다. TQL 파�
 
 저장 전 수행되는 검증:
 
-1. 잘못된 ROLLUP 단위를 확인합니다.
-2. TQL 스크립트를 실행하여 정확성을 검증합니다.
-3. ROLLUP 컬럼 에러(`MACH-ERR 2264`) 발생 시 SEC/MIN/HOUR 롤업 테이블을 자동 생성하고 재시도합니다.
-4. 필요시 상위 폴더를 자동 생성합니다.
+1. TQL 스크립트를 실행하여 정확성을 검증합니다(검증 실패 시 저장하지 않음).
+2. 조회 결과가 0행이면 시간 범위를 테이블 실제 MIN/MAX(TIME) 경계에 맞춰 자동 조정한 뒤 재시도합니다.
+3. 필요시 상위 폴더를 자동 생성합니다.
 
 ### 예제: 차트 TQL 저장
 
@@ -222,17 +217,19 @@ compile_tql_from_spec(
 
 *Syntax*: `forecast_table( spec [, filename] )`
 
-특정 테이블 태그의 이후 값을 예측합니다. 도구가 모델(선형 / 2차 / 계절성 Holt-Winters)을 자동 선택하고, 마지막 관측값에서 이어지도록 앵커링하며, 95% 신뢰밴드를 추가합니다. 추세 / 신뢰도(R²) / 예측값 요약을 반환합니다. 태그 1개면 그 태그를 예측하고, 2~5개면 태그별 추세 요약표를, 5개 초과면 좁혀 달라고 되묻습니다.
+특정 테이블 태그의 이후 값을 예측합니다. 도구가 여러 후보 모델(SES / 선형 / 2차 / Holt / Theta / AR / Holt-Winters 가법·곱셈 / 하모닉 / Prophet식)을 모두 적합하고 홀드아웃 백테스트로 순위를 매겨 최적 모델을 자동 선택합니다. 마지막 관측값에서 이어지도록 앵커링하고 신뢰밴드를 추가합니다. **호출하면 태그별·모델별 예측 곡선(신뢰구간·백테스트 포함)을 드롭다운으로 모두 열람할 수 있는 HTML 리포트를 생성·저장하고 링크를 반환합니다.** 태그 1개면 그 태그를, 2~5개면 전부 예측하며, 5개 초과면 데이터가 많은 순 상위 5개를 자동 선정합니다(되묻지 않고 안내를 함께 표시).
 
 - `spec` *object* 필수, 예측 의도. 주요 필드:
   - `table` *필수*
-  - `tag` — 예측할 단일 태그(생략 시 자동 / 요약 / 되묻기), 또는 `tags: ["a","b"]`로 여러 태그 비교
+  - `tag` — 예측할 단일 태그(생략 시 도구가 자동 결정), 또는 `tags: ["a","b"]`로 여러 태그 비교(최대 5개)
   - `rollup` — 버킷 단위(`sec` … `month`), 생략 시 범위 기반 자동 선택
   - `timeRange: { start, end }` — 학습 기간(생략 시 데이터 전체)
-  - `horizon` — 예측할 미래 버킷 수(생략 시 학습 길이의 25%)
-  - `method` — `auto`(기본), `linear`, `quadratic`, `holtwinters`
+  - `horizon` — 예측할 미래 버킷 수(생략 시 학습 길이의 20%)
+  - `method` — 모델 지정(생략 시 `auto` = 리더보드 1위 자동 선택). 값: `auto`, `ses`, `linear`, `quadratic`, `holt`, `theta`, `ar`, `holtwinters`, `holtwinters_mult`, `harmonic`, `prophet`. 한국어 별칭(`선형` / `2차` / `계절성`)과 순위 문자열(`2위` / `rank2`)도 허용
+  - `rank` — 리더보드 순위로 모델 지정(1-based, 예: `2`)
+  - `lookback` — 추세 윈도우 버킷 수(생략 시 자동)
   - `output` *선택* — `{ title, subtitle }`
-- `filename` *string* 선택, 저장 경로 `"TABLE/name.tql"`(영어만). 주면 라이브 재계산 `.tql`로 저장(대시보드 `tql_path`용), 생략하면 인라인 예측 차트를 답변에 렌더합니다.
+- `filename` *string* 선택, 저장 경로 `"TABLE/name.tql"`(영어만). 주면 리포트에 **추가로** 라이브 재계산 `.tql`도 저장합니다(대시보드 `tql_path`용). 생략하면 HTML 리포트만 생성합니다.
 
 ### 예제: 예측 및 저장
 
@@ -294,22 +291,17 @@ Dashboard created: GOLD/Gold_Analysis.dsh (3 charts)
 
 ## add_chart_to_dashboard()
 
-*Syntax*: `add_chart_to_dashboard( filename [, chart_title, chart_type, table, tag, column, tql_path, color, w, h] )`
+*Syntax*: `add_chart_to_dashboard( filename, chart_title, chart_type [, table, tag, column, tql_path] )`
 
-기존 대시보드에 차트 패널을 추가합니다.
+기존 대시보드에 차트 패널을 추가합니다. 패널 크기·위치·색상은 도구가 자동으로 배치합니다.
 
 - `filename` *string* 필수, 대시보드 파일명
-- `chart_title` *string* 차트 제목. 기본값: `New chart`
-- `chart_type` *string* 차트 유형. 기본값: `Line`
+- `chart_title` *string* 필수, 차트 제목
+- `chart_type` *string* 필수, 차트 유형 (예: `Line`, `Bar`, `Scatter`, `Tql chart`)
 - `table` *string* 태그 테이블명
 - `tag` *string* 태그명, 쉼표로 구분
 - `column` *string* 컬럼명. 기본값: `VALUE`
 - `tql_path` *string* TQL 파일 경로 (`Tql chart` 유형용)
-- `color` *string* hex 색상. 기본값: `#367FEB`
-- `w` *integer* 패널 너비 (그리드 단위, 최대 24, 0=자동). 기본값: `0`
-- `h` *integer* 패널 높이 (그리드 단위). 기본값: `0`
-
-> 참고: 너비와 높이는 픽셀이 아닌 그리드 단위입니다. 대형 차트(Line, Bar, Scatter)는 기본 17 단위, 소형 차트(Pie, Gauge)는 기본 7 단위입니다.
 
 ### 예제: 라인 차트 추가
 
@@ -319,8 +311,7 @@ add_chart_to_dashboard(
     chart_title="Temperature Trend",
     chart_type="Line",
     table="EXAMPLE",
-    tag="temperature",
-    color="#5470c6"
+    tag="temperature"
 )
 ```
 
@@ -347,19 +338,14 @@ add_chart_to_dashboard(
 
 ## update_chart_in_dashboard()
 
-*Syntax*: `update_chart_in_dashboard( filename [, panel_id, panel_title, new_title, new_chart_type, new_table, new_tag, new_column, new_color] )`
+*Syntax*: `update_chart_in_dashboard( filename [, panel_id, panel_title, new_title] )`
 
-대시보드의 기존 차트 패널을 수정합니다.
+대시보드의 기존 차트 패널 제목을 수정합니다. 대상 패널은 UUID 또는 제목으로 지정합니다.
 
 - `filename` *string* 필수, 대시보드 파일명
 - `panel_id` *string* 패널 UUID
 - `panel_title` *string* 패널 제목 (첫 번째 매칭)
 - `new_title` *string* 새 패널 제목
-- `new_chart_type` *string* 새 차트 유형
-- `new_table` *string* 새 테이블명
-- `new_tag` *string* 새 태그명
-- `new_column` *string* 새 컬럼명
-- `new_color` *string* 새 색상
 
 ## get_dashboard()
 
@@ -384,8 +370,8 @@ Machbase Neo에서 대시보드 파일을 삭제합니다.
 대시보드의 시간 범위를 변경합니다.
 
 - `filename` *string* 필수, 대시보드 파일명
-- `time_start` *string* 시작 시간. 기본값: `now-1h`
-- `time_end` *string* 종료 시간. 기본값: `now`
+- `time_start` *string* 시작 시간 (생략 시 빈 값으로 설정)
+- `time_end` *string* 종료 시간 (생략 시 빈 값으로 설정)
 - `refresh` *string* 자동 새로고침 간격. 기본값: `Off`
 
 ## preview_dashboard()
@@ -395,63 +381,6 @@ Machbase Neo에서 대시보드 파일을 삭제합니다.
 대시보드 미리보기와 Neo 웹 UI 직접 링크를 반환합니다.
 
 - `filename` *string* 필수, 대시보드 파일명
-
-## TQL 분석 템플릿
-
-3가지 데이터 도메인에 대한 사전 정의 TQL 차트 템플릿이 포함되어 있습니다. 고급 분석 시 에이전틱 루프가 이 템플릿에 실제 테이블명, 태그명, 시간 범위를 적용하여 TQL 파일로 저장합니다.
-
-### 금융 분석 (유형 1)
-
-| ID | 차트명 | 설명 |
-| :-: | :--- | :--- |
-| 1-1 | 평균 추세 | ROLLUP 기반 이동평균 추세선 |
-| 1-2 | 변동성 | 표준편차 / 가격 변화율 |
-| 1-3 | 가격 밴드 | MIN/MAX 엔벨로프와 평균 오버레이 |
-| 1-4 | 태그 비교 | 두 태그 오버레이 비교 차트 |
-| 1-5 | 거래량 추세 | 데이터 밀도 / 카운트 추세 |
-| 1-6 | 로그 가격 | 로그 스케일 가격 차트 |
-
-### 센서 / 진동 분석 (유형 2)
-
-| ID | 차트명 | 설명 |
-| :-: | :--- | :--- |
-| 2-1 | RMS 진동 | SUMSQ를 이용한 진동 실효값 |
-| 2-2 | FFT 스펙트럼 | 고속 푸리에 변환 주파수 분석 |
-| 2-3 | 피크 엔벨로프 | 피크 감지용 MAX 엔벨로프 |
-| 2-4 | Peak-to-Peak | 시간에 따른 MAX - MIN 범위 |
-| 2-5 | Crest Factor | 충격 감지용 피크/RMS 비율 |
-| 2-6 | 데이터 밀도 | 시간대별 레코드 카운트 분포 |
-| 2-7 | 3D 스펙트럼 | 3D 시간-주파수-진폭 시각화 |
-
-### 범용 분석 (유형 3)
-
-| ID | 차트명 | 설명 |
-| :-: | :--- | :--- |
-| 3-1 | 롤업 평균 | ROLLUP 기반 평균 추세 |
-| 3-2 | 태그 비교 | 두 태그 비교 차트 |
-| 3-3 | 카운트 추세 | 시간 구간별 데이터 건수 |
-| 3-4 | MIN/MAX 엔벨로프 | 최솟값과 최댓값 경계 차트 |
-
-### 템플릿 참조 형식
-
-템플릿은 플레이스홀더가 포함된 구조화된 형식으로 참조합니다:
-
-```text
-TEMPLATE:1-1 TABLE:GOLD TAG:close UNIT:day
-TEMPLATE:1-4 TABLE:GOLD TAG1:open TAG2:close
-TEMPLATE:2-2 TABLE:SENSOR TAG:vibration_x UNIT:sec
-```
-
-템플릿 확장기는 `{TABLE}`, `{TAG}`, `{UNIT}`, `{TIME_START}`, `{TIME_END}` 플레이스홀더를 현재 분석 컨텍스트의 실제 값으로 대체합니다.
-
-UNIT 선택 기준:
-
-- 수시간 분량의 데이터
-  - `sec`
-- 수일 분량의 데이터
-  - `hour`
-- 수주~수년 분량의 데이터
-  - `day`
 
 ## save_html_report()
 
@@ -627,12 +556,11 @@ execute_sql_query(sql_query="DROP TABLE SENSOR_DATA CASCADE")
 
 ## create_folder()
 
-*Syntax*: `create_folder( folder_name [, parent] )`
+*Syntax*: `create_folder( folder_name )`
 
 Machbase Neo 파일 시스템에 폴더를 생성합니다.
 
-- `folder_name` *string* 필수, 생성할 폴더 이름
-- `parent` *string* 상위 경로. 기본값: 루트
+- `folder_name` *string* 필수, 생성할 폴더 경로
 
 ## list_files()
 
@@ -673,7 +601,7 @@ Machbase Neo에서 사용 가능한 모든 메뉴얼 문서 목록을 조회합�
 
 *Syntax*: `search_documents( keyword )`
 
-키워드로 문서 카탈로그를 검색해 일치하는 문서 경로를 반환합니다. `get_full_document_content`로 문서를 열기 전에 이 도구로 올바른 문서를 찾습니다. 일치가 없으면 전체 카탈로그를 반환해 직접 고를 수 있게 합니다.
+키워드로 문서 카탈로그를 검색해 일치하는 문서 경로를 반환합니다. `get_full_document_content`로 문서를 열기 전에 이 도구로 올바른 문서를 찾습니다. 일치가 없으면 근접한 후보 문서를 함께 안내합니다.
 
 - `keyword` *string* 필수, 검색 키워드 (예: `PIVOT`, `ROLLUP`, `TQL`, `chart`)
 
@@ -768,11 +696,13 @@ Machbase Neo 시스템 테이블을 쿼리하여 현재 상태와 연결을 확�
 debug_mcp_status()
 ```
 
-```text
-Status: OK
-Machbase: http://127.0.0.1:5654
-COUNT(*)
-152
+```json
+{
+  "tools_count": 32,
+  "tools": ["list_tables", "list_table_tags", "describe_table", "..."],
+  "runtime": "JSH",
+  "machbase": "connected"
+}
 ```
 
 ## 문서 이동

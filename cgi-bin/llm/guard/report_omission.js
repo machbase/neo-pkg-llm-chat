@@ -7,19 +7,21 @@ var ReportOmissionGuard = {
     if (!agent.reportMode) return msg;
     if (msg.toolCalls && msg.toolCalls.length > 0) return msg;
 
-    // Check if save_html_report was ever called successfully
+    // 리포트 모드에서 save_html_report가 불렸는지 확인.
+    // ※ Report 스킬은 현재 save_html_report만 갖는다(예측 리포트는 "예측해줘" → forecast_table 경로 전용).
+    //   나중에 Report에 forecast_table을 노출하면 **이 목록에도 반드시 추가**할 것 — 안 그러면 예측 리포트를
+    //   제대로 만들어도 가드가 재촉해 일반 리포트를 하나 더 만든다.
+    var REPORT_TOOLS = ['save_html_report'];
     var reportCalled = false;
-    for (var i = 0; i < agent.messages.length; i++) {
+    for (var i = 0; i < agent.messages.length && !reportCalled; i++) {
       var m = agent.messages[i];
-      if (m.role === 'assistant' && m.toolCalls) {
-        for (var j = 0; j < m.toolCalls.length; j++) {
-          if (m.toolCalls[j].function.name === 'save_html_report') {
-            reportCalled = true;
-            break;
-          }
+      if (m.role !== 'assistant' || !m.toolCalls) continue;
+      for (var j = 0; j < m.toolCalls.length; j++) {
+        if (m.toolCalls[j].function && REPORT_TOOLS.indexOf(m.toolCalls[j].function.name) >= 0) {
+          reportCalled = true;
+          break;
         }
       }
-      if (reportCalled) break;
     }
 
     if (!reportCalled) {

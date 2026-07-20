@@ -70,7 +70,7 @@ export function ModelsSection({ claude, chatgpt, gemini, ollama, onChange, error
                     <h3>Models</h3>
                     <p className="text-sm text-on-surface-secondary mt-1">Configure available models per provider</p>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-8">
                     <select value={selected} onChange={(e) => setSelected(e.target.value as ModelProvider)}>
                         {ALL_PROVIDERS.map((p) => (
                             <option key={p} value={p}>

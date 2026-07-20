@@ -4,15 +4,11 @@ var { createBuilder, formatCatalog } = require('../context/builder');
 var { listReportTemplates, matchCustomByQuery, matchBuiltinByQuery } = require('../tools/report_templates');
 var { createRegistry: createSkillRegistry } = require('../skill/skill');
 var { createFixerContext, fix, fixDashboardTime, captureResults, validateTagInArgs } = require('../fixer/fixer');
-var { setExpandTemplateFunc } = require('../fixer/tql_fix');
-var { expandTemplate } = require('../tools/tql_templates');
 var { parseTimeRange, buildSkillHint, compactHistory, inferTableName } = require('./classifier');
 var security = require('../tools/security');
-var { bareSelectCols } = require('../tools/sql'); // 버킷 GROUP BY + bare VALUE 실행 전 차단용(S8)
+var { bareSelectCols } = require('../tools/sql'); // 버킷 GROUP BY + bare VALUE 실행 전 차단용
 var docIntent = require('./doc_intent');
 
-// Register template expansion function once at module load
-setExpandTemplateFunc(expandTemplate);
 var { createPipeline } = require('../guard/guard');
 var ConsecutiveFailureGuard = require('../guard/consecutive_failure');
 var DashboardEarlyGuard = require('../guard/dashboard_early');
@@ -24,6 +20,7 @@ var FakeTqlAnswerGuard = require('../guard/fake_tql_answer');
 var DashboardOmissionGuard = require('../guard/dashboard_omission');
 var RawTqlGuard = require('../guard/raw_tql');
 var TqlOmissionGuard = require('../guard/tql_omission');
+var ForecastLabelGuard = require('../guard/forecast_label');
 var DocIndexAnswerGuard = require('../guard/doc_index_answer');
 
 var MAX_STEPS = 60;
@@ -34,10 +31,16 @@ var FAILED_SECTION_CAP = 3; // 존재하지 않는 섹션(한국어명 헛짚기
 var LLM_ERROR_RETRIES = 2; // LLM 호출 실패(ollama 간헐적 tool_call XML 파싱오류 HTTP500·일시 네트워크) 시 같은 step 재시도 횟수
 var REPEAT_CALL_CAP = 2;  // 같은 도구+같은 인자를 이만큼 실행한 뒤 또 부르면 차단(스텁 문서 무한 재조회 등 degeneration 하드캡)
 var REPEAT_BLOCK_CAP = 3; // 반복 차단이 이만큼 쌓이면 도구 없이 답변 강제(차단만 무한반복하며 step 소진하는 것 방지)
+var FINALIZE_ROUND_CAP = 3; // 완성(dashboardFinalized) 후 도구 없는 답변 강제 LLM 라운드 상한 — 모델이 넛지를 무시하고 공회전하면 URL 폴백으로 결정론 종료
 var SCHEMA_LOOP_TOOLS = { describe_table: 1, list_tables: 1, list_table_tags: 1 }; // 스키마 확인 도구 — 데이터질문서 이것만 반복하면 execute_sql_query로 넘어가야 할 신호
 var SCHEMA_LOOP_NUDGE_CAP = 2; // 스키마도구 반복 시 "execute 실행하라" 콕집어 유도 최대 횟수(초과 시 일반 반복차단 경로로 폴백)
 var UNIT_MISMATCH_CAP = 2; // 질문 시간단위(주 단위 등) vs SQL 버킷단위(day 등) 불일치 시 재작성 유도 최대 횟수(초과 시 통과 — 무한루프 방지)
 var REPORT_SAVE_NUDGE_CAP = 2; // save_html_report 1차(데이터조회) 후 2차 저장호출을 안 하고 완료 위조 시, 재호출 강제 유도 최대 횟수
+var FORECAST_CALL_NUDGE_CAP = 2; // 예측 의도 질문(CodeExec)에서 forecast_table을 안 부르고 되묻기/답변 종료 시, 호출 강제 유도 최대 횟수
+var FORECAST_SHORTAGE_CAP = 2;   // forecast_table "전 태그 데이터 부족"이 이 횟수면 추가 호출 차단 — 약한 모델이 rollup만 바꿔가며 재시도하는 루프 방지(인자가 달라 REPEAT_CALL_CAP에 안 걸림)
+// 예측 의도 감지 — skill.js 4.5 FORECAST_ANY와 동일 키워드. **CodeExec 스킬 게이트와 결합**해야 순수 예측 요청만 잡힌다
+// (설명/사용법 질문은 DocLookup으로, "예측 리포트"는 Report로, 대시보드는 Basic/Advanced로 이미 분류돼 CodeExec가 아님).
+var FORECAST_INTENT_RE = /예측|forecast|predict|예상|전망|향후|이후\s*데이터|미래\s*값|extrapolat/i;
 // "선언 후 미실행" 감지(ollama): 답변이 조회를 미래형으로 예고("~하겠습니다/할 것입니다")하는데 실제 실행이 없는 경우.
 // 좁게(조회/가져올/추출/쿼리 + 미래형만) 잡아 리포트 서술("분석하겠습니다") 오탐을 피한다.
 var ANNOUNCE_NO_ACTION_RE = /(조회하겠|조회할 것|가져오겠|가져올 것|추출하겠|추출할 것|불러오겠|쿼리로 가져|select[^.\n]{0,40}(가져|조회|실행))/i;
@@ -65,7 +68,8 @@ function createAgent(llmClient, registry) {
     fixerCtx: createFixerContext(),
     guard: createPipeline(
       [ConsecutiveFailureGuard, DashboardEarlyGuard, RedundantFinalizeGuard],
-      [DashboardOmissionGuard, ChartOmissionGuard, ReportOmissionGuard, DashboardAnswerGuard, TqlOmissionGuard, DocIndexAnswerGuard, RawTqlGuard, FakeTqlAnswerGuard]
+      [DashboardOmissionGuard, ChartOmissionGuard, ReportOmissionGuard, DashboardAnswerGuard, TqlOmissionGuard,
+       ForecastLabelGuard, DocIndexAnswerGuard, RawTqlGuard, FakeTqlAnswerGuard]
     ),
   };
 
@@ -79,7 +83,7 @@ function createAgent(llmClient, registry) {
 
 // cb(err, finalAnswer)
 function agentRun(agent, query, cb) {
-  // Deterministic security short-circuit (eval #5): refuse credential/server-control/shell/
+  // Deterministic security short-circuit: refuse credential/server-control/shell/
   // config-file/prompt-leak/mutation-SQL requests BEFORE the LLM runs, so weak models cannot
   // ramble or confabulate. Scoped to attack SHAPES — legit how-to/feature questions pass through.
   // Privileged account/credential management → a GUIDED refusal (points to the console) instead.
@@ -92,8 +96,12 @@ function agentRun(agent, query, cb) {
   agent.currentQuery = query;       // 리포트 커스텀 쿼리-라우팅용(executeToolCalls에서 사용)
   agent._finalizeNudged = false;    // 완성 가드: 이번 턴 "보고서 작성" 지시 주입 여부(1회용)
   agent._finalizeResult = '';       // 완성 가드: 마무리 도구 결과(URL 포함) — 빈 보고서 폴백용
+  agent._finalizeRounds = 0;        // 완성 후 강제답변 LLM 라운드 수(FINALIZE_ROUND_CAP 공회전 하드캡용)
   agent.reportSavePending = false;  // save_html_report 1차 호출(데이터조회)만 되고 실제 파일 저장(2차 호출)이 아직 안 된 상태
   agent._reportSaveNudges = 0;      // 저장 재호출 강제 유도 누적 횟수(REPORT_SAVE_NUDGE_CAP 상한)
+  agent._forecastCalled = false;    // 이번 쿼리에서 forecast_table을 시도했는지(성공·도구 되묻기·에러 무관) — 되묻기 가드 전제
+  agent._forecastCallNudges = 0;    // 예측 의도인데 미호출 답변 시 호출 강제 유도 누적 횟수(FORECAST_CALL_NUDGE_CAP 상한)
+  agent._forecastShortages = 0;     // forecast_table "전 태그 데이터 부족" 누적(FORECAST_SHORTAGE_CAP 도달 시 추가 호출 차단)
   agent.docExampleCompiles = 0;     // DocLookup 예제 생성 개수(DOC_EXAMPLE_CAP 하드캡용)
   agent._docTableNames = undefined; // DocLookup 가드용 테이블명 캐시 — 쿼리마다 재확보(세션 중 생성된 테이블·일시 오류 반영)
   agent._docIndexNudged = false;    // 섹션목록만 보고 답변 시 재유도(doc_index_answer 가드) 쿼리당 1회 플래그
@@ -108,11 +116,11 @@ function agentRun(agent, query, cb) {
   agent._repeatForceAnswer = false; // 반복 교착 → 도구 제거 답변 강제 플래그
   agent._schemaLoopNudges = 0;      // 스키마도구(describe/list) 반복 시 execute 실행 유도 횟수(SCHEMA_LOOP_NUDGE_CAP 상한)
   agent._unitMismatchNudges = 0;    // 질문단위 vs SQL버킷단위 불일치 재작성 유도 횟수(UNIT_MISMATCH_CAP 상한)
-  agent._multiTagNudged = false;    // 다중 태그 합산집계(GROUP BY NAME 누락) 재작성 유도 1회 플래그(S10)
-  agent._bareValueNudges = 0;       // 버킷 GROUP BY + bare VALUE(임의 행 값 반환) 재작성 유도 횟수(S8, UNIT_MISMATCH_CAP 상한)
+  agent._multiTagNudged = false;    // 다중 태그 합산집계(GROUP BY NAME 누락) 재작성 유도 1회 플래그
+  agent._bareValueNudges = 0;       // 버킷 GROUP BY + bare VALUE(임의 행 값 반환) 재작성 유도 횟수(UNIT_MISMATCH_CAP 상한)
   agent._lastQueryHadRows = false;  // 마지막 execute_sql_query가 실데이터 행을 반환했는지(숫자 없는 답변 재촉용)
   agent._noNumbersNudged = false;   // 데이터 있는데 답변에 숫자 0개 → 수치 포함 재작성 재촉 1회 플래그
-  agent._forceExecNudged = false;   // 반복교착 강제답변에서 execute_sql_query만 남길 때 실행 지시 1회 플래그(S6)
+  agent._forceExecNudged = false;   // 반복교착 강제답변에서 execute_sql_query만 남길 때 실행 지시 1회 플래그
   agent._llmErrorRetries = 0;       // LLM 호출 실패 재시도 카운터(LLM_ERROR_RETRIES 상한)
   if (agent.llm.type === 'ollama' && agent.llm.temperature !== 0) agent.llm.temperature = 0; // 이전 턴 재시도 온도 잔재 원복
   if (agent.messages.length === 0) {
@@ -177,7 +185,7 @@ function buildSystemPrompt(agent, activeSkill) {
   if (activeSkill.workflows && activeSkill.workflows.indexOf('HTMLReportWorkflow') >= 0) {
     prompt += buildReportTemplateList();
   }
-  // thinking 제어는 ollama.js의 think:false 파라미터로 이관 — 신버전 ollama가 프롬프트 /no_think을 무시하므로 여기선 제거.
+  // thinking 억제는 ollama.js의 think:false 파라미터가 담당(프롬프트 /no_think은 네이티브 thinking 모델이 무시).
   return prompt;
 }
 
@@ -196,10 +204,9 @@ function applySkill(agent, activeSkill) {
   }
 }
 
-// Ollama 심층 재활성(2026-06-08): compile_tql_from_spec(IR)로 raw TQL 없이 차트 생성이 가능해져
-// 더 이상 AdvancedAnalysis를 BasicAnalysis로 강등하지 않는다. 약한 모델도 작은 JSON spec은 emit 가능하고,
-// 컴파일러가 TQL 문법/함정을 보장하므로 예전의 CHART 구조 무한루프가 발생하지 않는다.
-// (복원 필요 시: agent.llm.type==='ollama' && activeSkill.name==='AdvancedAnalysis'면 skillRegistry.get('BasicAnalysis') 반환)
+// Ollama 스킬 강등 훅(현재 no-op): compile_tql_from_spec(IR)이 TQL 문법/함정을 보장하므로 약한 모델도
+// AdvancedAnalysis를 그대로 쓴다. 강등이 다시 필요하면 ollama + AdvancedAnalysis일 때
+// skillRegistry.get('BasicAnalysis')를 반환하도록 구현.
 function rerouteForOllama(agent, activeSkill, skillRegistry) {
   return activeSkill;
 }
@@ -214,6 +221,7 @@ function initMessages(agent, query, cb) {
   agent.reportMode = (activeSkill.name === 'Report');
   agent.fixerCtx.advanced = agent.advanced;
   agent.fixerCtx.skillName = agent.skillName;
+  agent.fixerCtx.isOllama = !!(agent.llm && agent.llm.type === 'ollama');
 
   // Load document catalog directly from file (avoids async issues with registry.execute in WS context)
   try {
@@ -303,6 +311,7 @@ function continueMessages(agent, query) {
   agent.reportMode = (activeSkill.name === 'Report');
   agent.fixerCtx.advanced = agent.advanced;
   agent.fixerCtx.skillName = agent.skillName;
+  agent.fixerCtx.isOllama = !!(agent.llm && agent.llm.type === 'ollama');
 
   console.println('[Agent] Skill: ' + activeSkill.name +
     ' | Workflows: [' + (activeSkill.workflows || []).join(', ') + ']' +
@@ -311,7 +320,7 @@ function continueMessages(agent, query) {
   var skillSwitched = (activeSkill.name !== prevSkill);
 
   // Ollama 전용: 약한 모델은 이전 질문 맥락이 새 질문 답을 오염시킴 → 후속 마커 없으면 매 질문 풀 리셋.
-  // (마커 있음 = 관련 질문이면 아래 기존 compact 경로로 흘려 맥락 보존.) 강한 모델(gpt/claude/gemini)은 미적용.
+  // (마커 있음 = 관련 질문이면 아래 compact 경로로 흘려 맥락 보존.) 강한 모델(gpt/claude/gemini)은 미적용.
   // 스킬 동일 시 기존 system 객체를 그대로 재사용 → 타임스탬프까지 동일해 KV 프리픽스 캐시 유지.
   if (agent.llm.type === 'ollama' && !hasFollowupMarker(query)) {
     var sysMsg = (!skillSwitched && agent.messages[0] && agent.messages[0].role === 'system')
@@ -370,17 +379,28 @@ function runLoop(agent, step, cb) {
   // 강한 모델(gpt/claude/gemini)은 기존 흐름(preview_dashboard 등) 유지.
   // 도구 없이 답변 강제: (a) 대시보드/리포트 완성 후, 또는 (b) 동일 호출 반복 차단이 누적돼 교착일 때(_repeatForceAnswer).
   var _forceAnswer = (agent.llm.type === 'ollama' && (agent.dashboardFinalized || agent._repeatForceAnswer));
+  // 완성 후 강제답변이 수렴하지 않는 공회전 하드캡: 모델이 넛지를 무시하고 tool_call 흉내/가드 재프롬프트로
+  // 계속 돌면(라이브에서 ~10초 호출 60회+ 관측, 차단 경로는 step을 안 태워 maxSteps 백스톱도 못 닿음)
+  // 상한 초과 시 완성 도구 결과(URL 포함)로 결정론 종료 — 빈응답 폴백과 같은 출구.
+  if (_forceAnswer && agent.dashboardFinalized) {
+    agent._finalizeRounds = (agent._finalizeRounds || 0) + 1;
+    if (agent._finalizeRounds > FINALIZE_ROUND_CAP) {
+      console.println('[Agent] Post-finalize churn: round ' + agent._finalizeRounds + ' > cap ' + FINALIZE_ROUND_CAP + ' → deterministic completion.');
+      console.println('============================================================');
+      return cb(null, agent._finalizeResult || '작업이 완료되었습니다.');
+    }
+  }
   if (agent.dashboardFinalized && _forceAnswer && !agent._finalizeNudged) {
     // 마무리 도구 성공 후, 약한 모델은 "이제 보고서 써라"를 명시하지 않으면 침묵함 → 도구 제거와 함께 직접 지시(1회).
     agent._finalizeNudged = true;
     agent.messages.push(createMessage('user', '작업 완료: 대시보드/리포트가 생성되었습니다. 추가 도구 호출 없이, 앞서 조회한 통계·결과를 인용해 한국어 분석 보고서를 작성하고 종료하세요. URL이 있으면 [열기](URL) 형식으로 포함하세요.'));
   }
   var _callTools = _forceAnswer ? [] : agent.toolDefs;
-  // 반복교착 강제답변이라도 "데이터 질문 + 아직 쿼리 0회"면 execute_sql_query 하나만 남긴다(S6 r1 라이브 실측:
-  // 스키마도구 교착 후 도구를 전부 제거하면 SQL 실행이 불가능해져 "먼저 확인하겠습니다"류 선언으로 종료 확정).
-  // 문서질문(DocLookup)·완성 후(dashboardFinalized)·이미 쿼리한 경우는 기존대로 전부 제거. 재교착은 MAX_STEPS가 백스톱.
-  // ⚠ 상한 필수: 도구 채널이 열려 있으면 약한 모델이 목록에 없는 describe_table을 계속 환각 호출하며 차단 루프
-  // (S6 r2 라이브 실측: 56회+). REPEAT_BLOCK_CAP×2 초과 시 도구 완전 제거로 복귀 — 빈 도구면 ollama가 content를 내고 종료.
+  // 반복교착 강제답변이라도 "데이터 질문 + 아직 쿼리 0회"면 execute_sql_query 하나만 남긴다 —
+  // 도구를 전부 제거하면 SQL 실행이 불가능해져 "먼저 확인하겠습니다"류 선언만 하고 끝난다.
+  // 문서질문(DocLookup)·완성 후(dashboardFinalized)·이미 쿼리한 경우는 전부 제거. 재교착은 MAX_STEPS가 백스톱.
+  // ⚠ 상한 필수: 도구 채널이 열려 있으면 약한 모델이 목록에 없는 describe_table을 계속 환각 호출하며 차단 루프에
+  // 빠진다. REPEAT_BLOCK_CAP×2 초과 시 도구 완전 제거로 복귀 — 빈 도구면 ollama가 content를 내고 종료.
   if (_forceAnswer && !agent.dashboardFinalized && agent.skillName !== 'DocLookup' && !agent._ranQuery &&
       agent._repeatBlocks < REPEAT_BLOCK_CAP * 2) {
     _callTools = [];
@@ -448,6 +468,24 @@ function runLoop(agent, step, cb) {
           'URL·파일명·링크를 직접 지어내 답하지 마세요 — 실제 링크는 저장 도구만 생성합니다.'));
         return runLoop(agent, step + 1, cb);
       }
+      // Ollama 예측 되묻기 가드: 예측 의도 질문(skill 4.5 → CodeExec)에서 forecast_table을 한 번도 안 부르고
+      // 최종 답변(대개 describe_table의 태그 목록을 보고 "어떤 태그를 예측할까요?" 되묻기)을 내면 호출을 강제 재유도.
+      // 태그 판단은 도구 소관(1개=자동/2~5=전부/5초과=도구가 되묻음)인데 약한 모델이 도구 설명의 "되묻기"를 보고
+      // 자기가 선점하는 패턴 — 프롬프트 금지("즉시 호출·되묻지 마세요")로는 안 지켜져 결정론으로 차단.
+      // forecast_table을 한 번이라도 시도했으면(성공·도구 되묻기·에러 무관) 미발동 — 도구 자신의 되묻기는 정당하다.
+      if (agent.llm.type === 'ollama' && agent.skillName === 'CodeExec' && !agent._forecastCalled &&
+          FORECAST_INTENT_RE.test(String(agent.currentQuery || '')) &&
+          agent._forecastCallNudges < FORECAST_CALL_NUDGE_CAP) {
+        agent._forecastCallNudges++;
+        var _fcTable = lastDescribedTable(agent);
+        console.println('[Agent] Forecast intent but model answered without calling forecast_table → forcing call (nudge ' + agent._forecastCallNudges + '/' + FORECAST_CALL_NUDGE_CAP + ')');
+        if (msg.content) agent.messages.push(createMessage('assistant', msg.content)); // 방금 낸 답변 보존(인덱스 페어링 유지)
+        agent.messages.push(createMessage('user',
+          '사용자는 예측을 요청했습니다. 태그·저장 여부를 사용자에게 묻지 말고 지금 forecast_table 도구를 호출하세요. ' +
+          (_fcTable ? 'spec={"table":"' + _fcTable + '"} 로 호출하면 됩니다. ' : 'spec에 {"table":"테이블명"}만 주면 됩니다. ') +
+          '태그는 도구가 알아서 처리합니다(1개=자동, 2~5개=전부 예측, 5개 초과=데이터 많은 순 상위 5개 자동 선정).'));
+        return runLoop(agent, step + 1, cb);
+      }
       if (!msg.content) {
         if (_forceAnswer) {
           // (a) 대시보드/리포트 완성 후 빈응답 → URL 포함 완료 답변으로 종료.
@@ -485,7 +523,7 @@ function runLoop(agent, step, cb) {
         return runLoop(agent, step + 1, cb);
       }
       // 숫자 없는 데이터 답변 재촉(ollama·캡1): 쿼리가 실데이터 행을 반환했는데 최종 답변에 숫자가 하나도 없으면
-      // ("최근 4개 시점만 조회되었습니다. 보고 싶으시면 말씀해 주세요!" 류 — S8 r3 라이브 실측) 값 포함 재작성 1회 유도.
+      // ("최근 4개 시점만 조회되었습니다. 보고 싶으시면 말씀해 주세요!" 류) 값 포함 재작성 1회 유도.
       // 0건/에러 결과였으면 _lastQueryHadRows=false라 "데이터 없습니다" 정직 답변은 미발동.
       if (agent.llm.type === 'ollama' && agent.skillName !== 'DocLookup' && agent._ranQuery &&
           agent._lastQueryHadRows && !agent._noNumbersNudged && msg.content && !/\d/.test(msg.content)) {
@@ -501,11 +539,12 @@ function runLoop(agent, step, cb) {
       if (agent.llm.type === 'ollama') finalContent = normalizeHan(finalContent);   // 약한 모델 한자/중국어 누출 보정
       if (agent.llm.type === 'ollama') finalContent = balanceFences(finalContent);  // 안 닫힌 ```tql 펜스 복구(블록 병합→실행오류 방지)
       if (agent.llm.type === 'ollama') finalContent = dedupeTqlBlocks(finalContent); // 같은 SQL의 ```tql 블록 재탕 제거
+      if (agent.llm.type === 'ollama') finalContent = reflowMarkdown(finalContent); // 깨진 목록 골격 복원(번호 뒤 공백·인라인 불릿 줄바꿈)
       if (agent.llm.type === 'ollama') finalContent = stripToolInternals(finalContent); // 도구 안내문(section= 등) 사용자 조언으로 에코된 줄 제거
       // 저장 재유도(캡)까지 실패해 최종 폴백에 도달: 실제 파일 저장이 안 됐으므로 모델이 지어낸 URL/링크 제거 + 정직 고지.
       if (agent.llm.type === 'ollama' && agent.reportSavePending) finalContent = stripFabricatedReportSave(finalContent);
       // DocLookup 답변에서 내부 문서 경로(.md) 노출 줄만 제거(약한 모델 누출 보정).
-      // (섹션 제목 나열 부착은 제거 — 영어 제목이라 한국어 답변에 속 빈 노이즈였음. 폭/깊이는 모델이 쓰게 프롬프트로 유도.)
+      // (섹션 제목 나열은 부착하지 않는다 — 영어 제목이라 한국어 답변에 노이즈. 폭/깊이는 모델이 쓰게 프롬프트로 유도.)
       if (agent.llm.type === 'ollama' && agent.skillName === 'DocLookup') {
         finalContent = stripDocPathLines(finalContent);
         // 약한 모델이 "자세한 내용은 xxx.md 참고"처럼 경로 줄만 답으로 낸 경우 → 위 제거 후 알맹이가 사라져 빈 답변이 됨.
@@ -523,7 +562,7 @@ function runLoop(agent, step, cb) {
           return cb(null, '문서를 확인했지만 답변 생성에 실패했습니다. 질문을 조금 더 구체적으로 다시 시도해 주세요.');
         }
       }
-      // Security backstop (eval #5 category 1): redact credentials/keys/account-enumeration
+      // Security backstop: redact credentials/keys/account-enumeration
       // from the user-facing answer — model-independent, catches what prompt refusal misses.
       var _mc = agent.registry && agent.registry.client;
       finalContent = security.redactSecrets(finalContent, _mc && _mc.password ? [_mc.password] : []);
@@ -555,11 +594,12 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
 
   // 대시보드 완성 후 추가 차트 생성 차단 (결정론적). 배치 내에서도 create_dashboard가 먼저 실행돼 플래그가 켜지면
   // 뒤따르는 compile/save는 여기서 막혀 고아 .tql 양산을 방지. 대시보드 생성 전 차트 저장들은 플래그가 꺼져 있어 통과.
-  var _fcSaveArgs = tc.function.arguments || {};
-  var _isForecastSave = (toolName === 'forecast_table') && _fcSaveArgs && _fcSaveArgs.filename; // filename 있는 forecast = 차트 저장
   // 완성 후엔 차트 생성(compile/save/forecast)뿐 아니라 재탐색 도구(describe_table/list_tables)도 차단 —
   // 약한 모델이 create_dashboard와 같은 배치에 이들을 묶어 뱉으면 완성 후 불필요 재탐색이 되므로.
-  if (agent.dashboardFinalized && (toolName === 'compile_tql_from_spec' || toolName === 'save_tql_file' || _isForecastSave || toolName === 'describe_table' || toolName === 'list_tables')) {
+  // forecast_table은 **filename 유무와 무관하게** 차단한다 — 호출 자체가 리포트 산출(=완성)이라
+  // 완성 후 재호출은 리포트를 하나 더 만들 뿐이다. (dashboardFinalized는 쿼리마다 리셋되므로 후속 질문은 정상 동작.)
+  if (agent.dashboardFinalized && (toolName === 'compile_tql_from_spec' || toolName === 'save_tql_file' ||
+      toolName === 'forecast_table' || toolName === 'describe_table' || toolName === 'list_tables')) {
     console.println('  \\- BLOCKED: dashboard already finalized, skipping ' + toolName + ' (post-finalize tool block)');
     console.println('------------------------------------------------------------');
     agent.messages.push(createMessage('tool',
@@ -569,8 +609,8 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
   }
 
   // DocLookup 결정론 가드(ollama): EXCEPTION(예제 생성 경로) 발동 조건 = (예제/코드 명시 요청) AND
-  // (실재 테이블명이 질문에 명시) 둘 다. 기존엔 예제 키워드만 검사해 "롤업 예제 알려줘" 같은
-  // 테이블 없는 순수 문서 질문이 compile_tql_from_spec으로 샜다. 판정은 doc_intent(실재 테이블 목록 대조).
+  // (실재 테이블명이 질문에 명시) 둘 다 — 예제 키워드만 보면 "롤업 예제 알려줘" 같은 테이블 없는
+  // 순수 문서 질문까지 compile_tql_from_spec으로 샌다. 판정은 doc_intent(실재 테이블 목록 대조).
   var _docGuarded = toolName === 'compile_tql_from_spec' || toolName === 'describe_table' || toolName === 'list_tables' ||
     toolName === 'search_documents' || toolName === 'get_full_document_content' || toolName === 'get_document_sections';
   if (agent.llm.type === 'ollama' && agent.skillName === 'DocLookup' && _docGuarded) {
@@ -596,8 +636,8 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
         var _why = _wantsEx
           ? '질문에 특정 테이블명이 없으므로 예제 생성 대상이 아닙니다. search_documents로 문서를 찾아 해당 섹션을 읽고 문서 기반으로 설명하세요(문서 코드 예제는 extract_code_blocks로 추출 가능).'
           : '이 질문은 개념/사용법 설명 요청입니다. 테이블 탐색·차트 생성 없이, 검색·조회한 문서 내용만으로 설명하세요.';
-        // 이 차단은 REPEAT_CALL_CAP 체크보다 앞이라 callCount에 안 잡힌다 → 모델이 계속 재호출하면 무한루프(list_tables 50회+ → MAX_STEPS).
-        // 차단 누적을 세어 캡 도달 시 도구 없이 답변 강제(이미 문서는 읽었으므로 그걸로 답하게).
+        // 이 차단은 REPEAT_CALL_CAP 체크보다 앞이라 callCount에 안 잡힌다 → 차단 누적을 따로 세어
+        // 캡 도달 시 도구 없이 답변 강제(이미 문서는 읽었으므로 그걸로 답하게). 안 세면 재호출 무한루프.
         agent._repeatBlocks++;
         console.println('  \\- BLOCKED: DocLookup ' + (_wantsEx ? '테이블명 없는 예제 요청' : '순수 설명 질문') + ' → ' + toolName + ' 차단 (누적 ' + agent._repeatBlocks + ')');
         console.println('------------------------------------------------------------');
@@ -623,7 +663,7 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
     }
 
     // 거울 가드: 진짜 EXCEPTION(테이블명+예제)일 때만 문서 도구 차단 → describe→compile 직행 유도.
-    // (기존 "테이블/차트 단어" 휴리스틱은 테이블명 없는 "차트 예제"까지 문서를 막아 교착을 만들었음)
+    // (조건을 더 넓히면 테이블명 없는 "차트 예제" 질문까지 문서를 막아 교착이 된다)
     if (_exception && (toolName === 'search_documents' || toolName === 'get_full_document_content' || toolName === 'get_document_sections')) {
       console.println('  \\- BLOCKED: DocLookup 테이블 예제 요청(' + _qTable + ') → ' + toolName + ' 차단 (문서 없이 describe→compile)');
       console.println('------------------------------------------------------------');
@@ -633,8 +673,8 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
     }
   }
 
-  // DocLookup 문서 조회 하드캡: 약한 모델이 답을 이미 얻고도 멈추지 않고 문서/섹션을 20회+ 계속 읽는
-  // 과잉탐색(non-termination) degeneration 차단(라이브 실측). 설치처럼 여러 문서 정당 조회(≈6)는 살리게 넉넉히.
+  // DocLookup 문서 조회 하드캡: 약한 모델이 답을 이미 얻고도 멈추지 않고 문서/섹션을 계속 읽는
+  // 과잉탐색(non-termination) degeneration 차단. 설치처럼 여러 문서 정당 조회(≈6)는 살리게 넉넉히.
   // 초과 시 도구 없이 답변 강제(_repeatForceAnswer). search_documents는 제외(검색은 저렴·수렴).
   if (agent.llm.type === 'ollama' && agent.skillName === 'DocLookup' &&
       (toolName === 'get_full_document_content' || toolName === 'get_document_sections' || toolName === 'extract_code_blocks')) {
@@ -643,8 +683,8 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
       var _capHitSection = agent._failedDocSections >= FAILED_SECTION_CAP;
       console.println('  \\- BLOCKED: DocLookup ' + (_capHitSection ? '섹션 헛짚기 ' + agent._failedDocSections + '회' : '문서 조회 ' + DOC_READ_CAP + '회') + ' 도달 → 도구 없이 답변 강제');
       console.println('------------------------------------------------------------');
-      // 강제답변 시 원 질문을 재명시 + "읽은 것을 그대로 인용"으로 재초점. 과잉탐색으로 컨텍스트가 비대해진 약한 모델이
-      // 정답을 이미 읽고도(예: A4가 `## machbase-neo serve`를 읽음) 무관한 garbage("마침표 찍는 거…")를 뱉는 걸 억제.
+      // 강제답변 시 원 질문을 재명시 + "읽은 것을 그대로 인용"으로 재초점 — 과잉탐색으로 컨텍스트가
+      // 비대해진 약한 모델이 정답 섹션을 이미 읽고도 질문과 무관한 내용을 뱉는 걸 억제.
       var _origQ = String(agent.currentQuery || '').slice(0, 200);
       agent.messages.push(createMessage('tool', (_capHitSection
         ? '존재하지 않는 섹션명을 여러 번 조회했습니다. 더 추측하지 말고, '
@@ -664,6 +704,17 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
     return executeToolCalls(agent, toolCalls, idx + 1, step, doneCb);
   }
 
+  // forecast_table "데이터 부족" 반복 차단: 부족 응답을 받고도 rollup만 바꿔 재호출하는 루프(BEARING 3.4분 데이터에서
+  // 7연속 호출 실사례). 버킷 단위는 도구가 이미 구간 기준 최소로 잡으므로 인자를 바꿔도 결과가 달라지지 않는다.
+  if (toolName === 'forecast_table' && agent._forecastShortages >= FORECAST_SHORTAGE_CAP) {
+    console.println('  \\- BLOCKED: forecast_table 데이터 부족 ' + agent._forecastShortages + '회 → 추가 호출 차단');
+    console.println('------------------------------------------------------------');
+    agent.messages.push(createMessage('tool',
+      '취소됨: 이 테이블은 예측에 필요한 데이터가 부족합니다(이미 ' + agent._forecastShortages + '회 확인). ' +
+      '다시 호출하지 말고, 앞의 "데이터 부족" 표를 그대로 사용자에게 전달하며 데이터가 더 쌓인 뒤 시도하라고 안내하세요.'));
+    return executeToolCalls(agent, toolCalls, idx + 1, step, doneCb);
+  }
+
   // 무한 거부루프 하드캡: compile/save가 COMPILE_FAIL_CAP회 연속 실패하면 더 실행하지 않고 건너뜀 유도(결정론적).
   // 약한 모델이 같은 잘못된 spec을 끝없이 재시도하는 것을 코드가 끊는다(consecutive_failure 가드는 권고라 무시당함).
   if ((toolName === 'compile_tql_from_spec' || toolName === 'save_tql_file' || toolName === 'forecast_table') && agent.compileFailStreak >= COMPILE_FAIL_CAP) {
@@ -676,18 +727,25 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
   }
 
   var args = tc.function.arguments || {};
+  if (agent.llm.type === 'ollama') normalizeHanInArgs(args); // 한자 누출이 대시보드 제목/리포트 본문 등 저장물에 박히는 것 차단
+  if (agent.llm.type === 'ollama') reflowMarkdownInArgs(args); // 리포트 본문(analysis/recommendations)의 깨진 목록 골격 복원
+
+  // forecast_table 태그 임의축소 교정(전 프로바이더, 결정론): 사용자가 질문에서 언급하지 않은 태그를 모델이
+  // tag/tags에 넣으면 제거 — 태그 결정은 도구 소관(1개=자동/2~5=전부/5초과=되묻기). 하이쿠가 "실버 데이터
+  // 예측해줘"에 tag:"close"를 넣어 5태그 중 1개만 예측된 라이브 사례(ollama 되묻기와 같은 병의 변종: 선점).
+  if (toolName === 'forecast_table') normalizeForecastTags(agent, args);
 
   // 동일 호출 반복 차단(결정론적 degeneration 하드캡, 전 프로바이더): 같은 도구를 같은 인자로 REPEAT_CALL_CAP회
-  // 실행한 뒤 또 부르면 실행하지 않고 끊는다. (약한 모델이 스텁 문서·불만족 결과에 갇혀 같은 문서를 수십 번
-  // 재조회하는 degeneration을 라이브 실측 — insert-append-data.md 30회+ 반복.) 인자가 다르면 시그니처가 달라 무영향.
+  // 실행한 뒤 또 부르면 실행하지 않고 끊는다 — 약한 모델이 스텁 문서·불만족 결과에 갇혀 같은 문서를
+  // 수십 번 재조회하는 degeneration 방지. 인자가 다르면 시그니처가 달라 무영향.
   var _callSig = toolName + '|' + safeArgSig(args);
   if ((agent._callCounts[_callSig] || 0) >= REPEAT_CALL_CAP) {
-    // 스키마 도구(describe/list) 반복 = 데이터 질문에서 "이제 쿼리해야" 신호. 여기서 일반 경로로 가면
-    // _repeatBlocks가 쌓여 도구 전부 제거(force-answer) → execute_sql_query까지 사라져 "먼저 구조를
-    // 확인하겠습니다"류 선언후미실행으로 끝남(S6 flaky 라이브 실측). → 스키마는 이미 확보됐으니 도구를
-    // 유지한 채 execute_sql_query 실행을 콕 집어 유도(캡 SCHEMA_LOOP_NUDGE_CAP회). 무시하면 아래 일반
-    // 경로로 폴백(force-answer 백스톱 유지). ollama·非DocLookup·아직 쿼리 안 함(_ranQuery)에만 발동 →
-    // 정상 케이스(describe 1회 후 바로 쿼리)는 반복 자체가 없어 미발동, 강모델·문서질문 무영향(회귀 0).
+    // 스키마 도구(describe/list) 반복 = 데이터 질문에서 "이제 쿼리해야" 신호. 여기서 일반 반복차단 경로로
+    // 가면 _repeatBlocks가 쌓여 도구 전부 제거(force-answer) → execute_sql_query까지 사라져 "먼저 구조를
+    // 확인하겠습니다"류 선언만 하고 끝난다. → 스키마는 이미 확보됐으니 도구를 유지한 채
+    // execute_sql_query 실행을 콕 집어 유도(캡 SCHEMA_LOOP_NUDGE_CAP회). 무시하면 아래 일반 경로로 폴백
+    // (force-answer 백스톱 유지). ollama·非DocLookup·아직 쿼리 안 함(_ranQuery)에만 발동 —
+    // 정상 케이스(describe 1회 후 바로 쿼리)는 반복 자체가 없어 미발동, 강모델·문서질문 무영향.
     if (agent.llm.type === 'ollama' && agent.skillName !== 'DocLookup' &&
         SCHEMA_LOOP_TOOLS[toolName] && !agent._ranQuery &&
         (agent._schemaLoopNudges || 0) < SCHEMA_LOOP_NUDGE_CAP) {
@@ -703,7 +761,7 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
     console.println('  \\- BLOCKED: 동일 호출 ' + REPEAT_CALL_CAP + '회 반복(' + toolName + '), 추가 실행 차단 (누적 ' + agent._repeatBlocks + ')');
     console.println('------------------------------------------------------------');
     // 스키마 도구(describe/list) 반복이면 문서용 범용 문구("다른 문서로 바꾸고…") 대신 실행을 콕 집어 지시 —
-    // 데이터 질문에서 범용 문구는 방향 제시가 없어 모델이 계속 describe를 환각 호출함(S6 r2 라이브 실측).
+    // 데이터 질문에서 범용 문구는 방향 제시가 없어 모델이 계속 describe를 환각 호출한다.
     agent.messages.push(createMessage('tool',
       SCHEMA_LOOP_TOOLS[toolName] && !agent._ranQuery
         ? '취소됨: ' + toolName + '은(는) 더 이상 호출할 수 없습니다(스키마는 위에 이미 있음). 지금 execute_sql_query로 질문에 답할 SQL을 실행하세요.'
@@ -719,7 +777,7 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
   }
   agent._callCounts[_callSig] = (agent._callCounts[_callSig] || 0) + 1;
 
-  // S7 시간단위 불일치 넛지(ollama·데이터질문·캡): "주 단위" 질문에 day 버킷 쿼리처럼, 질문이 요구하는 시간
+  // 시간단위 불일치 넛지(ollama·데이터질문·캡): "주 단위" 질문에 day 버킷 쿼리처럼, 질문이 요구하는 시간
   // 버킷 단위와 SQL 버킷 단위가 다르면 결과를 내기 전에 차단하고 올바른 단위로 재작성 유도. day 쿼리는 에러 없이
   // 성공(데이터 반환)해 hintForError로는 못 잡으므로 실행 전 차단이 유일. 오탐 방지: detectQuestionBucketUnit이
   // 복합 버킷어·정확히 1개 단위일 때만 감지(주가·월요일·지난주·30일 등 미매칭). 버킷이 틀리거나(_sUnit 존재) 아예 없을 때(VALUE 집계 한정) 발동.
@@ -728,13 +786,13 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
     var _qUnit = detectQuestionBucketUnit(agent.currentQuery);
     var _sUnit = detectSqlBucketUnit(args.sql_query);
     // (a) 다른 버킷: 질문 week인데 SQL day 등(_sUnit 존재, 강한 신호). (b) 버킷 누락: 질문이 시간버킷을 요구하는데
-    // SQL이 버킷 없이 VALUE를 집계(전체를 한 값으로 뭉갬 — S8 "190" 형태). (b)는 VALUE 집계일 때만 → MIN(TIME)/COUNT(*)
+    // SQL이 버킷 없이 VALUE를 집계(전체를 한 값으로 뭉갬). (b)는 VALUE 집계일 때만 → MIN(TIME)/COUNT(*)
     // 같은 무버킷 탐색쿼리는 통과(오탐 방지). 질문에 버킷어 없으면 _qUnit=null이라 (a)(b) 모두 스킵("이번 달 평균" 등 정당).
     var _wrongBucket = _qUnit && _sUnit && _qUnit !== _sUnit;
-    // stat 가상뷰(v$_stat)는 전체기간 요약이라 버킷 질문엔 항상 오답 — describe의 STAT 안내에 낚여 "하루 단위"
-    // 질문을 stat 뷰로 답하는 회귀(S3 r3 라이브 실측)를 결정론 차단. VALUE 집계처럼 "버킷 누락"으로 취급.
-    // 개수 질문("시간별 데이터 개수")은 COUNT(*)가 답변 형태라 VALUE 집계 예외에 걸려 버킷 지시를 못 받음
-    // (S5 라이브 실측: 필터 변주만 반복) → 질문에 개수 의도가 있으면 무버킷 COUNT(도 차단. MIN/MAX(TIME) 탐색은 계속 예외.
+    // stat 가상뷰(v$_stat)는 전체기간 요약이라 버킷 질문엔 항상 오답 — describe의 STAT 안내에 낚여
+    // 버킷 질문을 stat 뷰로 답하는 것을 결정론 차단. VALUE 집계처럼 "버킷 누락"으로 취급.
+    // 개수 질문("시간별 데이터 개수")은 COUNT(*)가 답변 형태라 VALUE 집계 조건에 안 걸려 버킷 지시를 못 받음
+    // → 질문에 개수 의도가 있으면 무버킷 COUNT(도 차단. MIN/MAX(TIME) 탐색은 계속 예외.
     var _countIntent = /개수|건수|몇\s*건|몇\s*개|카운트/.test(String(agent.currentQuery || ''));
     var _missingBucket = _qUnit && !_sUnit &&
         (/\b(AVG|SUM|SUMSQ|MAX|MIN|COUNT)\s*\(\s*VALUE\b/i.test(String(args.sql_query || '')) ||
@@ -744,7 +802,7 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
       agent._unitMismatchNudges++;
       console.println('  \\- BLOCKED: 시간단위 ' + (_missingBucket ? '버킷 누락' : '불일치') + '(질문=' + _qUnit + ' / 쿼리=' + (_sUnit || '버킷없음') + ') → 재작성 유도 (' + agent._unitMismatchNudges + '/' + UNIT_MISMATCH_CAP + ')');
       console.println('------------------------------------------------------------');
-      // ⚠ 개수 예시는 COUNT(VALUE) — ROLLUP 경로에서 COUNT(*)는 사전집계된 롤업 행 수(버킷당 1)를 세버림(라이브 확정: 1,1,1,1 vs 5,2,1,1).
+      // ⚠ 개수 예시는 COUNT(VALUE) — ROLLUP 경로에서 COUNT(*)는 사전집계된 롤업 행 수(버킷당 1)를 세버림.
       var _aggEx = _countIntent ? 'COUNT(VALUE)' : 'AVG(VALUE)';
       agent.messages.push(createMessage('tool',
         '취소됨: 질문은 "' + _qUnit + '" 단위 시간별 집계를 요구하는데 이 쿼리는 ' +
@@ -755,9 +813,9 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
     }
   }
 
-  // S10 다중태그 합산 방어(ollama·캡1): WHERE가 태그를 2개 이상 선택(NAME IN (...) 또는 NAME='A' OR NAME='B')하면서
-  // VALUE를 집계하는데 GROUP BY에 NAME이 없으면 모든 태그가 한 값으로 합산됨 — 여러 태그를 나열한 질문은 태그별
-  // 결과가 의도인 게 일반적(S10 0/3 라이브 실측: 두 태그 시간별 평균이 합산 4행으로). 실행 전 1회만 차단·재작성 유도.
+  // 다중태그 합산 방어(ollama·캡1): WHERE가 태그를 2개 이상 선택(NAME IN (...) 또는 NAME='A' OR NAME='B')하면서
+  // VALUE를 집계하는데 GROUP BY에 NAME이 없으면 모든 태그가 한 값으로 합산됨 — 여러 태그를 나열한 질문은
+  // 태그별 결과가 의도인 게 일반적. 실행 전 1회만 차단·재작성 유도.
   // 진짜 합산이 의도면 같은 쿼리를 다시 내면 됨(캡 1이라 두 번째부터는 통과 — 오탐이어도 1스텝 비용뿐).
   if (toolName === 'execute_sql_query' && agent.llm.type === 'ollama' && agent.skillName !== 'DocLookup' &&
       !agent._multiTagNudged) {
@@ -781,8 +839,8 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
     }
   }
 
-  // S8 bare VALUE 방어(ollama·캡): 버킷 GROUP BY에서 SELECT의 VALUE를 집계 없이 쓰면 Machbase는 에러가 아니라
-  // **그룹의 임의 행 값을 조용히 반환**(라이브 확정: bare TIME은 ERR-2044인 것과 비대칭 — 0,100,150,190 쓰레기값).
+  // bare VALUE 방어(ollama·캡): 버킷 GROUP BY에서 SELECT의 VALUE를 집계 없이 쓰면 Machbase는 에러가 아니라
+  // **그룹의 임의 행 값을 조용히 반환**한다(bare TIME이 ERR-2044인 것과 비대칭).
   // 에러 힌트가 발동할 기회가 없으므로 실행 전 차단이 유일한 방어. 올바른 쿼리(집계로 감싼 VALUE)는 미발동.
   if (toolName === 'execute_sql_query' && agent.llm.type === 'ollama' && agent.skillName !== 'DocLookup' &&
       (agent._bareValueNudges || 0) < UNIT_MISMATCH_CAP) {
@@ -867,30 +925,39 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
           agent.reportSavePending = true; // 데이터만 조회됨(1차) 또는 한쪽만 수집(부분) → 아직 저장 안 됨
         }
       }
+      // forecast_table도 **HTML 예측 리포트를 저장하고 링크를 돌려주면 완성**이다.
+      // 이걸 완성 신호로 안 잡으면 ollama가 리포트를 다 만들고도 describe_table 등을 계속 호출해 MAX_STEPS까지 돈다
+      // (create_dashboard/save_html_report와 같은 degeneration). 되묻기·에러 결과엔 링크가 없어 자연히 제외된다.
+      // ⚠️ _finalizeResult는 **빈응답 폴백에서 그대로 최종 답변**이 된다 → 도구 결과의 모델용 지시문([지시…] 줄)을
+      //    반드시 제거할 것. 안 그러면 ollama가 침묵할 때 그 지시문이 사용자에게 노출된다.
+      if (toolName === 'forecast_table' && result.indexOf('리포트 열기') >= 0) {
+        agent.dashboardFinalized = true;
+        agent._finalizeResult = result.replace(/\n*\[지시[^\n]*\n?/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+      }
       // DocLookup 예제요청에서 compile 성공 개수 카운트(DOC_EXAMPLE_CAP 하드캡용) — 에러 결과는 제외.
       if (agent.skillName === 'DocLookup' && toolName === 'compile_tql_from_spec' &&
           result.indexOf('Error:') !== 0 && result.indexOf('TIR invalid') < 0) agent.docExampleCompiles++;
       // 존재하지 않는 섹션(한국어명 헛짚기 등) 조회 → 새 내용 0. DOC_READ_CAP 예산을 안 먹게 되돌리고, 별도 헛짚기 카운터만 증가
-      // (무한추측은 FAILED_SECTION_CAP이 차단). 이렇게 해야 이미 읽은 실제 섹션(INSERT SELECT)의 답변 예산이 헛짚기로 소진되지 않음.
+      // (무한추측은 FAILED_SECTION_CAP이 차단). 이렇게 해야 실제 섹션 조회의 답변 예산이 헛짚기로 소진되지 않음.
       if (agent.skillName === 'DocLookup' && toolName === 'get_full_document_content' &&
           (result.indexOf('" not found.') >= 0 || result.indexOf('이 문서에 없습니다') >= 0)) {
         if (agent._docReads > 0) agent._docReads--;
         agent._failedDocSections++;
       }
       // today-filter 오적용 방어(ollama): 질문에 기간이 없는데 모델이 WHERE에 TIME 필터(주입된 현재날짜 등)를 넣어
-      // 0행이 나오면, 결과에 교정 힌트를 붙여 "필터 제거 후 전체조회"를 유도(결정론적, S8/S3 근본). sanitizeSql로 WHERE를
-      // 몰래 지우는 건 금지(오늘/최근 질문 훼손) → 힌트로만. 강모델은 이 실수를 안 하므로 ollama 한정(회귀0). 자기제한: 같은
-      // 필터 재조회는 REPEAT_CALL_CAP이 차단. 질문에 기간표현(TIME_RANGE_RE) 있으면 필터가 정당 → 미발동(S7 "2024-01-01 기준" 등).
-      // 날짜 리터럴 오류(MACHCLI-ERR-300 등)도 같은 뿌리 — 질문에 기간이 없는데 주입된 현재날짜로 TO_DATE 필터를
-      // 만들다 실패(S5 r1 라이브 실측: 0건이 아니라 에러라 기존 조건(queryReturnedNoData)에 안 걸려 미발동이었음).
+      // 0행이 나오면, 결과에 교정 힌트를 붙여 "필터 제거 후 전체조회"를 유도. sanitizeSql로 WHERE를
+      // 몰래 지우는 건 금지(오늘/최근 질문 훼손) → 힌트로만. 강모델은 이 실수를 안 하므로 ollama 한정. 같은
+      // 필터 재조회는 REPEAT_CALL_CAP이 차단. 질문에 기간표현(TIME_RANGE_RE) 있으면 필터가 정당 → 미발동.
+      // 날짜 리터럴 오류(MACHCLI-ERR-300 등)도 같은 뿌리(기간 없는 질문에 현재날짜 TO_DATE 필터) —
+      // 0행이 아니라 에러로 나타나 queryReturnedNoData에 안 걸리므로 별도 조건으로 같이 잡는다.
       // 마지막 쿼리가 실데이터를 반환했는지 추적 — "데이터 있는데 숫자 없는 답변" 재촉(post-loop)의 전제 신호.
       if (toolName === 'execute_sql_query') {
         var _rowsM = String(result).match(/\((\d+) rows?\)/);
         agent._lastQueryHadRows = !!(_rowsM && +_rowsM[1] > 0 && String(result).indexOf('Error:') !== 0 && !queryReturnedNoData(result));
       }
       var _dateErr = /MACHCLI-ERR-300|Invalid date value/i.test(String(result || ''));
-      // COUNT(*)는 필터가 0건을 잡아도 NULL이 아니라 "0"을 반환 → queryReturnedNoData(영숫자 없음 판정)가 못 잡음
-      // (S5 r1·r2 라이브 실측). COUNT가 든 SQL에서 1행 전부 0이면 "실질 no data"로 판정.
+      // COUNT(*)는 필터가 0건을 잡아도 NULL이 아니라 "0"을 반환 → queryReturnedNoData(영숫자 없음 판정)가
+      // 못 잡음. COUNT가 든 SQL에서 1행 전부 0이면 "실질 no data"로 판정.
       var _countZero = /\bCOUNT\s*\(/i.test(String(args.sql_query || '')) && countReturnedAllZero(result);
       if (agent.llm.type === 'ollama' && toolName === 'execute_sql_query' &&
           (queryReturnedNoData(result) || _dateErr || _countZero) &&
@@ -899,14 +966,20 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
         console.println('  \\- HINT: 질문에 기간 없음 + TIME 필터 ' + (_dateErr ? '날짜 오류' : (_countZero ? 'COUNT=0' : '데이터 0건(집계 NULL 포함)')) + ' → 필터 제거 재조회 유도(today-filter 방어)');
         result += '\n\n⚠ ' + (_dateErr ? '날짜 필터에서 오류가 났습니다.' : '이 기간에 데이터가 없습니다(0행, 집계 NULL 또는 COUNT=0).') + ' 질문에 기간(오늘/최근/특정 날짜)이 명시되지 않았는데 WHERE에 TIME 조건이 들어갔습니다. WHERE에서 TIME 조건을 완전히 제거하고 전체 기간으로 다시 조회하세요. (현재 날짜로 필터를 만들지 마세요 — 데이터는 과거 시점일 수 있습니다.)';
       }
-      // ROLLUP 경로의 COUNT(*)는 원본 행이 아니라 사전집계된 롤업 행 수(버킷당 1)를 센다(라이브 확정: 1,1,1,1 vs
-      // COUNT(VALUE)=5,2,1,1). 결과가 그럴싸해 모델이 그대로 답해버리므로 실행 후 교정 힌트로 재조회 유도(ollama).
+      // ROLLUP 경로의 COUNT(*)는 원본 행이 아니라 사전집계된 롤업 행 수(버킷당 1)를 센다.
+      // 결과가 그럴싸해 모델이 그대로 답해버리므로 실행 후 교정 힌트로 재조회 유도(ollama).
       if (agent.llm.type === 'ollama' && toolName === 'execute_sql_query' &&
           /\bROLLUP\s*\(/i.test(String(args.sql_query || '')) &&
           /\bCOUNT\s*\(\s*\*\s*\)/.test(String(args.sql_query || ''))) {
         console.println('  \\- HINT: ROLLUP + COUNT(*) → 롤업 행 수를 세버림, COUNT(VALUE) 재조회 유도');
         result += '\n\n⚠ ROLLUP 집계에서 COUNT(*)는 원본 데이터 개수가 아니라 사전집계된 버킷 행 수(항상 1)를 셉니다. COUNT(*)를 COUNT(VALUE)로 바꿔 다시 실행하세요.';
       }
+    }
+    // 예측 되묻기 가드 전제: forecast_table을 **시도**했는지(성공·되묻기·에러 무관). 시도했으면 재유도 안 함.
+    if (toolName === 'forecast_table') agent._forecastCalled = true;
+    // "전 태그 데이터 부족"(리포트 없음) 누적 — FORECAST_SHORTAGE_CAP 도달 시 재호출 차단. 일부 태그라도 성공하면 리포트 링크가 있어 미집계.
+    if (toolName === 'forecast_table' && result.indexOf('데이터 부족') >= 0 && result.indexOf('리포트 열기') < 0) {
+      agent._forecastShortages++;
     }
     // compile/save 연속 실패 스트릭 갱신(하드캡용). 도구는 실패를 'Error:' 문자열로도 반환(execErr 없이) → 둘 다 검사. 성공이면 리셋.
     if (toolName === 'compile_tql_from_spec' || toolName === 'save_tql_file' || toolName === 'forecast_table') {
@@ -937,10 +1010,10 @@ function truncate(s, max) {
 
 // execute_sql_query 결과가 "실질적으로 데이터 없음"인지 판정(today-filter 방어용).
 // 두 형태를 모두 잡는다: ① 0행(비집계에서 필터가 0건) ② 집계 1행인데 값이 전부 NULL/빈칸
-// (GROUP BY 없는 MAX/MIN/AVG 등은 필터가 0건을 잡아도 "(0 rows)"가 아니라 NULL 1행을 반환 — S8 실패의 진짜 형태).
+// (GROUP BY 없는 MAX/MIN/AVG 등은 필터가 0건을 잡아도 "(0 rows)"가 아니라 NULL 1행을 반환하므로).
 // 결과 포맷: "헤더\n데이터행들\n\n(N rows)" (sql.js). NULL 셀은 join(',')에서 빈칸/콤마로 렌더 → 영숫자 값 유무로 판정.
 // COUNT(*) 계열 필터쿼리가 0건을 잡으면 NULL이 아니라 0이 나온다 → 1행 결과의 숫자 셀이 전부 0(NULL 셀 허용)이면
-// "실질 no data". VALUE가 실제 0인 데이터와 헷갈리지 않게 호출측에서 COUNT( 포함 SQL에서만 사용할 것(S5 방어).
+// "실질 no data". VALUE가 실제 0인 데이터와 헷갈리지 않게 호출측에서 COUNT( 포함 SQL에서만 사용할 것.
 function countReturnedAllZero(result) {
   if (typeof result !== 'string') return false;
   var m = result.match(/^([\s\S]*?)\n\n\(1 rows?\)/);
@@ -982,7 +1055,7 @@ function leanCatalog(fullText) {
   return out.join('\n');
 }
 
-// 질문에서 "시간 버킷 단위" 의도 추출(S7 단위-불일치 넛지용). 오탐 방지가 최우선 →
+// 질문에서 "시간 버킷 단위" 의도 추출(단위-불일치 넛지용). 오탐 방지가 최우선 →
 // bare 글자(주/일/월/시간/분) 금지, 복합 버킷어(주별/주 단위/weekly 등)만. 정확히 1개 단위일 때만 반환(0=없음,
 // 2+=모호 → null). 주간(=daytime 모호)·분/초(분석 등 오탐)는 미지원. 지난주·30일 같은 범위표현은 복합어가 아니라 자동 배제.
 function detectQuestionBucketUnit(q) {
@@ -1018,18 +1091,24 @@ function safeArgSig(args) {
 var HAN_MAP = [
   ['成交量', '거래량'], ['波动性', '변동성'], ['传感器', '센서'], ['开盘', '시가'], ['收盘', '종가'],
   ['最高', '최고'], ['最低', '최저'], ['最大', '최대'], ['最小', '최소'], ['平均', '평균'],
-  ['价格', '가격'], ['时间', '시간'], ['分析', '분석'], ['数据', '데이터'], ['趋势', '추세'],
+  ['价格', '가격'], ['时间戳', '타임스탬프'], ['时间', '시간'], ['分析', '분석'], ['数据源', '데이터소스'], ['数据', '데이터'], ['趋势', '추세'],
   ['波动', '변동'], ['设备', '디바이스'], ['温度', '온도'], ['振动', '진동'], ['图表', '차트'],
   ['报告', '보고서'], ['统计', '통계'], ['日期', '날짜'], ['总量', '총량'],
-  ['来源', '소스'], ['数据源', '데이터소스'], ['输出', '출력'], ['输入', '입력'], ['转换', '변환'], ['查询', '쿼리'], ['函数', '함수'],
+  ['来源', '소스'], ['输出', '출력'], ['输入', '입력'], ['转换', '변환'], ['查询', '쿼리'], ['函数', '함수'],
   ['制造商', '제조사'], ['信息', '정보'], ['单位', '단위'], ['描述', '설명'], ['属性', '속성'], ['字段', '필드'], ['例如', '예를 들어'], ['等等', '등'], ['等', '등'],
-  // 금융/리포트 답변에서 새어나온 상용(라이브 실측 可适当 등). 3글자→2글자→1글자 순으로 두어 부분치환 방지.
-  ['可适当', '적절히'], ['适当', '적절히'], ['成交', '거래'], ['指标', '지표'], ['风险', '리스크'], ['投资', '투자'],
-  ['资产', '자산'], ['市场', '시장'], ['建议', '권고'], ['收益', '수익'], ['波幅', '변동폭'], ['支撑', '지지'], ['阻力', '저항']
+  // 금융/리포트 답변에서 흔히 새는 상용 표현. 3글자→2글자→1글자 순으로 두어 부분치환 방지.
+  ['可适当', '적절히'], ['适当', '적절히'], ['交易日', '거래일'], ['交易', '거래'], ['成交', '거래'], ['指标', '지표'], ['风险', '리스크'], ['投资', '투자'],
+  ['资产', '자산'], ['市场', '시장'], ['建议', '권고'], ['收益', '수익'], ['波幅', '변동폭'], ['支撑', '지지'], ['阻力', '저항'],
+  // 모니터링/대시보드 답변·차트 제목에서 새는 표현
+  ['使用率', '사용률'], ['日均', '일평균'], ['内存', '메모리'], ['状态', '상태'], ['错误', '오류'],
+  ['请求', '요청'], ['响应', '응답'], ['连接', '연결'], ['服务', '서비스'], ['数量', '개수'],
+  // 누출 경고 로그·라이브 답변에서 수집된 표현. '的'는 조사라 어떤 단어 뒤에도 붙을 수 있어 맨 뒤 단독 폴백.
+  ['从现在起', '지금부터'], ['毫秒', '밀리초'], ['的差异', '의 차이'], ['差异', '차이'],
+  ['육眼', '육안'], ['眼前', '눈앞'], ['眼', '안'], ['前', '전'], ['的', '의']
 ];
 // 약한 모델이 문서 도구의 재호출 안내문("section=를 사용해 조회하세요" 등)을 사용자 조언으로 에코하는
 // 내부 노출을 결정론적으로 제거. 줄 통삭제는 "관련 섹션: A, B (section=으로 조회 가능)" 같은 유용한 줄까지
-// 먹어버렸음(라이브 실측) → ① 괄호 꼬리만 외과적으로 제거 → ② 그래도 토큰이 남는 줄만 삭제. 코드펜스 안은 보존.
+// 먹으므로 ① 괄호 꼬리만 외과적으로 제거 → ② 그래도 토큰이 남는 줄만 삭제. 코드펜스 안은 보존.
 var TOOL_INTERNALS_RE = /section\s*=|file_identifier|search_documents|get_full_document_content|get_document_sections|extract_code_blocks|list_available_documents|이 문서의 주요 섹션|이 문서의 다른 섹션/;
 var TOOL_INTERNALS_PAREN_RE = /\s*[(（][^()（）]*(?:section\s*=|file_identifier|search_documents|get_full_document_content|get_document_sections|extract_code_blocks|list_available_documents)[^()（）]*[)）]/g;
 function stripToolInternals(text) {
@@ -1050,7 +1129,7 @@ function stripToolInternals(text) {
 }
 
 // DocLookup 답변에서 내부 문서 경로(.md) 노출 줄 제거 — "이 예제는 tql/tql-guide.md에 실제로 존재합니다"류
-// 자기증명 메타 문장(라이브 실측). 문서 조회 답변에서 .md 경로는 항상 내부 식별자다. 코드펜스 안은 보존.
+// 자기증명 메타 문장 대응. 문서 조회 답변에서 .md 경로는 항상 내부 식별자다. 코드펜스 안은 보존.
 function stripDocPathLines(text) {
   if (!text) return text;
   var lines = String(text).split('\n');
@@ -1065,10 +1144,73 @@ function stripDocPathLines(text) {
 }
 
 // 제품명 한국어 오표기 결정론적 정정 — 모델이 Machbase를 "마하베이스"로 잘못 음역하는 것을 "마크베이스"로.
-// (라이브 실측: Gemini(강한 모델)도 이 음역 실수를 함 → ollama 한정 아닌 전 프로바이더 후처리. 정상 표기·영문은 통과.)
+// (강한 모델도 이 음역 실수를 하므로 ollama 한정이 아닌 전 프로바이더 후처리. 정상 표기·영문은 통과.)
 function normalizeProductName(s) {
   if (!s) return s;
   return s.split('마하베이스').join('마크베이스').split('마하 베이스').join('마크베이스');
+}
+
+// Ollama 약한 모델이 마크다운 목록 골격을 깨뜨려 내보내는 것을 결정론적으로 복원 — 의미 변경 없이 공백·줄바꿈만 손댄다.
+// ① "6.경쟁"처럼 번호 뒤 공백 누락(marked·mdToHTML 모두 목록으로 인식 못 함)
+// ② "…있습니다. - 실행방안: …"처럼 하위 불릿이 줄바꿈 없이 문장 뒤에 이어짐 → 줄 분리
+// ③ 문단에 바로 붙은 번호 목록 앞 빈 줄 삽입(1. 외 시작번호는 문단을 목록으로 못 끊는 GFM 규칙)
+// 코드펜스 안·표 행(| 포함, 셀에 '- '류가 흔함)·인라인코드는 건드리지 않는다. 소수점(3.14)·절 번호(3.5)는 뒤가 숫자라 제외.
+function reflowMarkdown(s) {
+  if (!s) return s;
+  var lines = String(s).split('\n');
+  var out = [], inFence = false;
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+    if (/^\s*```/.test(line)) { inFence = !inFence; out.push(line); continue; }
+    if (inFence || line.indexOf('|') >= 0) { out.push(line); continue; }
+    var codes = [];
+    line = line.replace(/`[^`]*`/g, function (m) { codes.push(m); return '\u0000' + (codes.length - 1) + '\u0000'; });
+    // ② 문장 끝 부호 뒤에 이어진 "- " 불릿을 줄로 분리 ("-5도" 같은 음수는 대시 뒤 공백이 없어 미매치)
+    line = line.replace(/([.:!?])[ \t]+- (?=\S)/g, '$1\n- ');
+    // ② 변형: 부호 없이 "라벨:"로 이어진 불릿("… 설정 필수 - 기대효과: …")도 분리 — 라벨은 한글/영문만
+    // (숫자 라벨 제외 → "9:00 - 10:30" 같은 시간 범위 오탐 차단)
+    line = line.replace(/([가-힣A-Za-z0-9%)\]]) - ([가-힣A-Za-z]{1,10}): (?=\S)/g, '$1\n- $2: ');
+    // 문장 끝 마침표 뒤에 공백 없이 이어진 번호 항목("…다. 6.경쟁")을 문단으로 분리
+    line = line.replace(/\.[ \t]+(\d{1,2})[.)](?=[가-힣A-Za-z*(])/g, '.\n\n$1. ');
+    // 부호 없이 끝난 문장 뒤의 번호 항목("…수익 극대화 2.기술적")도 분리 — 단 "그림 2.개요" 같은 캡션 지칭은 유지
+    line = line.replace(/([가-힣]{1,4})[ \t]+(\d{1,2})\.(?=[가-힣])/g, function (m, w, n) {
+      if (/^(그림|도표|차트|사진|표|절|장|항|조)$/.test(w)) return m;
+      return w + '\n\n' + n + '. ';
+    });
+    // ① 줄 시작(분리로 생긴 줄 포함) 번호 뒤 공백 누락 보정
+    line = line.replace(/(^|\n)(\d{1,2})\.(?=[가-힣A-Za-z*(])/g, '$1$2. ');
+    line = line.replace(/\u0000(\d+)\u0000/g, function (_, n) { return codes[parseInt(n, 10)]; });
+    var parts = line.split('\n');
+    for (var p = 0; p < parts.length; p++) {
+      var part = parts[p];
+      // ③ 직전 줄이 목록 항목이 아닌 문단이면 번호 목록 앞에 빈 줄
+      if (/^\d{1,2}\. /.test(part)) {
+        var prev = out[out.length - 1];
+        if (prev && prev.trim() && !/^\s*(\d{1,2}[.)]|[-*])\s/.test(prev)) out.push('');
+      }
+      // ④ 번호 항목에 바로 붙은 불릿은 하위 항목으로 3칸 들여쓰기 (빈 줄로 떨어진 불릿은 별개 목록으로 존중,
+      //    단 이미 들여쓴 하위 불릿의 연속이면 빈 줄 하나 건너서도 이어 들여쓴다)
+      if (/^[-*] /.test(part)) {
+        var last = out[out.length - 1];
+        if (last !== undefined && (/^\d{1,2}[.)] /.test(last) || /^\s{2,}[-*] /.test(last) ||
+            (!last.trim() && /^\s{2,}[-*] /.test(out[out.length - 2] || '')))) {
+          part = '   ' + part;
+        }
+      }
+      out.push(part);
+    }
+  }
+  return out.join('\n');
+}
+
+// 리포트 본문류 장문 필드만 목록 골격 복원 — 제목/식별자 필드는 줄바꿈이 생기면 안 되므로 제외.
+var MD_ARG_FIELDS = ['analysis', 'recommendations'];
+function reflowMarkdownInArgs(o) {
+  if (!o || typeof o !== 'object') return;
+  for (var i = 0; i < MD_ARG_FIELDS.length; i++) {
+    var f = MD_ARG_FIELDS[i];
+    if (typeof o[f] === 'string' && o[f]) o[f] = reflowMarkdown(o[f]);
+  }
 }
 
 function normalizeHan(s) {
@@ -1077,6 +1219,94 @@ function normalizeHan(s) {
   var leftover = s.match(/[一-鿿]/g);
   if (leftover) console.println('[Agent] ⚠ 미치환 한자 누출: ' + leftover.join('') + ' (HAN_MAP 추가 검토)');
   return s;
+}
+
+// 한자 누출은 답변만이 아니라 도구 인자로도 새어 저장물(대시보드 차트 제목·리포트 본문)에 박힌다 —
+// 최종답변 normalizeHan은 저장물엔 안 닿으므로 실행 전 인자에서 정규화. 제목·본문류 필드만 손대고
+// SQL/TQL·테이블/태그/파일명 인자는 중문 식별자가 실데이터일 수 있어 제외. 선택자(panel_title)도
+// 기존 저장물의 제목과 매칭돼야 하므로 제외.
+var HAN_ARG_FIELDS = ['title', 'subtitle', 'chart_title', 'new_title', 'analysis', 'recommendations'];
+function normalizeHanInArgs(o) {
+  if (!o || typeof o !== 'object') return;
+  for (var i = 0; i < HAN_ARG_FIELDS.length; i++) {
+    var f = HAN_ARG_FIELDS[i];
+    if (typeof o[f] === 'string' && /[一-鿿]/.test(o[f])) o[f] = normalizeHan(o[f]);
+  }
+  if (Array.isArray(o.charts)) for (var j = 0; j < o.charts.length; j++) normalizeHanInArgs(o.charts[j]);
+  normalizeHanInArgs(o.spec);    // compile_tql_from_spec: spec.output.title/subtitle
+  normalizeHanInArgs(o.output);
+}
+
+// 한국어 금융 태그 별칭 — 사용자가 "종가 예측해줘"처럼 한글로 태그를 지칭하면 영문 태그가 질문에 없어도
+// 정당한 지정으로 인정한다(강한 모델의 올바른 별칭 매핑을 교정이 되돌리지 않게). 일반 센서 태그는 영문
+// 그대로 입력되므로 substring 매치로 충분.
+var FC_TAG_ALIASES = { '종가': 'close', '시가': 'open', '고가': 'high', '저가': 'low', '거래량': 'volume' };
+
+// forecast_table 인자 교정: 질문에 없는 tag/tags 제거(전부 없으면 도구 자동결정, 일부만 언급이면 그것만 유지).
+// spec(객체/JSON 문자열)과 최상위 인자 둘 다 본다 — forecast.js assemble()이 둘 다 읽기 때문.
+// 한계(수용): "그 태그로 예측해줘" 같은 대명사 지칭은 질문에 태그명이 없어 전체 예측으로 넘어간다 —
+// 임의 축소(엉뚱한 태그 1개)보다 과잉 제공(요청 태그 포함 전체)이 낫다는 판단.
+function normalizeForecastTags(agent, args) {
+  var q = String(agent.currentQuery || '').toLowerCase();
+  if (!q) return;
+  function mentioned(tag) {
+    var t = String(tag).toLowerCase();
+    if (q.indexOf(t) >= 0) return true;
+    for (var k in FC_TAG_ALIASES) {
+      if (FC_TAG_ALIASES[k] === t && q.indexOf(k) >= 0) return true;
+    }
+    return false;
+  }
+  function filterHolder(holder) {
+    if (!holder || typeof holder !== 'object') return false;
+    var given = [];
+    if (Array.isArray(holder.tags) && holder.tags.length) given = holder.tags.map(String);
+    else if (holder.tag != null && String(holder.tag).trim() !== '') {
+      given = String(holder.tag).split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+    }
+    if (!given.length) return false;
+    var asked = [];
+    for (var i = 0; i < given.length; i++) { if (mentioned(given[i])) asked.push(given[i]); }
+    if (asked.length === given.length) return false; // 전부 사용자가 말한 태그 → 그대로
+    delete holder.tag; delete holder.tags;
+    if (asked.length === 1) holder.tag = asked[0];
+    else if (asked.length > 1) holder.tags = asked;
+    console.println('  \\- FIX: forecast_table 태그 교정 — 질문에 없는 태그 제거(' + given.join(',') + ' → ' +
+      (asked.length ? asked.join(',') : '도구 자동결정') + ')');
+    return true;
+  }
+  var sp = args.spec, isStr = typeof sp === 'string';
+  if (isStr) { try { sp = JSON.parse(sp); } catch (e) { sp = null; } }
+  if (filterHolder(sp) && isStr) args.spec = JSON.stringify(sp);
+  filterHolder(args); // 최상위 tag/tags(assemble이 spec에 없으면 여기서 승계)
+}
+
+// 이번 쿼리에서 모델이 마지막으로 describe_table/list_table_tags 한 테이블명 — 예측 호출 강제 유도 문구에 사용.
+// (질문이 "실버"처럼 한글이면 질문 파싱은 불가 — 모델이 이미 해석해 도구 인자로 넘긴 영문 테이블명이 정답이다.)
+// ⚠️ 앵커는 **포함 매치**여야 한다: 실제 user 메시지엔 스킬 힌트가 덧붙어 `content === currentQuery`가 절대 성립 안 함.
+//    등호 매치 시절엔 앵커 실패 → start=0 → 세션 전체 스캔 → **이전 질문의 테이블**(SILVER)을 집어 엉뚱한 예측을
+//    강제한 실사례("진동 예측해줘"에 실버 재예측). 앵커를 못 찾으면 통째로 포기('')하고 일반 문구로 유도한다.
+function lastDescribedTable(agent) {
+  var msgs = agent.messages, start = -1, i, j;
+  var q = String(agent.currentQuery || '');
+  for (i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'user' && q && String(msgs[i].content || '').indexOf(q) >= 0) { start = i; break; }
+  }
+  if (start < 0) return ''; // 현재 질문 메시지를 못 찾으면 전체 스캔 금지(이전 질문 테이블 오채택 방지)
+  var name = '';
+  for (i = start; i < msgs.length; i++) {
+    var m = msgs[i];
+    if (m.role !== 'assistant' || !m.toolCalls) continue;
+    for (j = 0; j < m.toolCalls.length; j++) {
+      var fn = m.toolCalls[j].function;
+      if (!fn || (fn.name !== 'describe_table' && fn.name !== 'list_table_tags')) continue;
+      var a = fn.arguments;
+      if (typeof a === 'string') { try { a = JSON.parse(a); } catch (e) { a = null; } }
+      var t = a && (a.table_name || a.table);
+      if (t) name = String(t).toUpperCase(); // 뒤에 나온 것(최신)을 채택
+    }
+  }
+  return name;
 }
 
 // 리포트 저장이 아직 안 됐는데(reportSavePending) 재유도 캡까지 실패해 폴백에 도달한 경우의 최종 정화.

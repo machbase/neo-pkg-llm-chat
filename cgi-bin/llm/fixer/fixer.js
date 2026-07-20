@@ -22,6 +22,7 @@ function createFixerContext() {
     inferTableName: null,
     advanced: false,
     skillName: '',
+    isOllama: false,
   };
 }
 
@@ -284,12 +285,21 @@ function fixDashboardTitle(name, args, fctx) {
   }
 }
 
+// 모델이 지어낸 시간 센티널('auto' 등) — epoch ms로 해석 불가하고 Neo 라이브 표현('now', 'now-1d')도 아님.
+// 빈 값 검사만으로는 fixer·스냅을 둘 다 통과해 .dsh에 그대로 박혀 Time Range가 Invalid date로 깨진다.
+function isBogusTimeArg(v) {
+  return typeof v === 'string' && v !== '' && !/^now([+-]|$)/.test(v) && !(parseInt(v, 10) > 0);
+}
+
 function fixDashboardTime(tc, fctx) {
   if (!DASHBOARD_TOOLS[tc.function.name]) return;
   var args = tc.function.arguments;
 
-  var needsStart = !args.time_start || typeof args.time_start !== 'string' || args.time_start === '';
-  var needsEnd = !args.time_end || typeof args.time_end !== 'string' || args.time_end === '';
+  // 해석 불가 값의 결측 취급은 ollama 한정 — 강한 모델은 기존 "빈 값만 채움" 유지.
+  var needsStart = !args.time_start || typeof args.time_start !== 'string' || args.time_start === '' ||
+    (fctx.isOllama && isBogusTimeArg(args.time_start));
+  var needsEnd = !args.time_end || typeof args.time_end !== 'string' || args.time_end === '' ||
+    (fctx.isOllama && isBogusTimeArg(args.time_end));
 
   var startDt = fctx.timeStartDt || fctx.dataMinDt;
   var endDt = fctx.timeEndDt || fctx.dataMaxDt;

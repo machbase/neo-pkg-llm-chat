@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import type { MachbaseConfig } from '../types/settings'
+import Icon from '../components/common/Icon'
 
 interface Props {
     config: MachbaseConfig
@@ -7,6 +9,8 @@ interface Props {
 }
 
 export function MachbaseSection({ config, onChange, errors = [] }: Props) {
+    const [showPassword, setShowPassword] = useState(false)
+
     const set = (field: keyof MachbaseConfig) => (e: React.ChangeEvent<HTMLInputElement>) =>
         onChange({ ...config, [field]: e.target.value })
 
@@ -40,7 +44,23 @@ export function MachbaseSection({ config, onChange, errors = [] }: Props) {
                 </label>
                 <label className="form-label">
                     <span>Password</span>
-                    <input type="password" placeholder="••••••••" value={config.password} onChange={set('password')} className={hasError('password') ? 'input-error' : ''} />
+                    <div className="input-icon-wrap w-full">
+                        <input
+                            type={showPassword ? 'text' : 'password'}
+                            placeholder="••••••••"
+                            value={config.password}
+                            onChange={set('password')}
+                            className={`w-full ${hasError('password') ? 'input-error' : ''}`}
+                        />
+                        <button
+                            type="button"
+                            className="input-icon-btn"
+                            onClick={() => setShowPassword((v) => !v)}
+                            aria-label={showPassword ? 'Hide password' : 'Show password'}
+                        >
+                            <Icon name={showPassword ? 'visibility' : 'visibility_off'} className="icon-sm" />
+                        </button>
+                    </div>
                 </label>
             </div>
         </div>

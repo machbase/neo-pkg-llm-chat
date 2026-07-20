@@ -64,7 +64,7 @@ logger.init({ dir: 'logs', prefix: 'worker-' + sessionID.substring(0, 12), level
 var mc = createClient(cfg.machbase);
 var registry = createRegistry(mc);
 
-// Output redaction (eval #5 category 1): mask the REAL secrets + credential patterns from
+// Output redaction: mask the REAL secrets + credential patterns from
 // everything sent to the UI — progress narration, tool-result previews, and final answer.
 var security = require('./tools/security');
 var OUTPUT_SECRETS = [

@@ -10,6 +10,13 @@ guide: |
 
 금융 데이터(주가, 환율, 원자재 등)에 적합한 HTML 분석 리포트 템플릿입니다.
 
+## 디자인
+**예측 리포트(neo/forecast)와 동일한 Neo Web UI 디자인 체계**(2026-07-14 이식) — `src/design-system/tokens/_colors.scss` 기준.
+- **기본 다크 모드**, 우상단 토글로 다크 전환(localStorage `neoReportTheme2` 저장, light 저장 시에만 head 스크립트가 `theme-light` 부착)
+- 폰트 Pretendard(UI) / D2Coding(숫자·코드), 레터헤드 헤더(로고 base64 인라인 — 단일 HTML로 이동 가능해야 하므로 외부 참조 금지)
+- KPI 카드 → **스펙 패널**(세로 구분선), 섹션 타이틀 = `| bar`, 차트 섹션은 `section-chart` 톤
+- ⚠️ canvas는 CSS 변수를 못 읽으므로 **중립색(격자/축)은 JS `CC` 팔레트**로 복제 — 테마 토글 시 `applyChartTheme()`+전체 재그리기. 시리즈 색(파랑/캔들 녹적/MA)은 두 모드 공용.
+
 ## 변수 설명
 | 변수 | 설명 | 채우는 주체 |
 |------|------|------------|
@@ -37,99 +44,212 @@ guide: |
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{STOCK_NAME} 금융 데이터 분석 리포트</title>
+<!-- 기본 = 다크(:root 토큰 그대로). 저장된 선택이 라이트일 때만 theme-light 부착(head 동기 실행 — 플래시 없음). -->
+<script>try{if(localStorage.getItem('neoReportTheme2')==='light')document.documentElement.classList.add('theme-light');}catch(e){}</script>
 <style>
+  /* Neo Web UI design tokens (src/design-system/tokens/_colors.scss) — 예측 리포트와 동일 체계 */
+  :root {
+    --bg-primary: #1e1e1e;
+    --bg-panel: #252525;
+    --bg-elevated: #2c2c2c;
+    --bg-dropdown: #2d2d2d;
+    --bg-hover: rgba(255, 255, 255, 0.08);
+    --bg-input: rgba(255, 255, 255, 0.13);
+
+    --text-primary: #f1f1f1;
+    --text-secondary: #c4c4c4;
+    --text-tertiary: #a3a3a3;
+    --text-muted: #727272;
+
+    --border-default: rgba(255, 255, 255, 0.13);
+    --border-medium: #626263;
+    --border-faint: rgba(255, 255, 255, 0.06);
+
+    --primary: #005fb8;
+    --primary-hover: #0075e2;
+    --success: #71e071;
+    --error: #ff5353;
+    --warning: #ff9800;
+
+    --radius-sm: 4px;
+    --radius-md: 8px;
+    --shadow-sm: 0 2px 2px rgba(0, 0, 0, 0.25);
+  }
+  .theme-light {
+    --bg-primary: #e9ebef;
+    --bg-panel: #ffffff;
+    --bg-elevated: #f5f6f8;
+    --bg-dropdown: #ffffff;
+    --bg-hover: rgba(0, 0, 0, 0.045);
+    --bg-input: rgba(0, 0, 0, 0.05);
+    --text-primary: #262831;
+    --text-secondary: #40434e;
+    --text-tertiary: #5f636f;
+    --text-muted: #8a8d99;
+    --border-default: rgba(0, 0, 0, 0.12);
+    --border-medium: #b9bcc5;
+    --border-faint: rgba(0, 0, 0, 0.08);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.08);
+  }
+
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: 'Segoe UI', 'Malgun Gothic', sans-serif; background: #eef1f6; color: #1a202c; line-height: 1.7; }
-  .page { max-width: 1000px; margin: 0 auto; padding: 40px 32px; }
+  body {
+    font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Malgun Gothic', sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.65;
+    font-size: 15px;
+  }
+  .page { max-width: 1320px; margin: 0 auto; padding: 40px 28px 56px; }
 
-  .report-header { background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%); color: #fff; padding: 48px 40px; border-radius: 16px; margin-bottom: 32px; position: relative; overflow: hidden; }
-  .report-header::after { content: ''; position: absolute; top: -50%; right: -20%; width: 400px; height: 400px; background: radial-gradient(circle, rgba(255,255,255,0.05) 0%, transparent 70%); border-radius: 50%; }
-  .report-header h1 { font-size: 32px; font-weight: 700; margin-bottom: 8px; position: relative; z-index: 1; }
-  .report-header .subtitle { font-size: 16px; opacity: 0.8; margin-bottom: 20px; position: relative; z-index: 1; }
-  .report-header .meta-row { display: flex; gap: 24px; font-size: 13px; opacity: 0.7; position: relative; z-index: 1; flex-wrap: wrap; }
+  /* Header — 레터헤드: 왼쪽 제목·메타 / 오른쪽 로고·테마토글 */
+  .report-header {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 24px;
+    padding: 4px 0 26px; border-bottom: 1px solid var(--border-default); margin-bottom: 28px;
+  }
+  .report-header .logo { height: 42px; width: auto; flex-shrink: 0; opacity: 1; margin-top: 2px; margin-right: 2px; }
+  .theme-light .report-header .logo { filter: brightness(0.18); }
+  .hd-right { display: flex; flex-direction: column; align-items: flex-end; gap: 16px; flex-shrink: 0; }
+  .theme-btn {
+    display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0;
+    color: var(--text-secondary);
+    background: var(--bg-input); border: 1px solid var(--border-default); border-radius: var(--radius-sm);
+    cursor: pointer; transition: background .15s ease, border-color .15s ease, color .15s ease;
+  }
+  .theme-btn:hover { border-color: var(--border-medium); color: var(--text-primary); }
+  .theme-btn:active { transform: scale(.96); }
+  .theme-btn svg { width: 18px; height: 18px; display: block; }
+  .theme-btn .ic-sun { display: none; }
+  .theme-light .theme-btn .ic-sun { display: block; }
+  .theme-light .theme-btn .ic-moon { display: none; }
+  .eyebrow { font-size: 11px; font-weight: 700; letter-spacing: 1.4px; line-height: 1; text-transform: uppercase; color: var(--primary-hover); margin-bottom: 10px; }
+  .report-header h1 { font-size: 30px; font-weight: 700; line-height: 1.2; color: var(--text-primary); letter-spacing: -0.3px; }
+  .report-header h1 .hl { color: var(--primary-hover); }
+  .meta-row { display: flex; flex-wrap: wrap; gap: 10px 26px; margin-top: 16px; font-size: 13px; }
+  .meta-row .meta { display: flex; align-items: baseline; gap: 8px; }
+  .meta-row .meta-k { font-size: 10px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; color: var(--text-muted); }
+  .meta-row .meta-v { color: var(--text-secondary); }
+  .meta-row .mono { font-family: 'D2Coding', 'Consolas', monospace; }
 
-  .section { background: #fff; border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); padding: 32px; margin-bottom: 28px; }
-  .section-title { font-size: 18px; font-weight: 700; color: #1a365d; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
-  .section-title .icon { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; }
-  .icon-blue { background: #ebf4ff; color: #2b6cb0; }
-  .icon-green { background: #e6fffa; color: #2f855a; }
-  .icon-orange { background: #fefcbf; color: #c05621; }
-  .icon-purple { background: #faf5ff; color: #6b46c1; }
-  .icon-red { background: #fff5f5; color: #c53030; }
+  /* 스펙 패널 — KPI 카드 대신 하나의 패널을 세로 구분선으로 나눈다 */
+  .spec-panel { display: flex; flex-wrap: wrap; background: var(--bg-panel); border: 1px solid var(--border-default); border-radius: var(--radius-md); overflow: hidden; margin-bottom: 28px; }
+  .spec-col { flex: 1 1 0; min-width: 180px; padding: 18px 22px; border-right: 1px solid var(--border-default); display: flex; flex-direction: column; }
+  .spec-col:last-child { border-right: none; }
+  .spec-k { font-size: 11px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; color: var(--text-muted); }
+  .spec-v { margin-top: 7px; font-size: 24px; font-weight: 700; color: var(--text-primary); font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .spec-v .unit { font-size: 14px; font-weight: 600; color: var(--text-tertiary); margin-left: 2px; }
+  .spec-v.small { font-size: 17px; font-weight: 600; margin-top: 11px; font-family: 'D2Coding', 'Consolas', monospace; }
+  /* 기간 칸: 풀 타임스탬프가 길어 줄바꿈으로 뭉개짐 → 넓게 + 아래 축약 스크립트 */
+  .spec-col.wide { flex: 1.8 1 0; min-width: 260px; }
 
-  .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 8px; }
-  .kpi-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; padding: 20px; color: #fff; text-align: center; }
-  .kpi-card:nth-child(2) { background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); }
-  .kpi-card:nth-child(3) { background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%); }
-  .kpi-card:nth-child(4) { background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%); }
-  .kpi-card .kpi-label { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; opacity: 0.85; margin-bottom: 6px; }
-  .kpi-card .kpi-value { font-size: 24px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Section */
+  .section { background: var(--bg-panel); border: 1px solid var(--border-default); border-radius: var(--radius-md); padding: 24px 26px; margin-bottom: 24px; }
+  .section.section-chart { background: var(--bg-primary); }
+  .section-title { display: flex; align-items: center; gap: 9px; font-size: 17px; font-weight: 600; color: var(--text-primary); margin-bottom: 18px; }
+  .section-title .bar { width: 3px; height: 16px; border-radius: 2px; background: var(--primary); }
+  .chart-badge {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.2px;
+    color: var(--primary-hover); background: rgba(0, 108, 210, 0.12);
+    border: 1px solid rgba(0, 108, 210, 0.28); border-radius: var(--radius-sm);
+  }
+  .chart-badge svg { width: 13px; height: 13px; }
 
-  table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 14px; border-radius: 8px; overflow: hidden; }
-  thead th { background: #2d3748; color: #fff; font-weight: 600; padding: 14px 16px; text-align: left; position: sticky; top: 0; z-index: 1; }
-  tbody td { padding: 12px 16px; border-bottom: 1px solid #edf2f7; }
-  tbody tr:hover { background: #f7fafc; }
+  /* Table */
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  thead th {
+    text-align: left; font-weight: 600; color: var(--text-tertiary); font-size: 13px;
+    padding: 12px 14px; border-bottom: 1px solid var(--border-default); white-space: nowrap;
+  }
+  tbody td { padding: 12px 14px; border-bottom: 1px solid var(--border-faint); color: var(--text-secondary); }
   tbody tr:last-child td { border-bottom: none; }
-  .num { text-align: right; font-variant-numeric: tabular-nums; font-family: 'Consolas', 'Menlo', monospace; }
+  tbody tr:hover td { background: var(--bg-hover); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; font-family: 'D2Coding', 'Consolas', 'Menlo', monospace; }
+  .table-scroll { max-height: 400px; overflow-y: auto; border: 1px solid var(--border-faint); border-radius: var(--radius-sm); }
 
-  .chart-title { font-size: 14px; font-weight: 600; color: #4a5568; margin-bottom: 12px; }
-  .chart-full { margin-bottom: 24px; }
-  canvas { width: 100%; border-radius: 8px; background: #f8f9fb; border: 1px solid #e8ecf1; }
+  /* Chart */
+  .chart-wrap { position: relative; overflow: hidden; }
+  canvas { width: 100%; display: block; background: var(--bg-elevated); border: 1px solid var(--border-default); border-radius: var(--radius-sm); }
+  .tooltip {
+    position: absolute; pointer-events: none; display: none; z-index: 10;
+    background: var(--bg-dropdown); color: var(--text-primary);
+    border: 1px solid var(--border-medium); border-radius: var(--radius-sm);
+    padding: 7px 10px; font-size: 12px; line-height: 1.6; white-space: nowrap; box-shadow: var(--shadow-sm);
+  }
+  .crosshair { position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; display: none; z-index: 5; }
+  .crosshair-v { width: 1px; background: rgba(0, 117, 226, 0.45); position: absolute; top: 0; height: 100%; }
+  .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; margin-bottom: 12px; font-size: 13px; color: var(--text-tertiary); }
+  .legend-item { display: flex; align-items: center; gap: 7px; }
+  .legend-swatch { width: 20px; height: 2px; border-radius: 1px; }
+  .nav-hint { margin-left: auto; font-size: 12px; color: var(--text-muted); }
+  .nav-hint b { color: var(--text-tertiary); font-weight: 600; }
+  .chart-full { margin-bottom: 6px; }
 
-  .legend { display: flex; flex-wrap: wrap; gap: 16px; margin-bottom: 12px; font-size: 13px; color: #4a5568; }
-  .legend-item { display: flex; align-items: center; gap: 6px; }
-  .legend-swatch { width: 20px; height: 3px; border-radius: 2px; }
-
-  .analysis-content { color: #4a5568; font-size: 15px; line-height: 1.9; }
+  /* Analysis */
+  .analysis-content { color: var(--text-secondary); font-size: 15px; line-height: 1.9; }
   .analysis-content p { margin-bottom: 14px; }
-  .analysis-content strong { color: #1a365d; font-weight: 700; }
+  .analysis-content strong { color: var(--text-primary); font-weight: 600; }
   .analysis-content ul, .analysis-content ol { margin: 12px 0 16px 24px; }
   .analysis-content li { margin-bottom: 10px; padding-left: 4px; line-height: 1.7; }
   .analysis-content ol li { list-style-type: decimal; }
-  .analysis-content li::marker { color: #2b6cb0; font-weight: 700; }
+  .analysis-content li::marker { color: var(--primary-hover); font-weight: 700; }
 
-  .chart-wrap { position: relative; overflow: hidden; }
-  .tooltip { position: absolute; pointer-events: none; background: rgba(26,32,44,0.92); color: #fff; padding: 8px 14px; border-radius: 8px; font-size: 12px; line-height: 1.6; white-space: nowrap; display: none; z-index: 10; box-shadow: 0 4px 12px rgba(0,0,0,0.25); }
-  .crosshair { position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; display: none; z-index: 5; }
-  .crosshair-v { width: 1px; background: rgba(102,126,234,0.5); position: absolute; top: 0; height: 100%; }
+  .report-footer { text-align: center; padding: 26px 0 0; color: var(--text-muted); font-size: 12px; border-top: 1px solid var(--border-default); margin-top: 12px; }
 
-  .report-footer { text-align: center; padding: 24px; color: #a0aec0; font-size: 12px; border-top: 1px solid #e2e8f0; margin-top: 12px; }
-
-  @media print { body { background: #fff; } .page { padding: 0; } .section { box-shadow: none; border: 1px solid #e2e8f0; } }
-  @media (max-width: 768px) { .kpi-grid { grid-template-columns: repeat(2, 1fr); } .page { padding: 16px; } }
+  @media print { body { background: #fff; } .page { padding: 0; } .section { box-shadow: none; } }
+  @media (max-width: 768px) { .spec-col { flex-basis: 45%; } .page { padding: 16px; } }
 </style>
 </head>
 <body>
 <div class="page">
 
   <div class="report-header">
-    <h1>{STOCK_NAME} 금융 데이터 분석 리포트</h1>
-    <div class="subtitle">Machbase Neo AI 기반 심층 분석 보고서</div>
-    <div class="meta-row">
-      <span>&#128197; {GENERATED_DATE}</span>
-      <span>&#128202; {TAG_COUNT}개 태그 · {DATA_COUNT}건</span>
-      <span>&#9200; {TIME_RANGE}</span>
+    <div>
+      <div class="eyebrow">Financial Analysis Report</div>
+      <h1><span class="hl">{STOCK_NAME}</span> 금융 데이터 분석 리포트</h1>
+      <div class="meta-row">
+        <span class="meta"><span class="meta-k">생성</span><span class="meta-v mono">{GENERATED_DATE}</span></span>
+        <span class="meta"><span class="meta-k">소스</span><span class="meta-v"><span class="mono">{TABLE}</span> &middot; TAG table</span></span>
+        <span class="meta"><span class="meta-k">기간</span><span class="meta-v mono" id="metaRange">{TIME_RANGE}</span></span>
+      </div>
+    </div>
+    <div class="hd-right">
+      <img class="logo" src="data:image/png;base64,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" alt="Machbase">
+      <button id="themeBtn" class="theme-btn" type="button" aria-label="테마 전환"><svg class="ic-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8z"></path></svg><svg class="ic-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg></button>
     </div>
   </div>
 
-  <div class="section" style="background:transparent;box-shadow:none;padding:0;">
-    <div class="kpi-grid">
-      <div class="kpi-card"><div class="kpi-label">종목</div><div class="kpi-value">{STOCK_NAME}</div></div>
-      <div class="kpi-card"><div class="kpi-label">태그 수</div><div class="kpi-value">{TAG_COUNT}</div></div>
-      <div class="kpi-card"><div class="kpi-label">데이터 건수</div><div class="kpi-value">{DATA_COUNT}</div></div>
-      <div class="kpi-card"><div class="kpi-label">분석 기간</div><div class="kpi-value">{TIME_RANGE}</div></div>
+  <div class="spec-panel">
+    <div class="spec-col">
+      <div class="spec-k">종목</div>
+      <div class="spec-v">{STOCK_NAME}</div>
+    </div>
+    <div class="spec-col">
+      <div class="spec-k">태그</div>
+      <div class="spec-v">{TAG_COUNT}<span class="unit">개</span></div>
+    </div>
+    <div class="spec-col">
+      <div class="spec-k">데이터</div>
+      <div class="spec-v">{DATA_COUNT}<span class="unit">건</span></div>
+    </div>
+    <div class="spec-col wide">
+      <div class="spec-k">분석 기간</div>
+      <div class="spec-v small" id="specRange">{TIME_RANGE}</div>
     </div>
   </div>
 
   <!-- Candlestick Chart (OHLC) -->
-  <div class="section" id="candlestickSection">
-    <div class="section-title"><div class="icon icon-red">&#128200;</div> 캔들스틱 차트 (OHLC)</div>
+  <div class="section section-chart" id="candlestickSection">
+    <div class="section-title"><span class="bar"></span> 캔들스틱 (OHLC)
+      <span class="chart-badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 9 2 12 5 15"></polyline><polyline points="9 5 12 2 15 5"></polyline><polyline points="15 19 12 22 9 19"></polyline><polyline points="19 9 22 12 19 15"></polyline><line x1="2" y1="12" x2="22" y2="12"></line><line x1="12" y1="2" x2="12" y2="22"></line></svg>확대·이동</span>
+      <span class="nav-hint"><b>휠</b> 확대·축소 &middot; <b>드래그</b> 좌우 이동 &middot; <b>더블클릭</b> 되돌리기</span>
+    </div>
     <div class="chart-full chart-wrap"><canvas id="candleChart" height="360"></canvas><div class="crosshair" id="candleCross"><div class="crosshair-v"></div></div><div class="tooltip" id="candleTip"></div></div>
   </div>
 
   <!-- Price Trend + Moving Averages -->
-  <div class="section" id="trendSection">
-    <div class="section-title"><div class="icon icon-blue">&#128200;</div> 가격 추세 + 이동평균</div>
+  <div class="section section-chart" id="trendSection">
+    <div class="section-title"><span class="bar"></span> 가격 추세 + 이동평균</div>
     <div class="legend" id="trendLegend">
       <div class="legend-item"><div class="legend-swatch" style="background:#4a7cfa;height:3px;"></div>Close</div>
       <div class="legend-item"><div class="legend-swatch" style="background:#f59e42;"></div>MA5</div>
@@ -140,8 +260,8 @@ guide: |
   </div>
 
   <!-- Bollinger Bands -->
-  <div class="section" id="bollingerSection">
-    <div class="section-title"><div class="icon icon-purple">&#128202;</div> 볼린저밴드 (Bollinger Bands)</div>
+  <div class="section section-chart" id="bollingerSection">
+    <div class="section-title"><span class="bar"></span> 볼린저밴드 (Bollinger Bands)</div>
     <div class="legend">
       <div class="legend-item"><div class="legend-swatch" style="background:#4a7cfa;height:3px;"></div>Close</div>
       <div class="legend-item"><div class="legend-swatch" style="background:#e53e3e;"></div>MA20</div>
@@ -151,15 +271,15 @@ guide: |
   </div>
 
   <!-- Volume-Price Correlation -->
-  <div class="section" id="volumeSection">
-    <div class="section-title"><div class="icon icon-green">&#128202;</div> 거래량-가격 상관 (Volume-Price)</div>
+  <div class="section section-chart" id="volumeSection">
+    <div class="section-title"><span class="bar"></span> 거래량-가격 상관 (Volume-Price)</div>
     <div class="chart-full chart-wrap"><canvas id="volumeChart" height="320"></canvas><div class="crosshair" id="volumeCross"><div class="crosshair-v"></div></div><div class="tooltip" id="volumeTip"></div></div>
   </div>
 
   <!-- Tag Stats -->
   <div class="section">
-    <div class="section-title"><div class="icon icon-blue">&#128200;</div> 태그별 통계 요약</div>
-    <div style="max-height:400px;overflow-y:auto;border-radius:8px;">
+    <div class="section-title"><span class="bar"></span> 태그별 통계 요약</div>
+    <div class="table-scroll">
     <table>
       <thead><tr>
         <th>태그(NAME)</th><th class="num">건수(COUNT)</th><th class="num">평균(AVG)</th><th class="num">최솟값(MIN)</th><th class="num">최댓값(MAX)</th>
@@ -171,13 +291,13 @@ guide: |
 
   <!-- Analysis -->
   <div class="section">
-    <div class="section-title"><div class="icon icon-orange">&#128270;</div> 심층 분석</div>
+    <div class="section-title"><span class="bar"></span> 심층 분석</div>
     <div class="analysis-content">{ANALYSIS}</div>
   </div>
 
   <!-- Recommendations -->
   <div class="section">
-    <div class="section-title"><div class="icon icon-purple">&#128161;</div> 종합 소견 및 권고사항</div>
+    <div class="section-title"><span class="bar"></span> 종합 소견 및 권고사항</div>
     <div class="analysis-content">{RECOMMENDATIONS}</div>
   </div>
 
@@ -207,6 +327,19 @@ guide: |
   var hasOHLC = trend.some(function(d){ return d.open !== null && d.high !== null && d.low !== null; });
   var hasVolume = trend.some(function(d){ return d.volume > 0; });
   var dpr = window.devicePixelRatio || 1;
+
+  /* ---- 차트 중립색(격자/축) — canvas는 CSS 변수를 못 읽으므로 여기서 테마별로 복제(_colors.scss와 동일 값).
+          시리즈 색(파랑 종가/MA/캔들 녹적/밴드 보라)은 두 모드 공용이라 바꾸지 않는다. ---- */
+  var CC = { grid: '', axis: '', axisLine: '', hint: '' };
+  function applyChartTheme() {
+    var light = document.documentElement.classList.contains('theme-light');
+    CC.grid = light ? 'rgba(0,0,0,0.08)' : 'rgba(255,255,255,0.07)';
+    CC.axis = light ? '#5f636f' : '#a3a3a3';
+    CC.axisLine = light ? '#b9bcc5' : '#626263';
+    CC.hint = light ? '#8a8d99' : '#727272';
+  }
+  applyChartTheme();
+  var FONT = 'Pretendard, sans-serif';
 
   /* ---- Utility functions ---- */
   function setup(id, h) {
@@ -331,11 +464,11 @@ guide: |
   function drawGrid(ctx, pad, W, H, mn, mx, steps) {
     var ch = H - pad.t - pad.b;
     var range = mx - mn || 1;
-    ctx.strokeStyle = '#e8ecf1'; ctx.lineWidth = 1;
+    ctx.strokeStyle = CC.grid; ctx.lineWidth = 1;
     for (var i = 0; i <= steps; i++) {
       var y = pad.t + ch - (ch * i / steps);
       ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
-      ctx.fillStyle = '#8e99a4'; ctx.font = '11px Segoe UI'; ctx.textAlign = 'right';
+      ctx.fillStyle = CC.axis; ctx.font = '11px ' + FONT; ctx.textAlign = 'right';
       ctx.fillText(fmt(mn + range * i / steps), pad.l - 10, y + 4);
     }
   }
@@ -343,7 +476,7 @@ guide: |
   /* ---- Draw X axis labels ---- */
   function drawXLabels(ctx, slice, pad, W, H, step, offset) {
     var n = slice.length;
-    ctx.fillStyle = '#8e99a4'; ctx.font = '10px Segoe UI'; ctx.textAlign = 'center';
+    ctx.fillStyle = CC.axis; ctx.font = '10px ' + FONT; ctx.textAlign = 'center';
     var ls = Math.max(1, Math.floor(n / 8));
     for (var i = 0; i < n; i += ls) {
       ctx.fillText(slice[i].time, pad.l + step * i + (offset || 0), H - pad.b + 18);
@@ -356,13 +489,13 @@ guide: |
   /* ---- Draw bottom axis line ---- */
   function drawAxisLine(ctx, pad, W, H) {
     var ch = H - pad.t - pad.b;
-    ctx.strokeStyle = '#cbd5e0'; ctx.lineWidth = 1.5;
+    ctx.strokeStyle = CC.axisLine; ctx.lineWidth = 1.5;
     ctx.beginPath(); ctx.moveTo(pad.l, pad.t + ch); ctx.lineTo(W - pad.r, pad.t + ch); ctx.stroke();
   }
 
   /* ---- Zoom hint text ---- */
   function drawZoomHint(ctx, pad, zoomed) {
-    ctx.fillStyle = '#a0aec0'; ctx.font = '10px Segoe UI'; ctx.textAlign = 'left';
+    ctx.fillStyle = CC.hint; ctx.font = '10px ' + FONT; ctx.textAlign = 'left';
     ctx.fillText(zoomed ? 'Double-click to reset' : 'Scroll to zoom', pad.l, pad.t - 10);
   }
 
@@ -437,7 +570,7 @@ guide: |
     drawAxisLine(ctx, pad, W, H);
     drawZoomHint(ctx, pad, candleState.zoomed);
 
-    ctx.fillStyle = '#22c55e'; ctx.font = 'bold 11px Segoe UI'; ctx.textAlign = 'left';
+    ctx.fillStyle = '#22c55e'; ctx.font = 'bold 11px ' + FONT; ctx.textAlign = 'left';
     ctx.fillText('Bullish', pad.l + 140, pad.t - 10);
     ctx.fillStyle = '#ef4444';
     ctx.fillText('Bearish', pad.l + 200, pad.t - 10);
@@ -681,18 +814,18 @@ guide: |
     ctx.clearRect(0, 0, W, H);
 
     // Left Y grid (price)
-    ctx.strokeStyle = '#e8ecf1'; ctx.lineWidth = 1;
+    ctx.strokeStyle = CC.grid; ctx.lineWidth = 1;
     for (var i = 0; i <= 5; i++) {
       var y = pad.t + ch - (ch * i / 5);
       ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(W - pad.r, y); ctx.stroke();
-      ctx.fillStyle = '#4a7cfa'; ctx.font = '11px Segoe UI'; ctx.textAlign = 'right';
+      ctx.fillStyle = '#4a7cfa'; ctx.font = '11px ' + FONT; ctx.textAlign = 'right';
       ctx.fillText(fmt(pMin + pRange * i / 5), pad.l - 10, y + 4);
     }
 
     // Right Y labels (volume)
     for (var i = 0; i <= 5; i++) {
       var y = pad.t + ch - (ch * i / 5);
-      ctx.fillStyle = '#48bb78'; ctx.font = '11px Segoe UI'; ctx.textAlign = 'left';
+      ctx.fillStyle = '#48bb78'; ctx.font = '11px ' + FONT; ctx.textAlign = 'left';
       ctx.fillText(fmt(vMax * i / 5), W - pad.r + 8, y + 4);
     }
 
@@ -722,7 +855,7 @@ guide: |
     drawZoomHint(ctx, pad, volState.zoomed);
 
     // Axis labels
-    ctx.fillStyle = '#4a7cfa'; ctx.font = 'bold 11px Segoe UI'; ctx.textAlign = 'left';
+    ctx.fillStyle = '#4a7cfa'; ctx.font = 'bold 11px ' + FONT; ctx.textAlign = 'left';
     ctx.fillText('Price (left)', pad.l + 140, pad.t - 10);
     ctx.fillStyle = '#48bb78';
     ctx.fillText('Volume (right)', pad.l + 230, pad.t - 10);
@@ -737,6 +870,27 @@ guide: |
   drawVolume();
   addZoom('volumeChart', volState, trend.length, drawVolume);
 
+  /* ---- 테마 토글: 클래스 전환 + 저장 + 차트 중립색 갱신 + 전체 재그리기 ---- */
+  var themeBtn = document.getElementById('themeBtn');
+  if (themeBtn) themeBtn.onclick = function () {
+    var el = document.documentElement;
+    el.classList.toggle('theme-light');
+    try { localStorage.setItem('neoReportTheme2', el.classList.contains('theme-light') ? 'light' : 'dark'); } catch (e) {}
+    applyChartTheme();
+    drawCandle(); drawTrend(); drawBB(); drawVolume();
+  };
+
+})();
+</script>
+<script>
+// 기간 표기 축약 — "YYYY-MM-DD 00:00:00 ~ ..." 풀 타임스탬프가 스펙 칸을 여러 줄로 뭉갬(라이브 스크린샷).
+// **초만 제거**(시:분은 항상 표시 — 사용자 확정): "2023-09-21 00:00 ~ 2026-02-11 18:00". 표시만 바꾼다.
+(function () {
+  ['specRange', 'metaRange'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = el.textContent.replace(/(\d{2}:\d{2}):\d{2}/g, '$1');
+  });
 })();
 </script>
 </body>

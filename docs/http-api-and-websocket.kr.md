@@ -55,7 +55,7 @@ weight: 50
 | Method | Path | 설명 |
 | :---: | :--- | :--- |
 | GET | `/{user_id}/ws` | 브라우저 채팅 WebSocket (현행 게이트웨이 구조) |
-| GET | `/ws` | 레거시 인프로세스 채팅 WebSocket |
+| GET | `/ws` | 브라우저 채팅 WebSocket (구 컨벤션 경로, 같은 게이트웨이 핸들러로 연결 — user_id는 메시지 본문에서 취득) |
 | GET | `/internal/ws` | 내부 게이트웨이 ↔ 워커 채널 (클라이언트용 아님) |
 
 ### 릴레이 라우트

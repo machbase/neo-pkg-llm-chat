@@ -9,7 +9,7 @@ var TRUNC_UNIT = /^(sec|min|hour|day|week|month|year)$/i;
 function sanitizeSql(sql) {
   var before = sql;
   // DATE_TRUNC(col, 'unit') → DATE_TRUNC('unit', col). Machbase는 단위가 먼저. 뒤집힌 형태만 매칭(올바른 형태는 첫 인자가
-  // 따옴표라 제외돼 오탐 0). 이 실수가 ERR-2037 → EXTRACT(EPOCH) 헛짚음 → "계산 불가" 환각으로 이어지던 사슬의 뿌리.
+  // 따옴표라 제외돼 오탐 0). 방치하면 ERR-2037 → EXTRACT(EPOCH) 헛짚기 → "계산 불가" 환각으로 이어진다.
   sql = sql.replace(/DATE_TRUNC\s*\(\s*([^,'()]+?)\s*,\s*'([A-Za-z]+)'\s*\)/gi, function (m, col, unit) {
     return TRUNC_UNIT.test(unit) ? "DATE_TRUNC('" + unit.toLowerCase() + "', " + col.trim() + ")" : m;
   });
@@ -26,7 +26,7 @@ function sanitizeSql(sql) {
     console.println('[SQL] 한글 별칭 → ASCII 자동교정(sanitizeSql): ' + aliasKeys.join(', '));
   }
   // 버킷 GROUP BY(DATE_TRUNC/ROLLUP) + SELECT/ORDER BY의 raw TIME → 무조건 ERR-2044로 실패가 확정된 쿼리.
-  // 에러 힌트(HINT_GROUPBY)로는 약한 모델이 ORDER BY만 고치고 SELECT의 raw TIME은 못 고침(S10 라이브 실측) →
+  // 에러 힌트(HINT_GROUPBY)로는 약한 모델이 ORDER BY만 고치고 SELECT의 raw TIME은 못 고침 →
   // raw TIME을 GROUP BY의 버킷식으로 결정론 치환. 실패 확정 쿼리만 건드리므로 "무조건 옳은 교정" 원칙 유지.
   // 서브쿼리(FROM ( )가 있으면 절 경계가 모호해 스킵(힌트 폴백). t.TIME/AS TIME/함수 안 TIME은 치환 제외.
   var fixed = fixRawTimeWithBucketGroupBy(sql);
@@ -103,7 +103,7 @@ function fixRawTimeWithBucketGroupBy(sql) {
   }
   // 잔여 bare NAME(비집계 식별컬럼)이 SELECT에 있는데 GROUP BY에 없으면 → GROUP BY에 추가.
   // 2044 확정 쿼리의 정석 해석(선택한 식별컬럼 = 그룹핑 컬럼)이라 무위험. VALUE는 의미(AVG? MAX-MIN?)를
-  // 추측해야 해서 재작성 금지 — 2044 동적 힌트로 위임(S1/S7 라이브 실측).
+  // 추측해야 해서 재작성 금지 — 2044 동적 힌트로 위임.
   if (bareSelectCols(out).indexOf('NAME') >= 0) {
     var gb2 = out.match(/\bGROUP\s+BY\b([\s\S]*?)(?:\bORDER\s+BY\b|\bHAVING\b|\bLIMIT\b|$)/i);
     if (gb2 && !/\bNAME\b/i.test(gb2[1])) {
@@ -124,14 +124,14 @@ function hintForError(reason, sql) {
   var HINT_GROUPBY = ' (힌트: ERR-2044는 DATE_TRUNC/ROLLUP 고장이 아닙니다 — GROUP BY에서 정상 작동합니다. 원인은 SELECT나 ORDER BY에서 raw TIME을 쓴 것입니다. 시간버킷으로 그룹했으면 ORDER BY·SELECT의 시간도 raw TIME 대신 같은 버킷식(또는 그 별칭)을 쓰세요. 예: SELECT DATE_TRUNC(\'hour\',TIME) AS bucket, MAX(VALUE)-MIN(VALUE) AS band FROM ... GROUP BY DATE_TRUNC(\'hour\',TIME) ORDER BY bucket)';
   // 특정 에러코드를 먼저 판정한다. 에러 reason은 문제의 SQL 전체를 echo하므로, 텍스트 매칭(예: /DATE_TRUNC/)을
   // 코드보다 먼저 두면 ERR-2010(별칭) 오류인데 SQL에 DATE_TRUNC 단어가 있다는 이유로 엉뚱한 DATE_TRUNC 힌트로
-  // 샌다(S8 라이브 실측: 한글 별칭 변동폭 오류에 DATE_TRUNC 힌트가 나와 모델이 회복 못 함). 텍스트 매칭은 폴백으로.
+  // 새서 모델이 회복하지 못한다. 텍스트 매칭은 폴백으로.
   if (/2129/.test(r)) return ' (힌트: 서수 GROUP BY 1 미지원 → GROUP BY엔 표현식/별칭 전체를 쓰세요)';
   if (/2010/.test(r)) {
-    // ± INTERVAL '따옴표' 산술이 원인일 땐 토큰('86400' 등)만 보면 별칭 오진단 → 모델이 회복 못 함(S5 r3 라이브 실측).
-    // (따옴표 없는 INTERVAL 1 DAY는 정상 동작 — 라이브 확인 — 이라 따옴표 형태만 잡음)
+    // ± INTERVAL '따옴표' 산술이 원인일 땐 토큰('86400' 등)만 보면 별칭으로 오진단해 모델이 회복 못 한다.
+    // (따옴표 없는 INTERVAL 1 DAY는 정상 동작이라 따옴표 형태만 잡음)
     if (/[-+]\s*INTERVAL\s*'/i.test(s)) return ' (힌트: INTERVAL \'숫자\' 단위 문법이 오류를 냈습니다. INTERVAL 1 DAY처럼 따옴표 없이 쓰거나, TO_DATE(\'YYYY-MM-DD HH24:MI:SS\') 리터럴 두 개로 범위를 직접 쓰세요. 질문에 기간이 명시되지 않았다면 TIME 필터를 아예 빼고 전체 기간으로 조회하세요.)';
-    // ERR-2010 "near token (X FROM ..." → X가 문제의 별칭. 한글이냐 예약어냐를 구분해야 모델이 회복함.
-    // 기존엔 무조건 "한글 별칭"이라 해서 AS RANGE(예약어) 오류를 오진단 → 모델이 RANGE를 계속 고집하며 무한 실패.
+    // ERR-2010 "near token (X FROM ..." → X가 문제의 별칭. 한글이냐 예약어냐를 구분해야 모델이 회복한다 —
+    // 뭉뚱그려 "한글 별칭"이라 안내하면 AS RANGE(예약어) 오류를 오진단해 모델이 RANGE를 고집하며 무한 실패.
     var m2010 = r.match(/near token \(\s*([^\s)]+)/);
     var tok = m2010 ? m2010[1] : '';
     if (tok && /[^\x00-\x7F]/.test(tok)) return ' (힌트: 별칭 "' + tok + '"이 한글입니다 — 컬럼 별칭은 영어만 됩니다. 예: AS band)';
@@ -140,7 +140,7 @@ function hintForError(reason, sql) {
   }
   if (/2056/.test(r)) return HINT_TAG;
   if (/2044/.test(r)) {
-    // 문제의 bare 컬럼을 콕 집어 안내 — 범용 raw TIME 설명만으론 약한 모델이 VALUE/NAME 케이스를 못 고침(S7/S8 라이브 실측).
+    // 문제의 bare 컬럼을 콕 집어 안내 — 범용 raw TIME 설명만으론 약한 모델이 VALUE/NAME 케이스를 못 고친다.
     var _bare = bareSelectCols(s), _extra = '';
     if (_bare.indexOf('VALUE') >= 0) _extra += ' 특히 이 쿼리는 SELECT에 raw VALUE가 있습니다 — GROUP BY 집계에서는 집계함수로 감싸야 합니다(평균은 AVG(VALUE), 변동폭은 MAX(VALUE)-MIN(VALUE)).';
     if (_bare.indexOf('NAME') >= 0) _extra += ' SELECT의 NAME은 GROUP BY 목록에 NAME을 추가하면 됩니다.';
@@ -148,7 +148,7 @@ function hintForError(reason, sql) {
   }
   if (/2037/.test(r)) return HINT_TRUNC;
   // MACHCLI-ERR-300 "Invalid date value" — 잘못된 날짜 리터럴/TO_DATE 오용(예: 두 번째 인자에 'INTERVAL DAY + 1').
-  // S5 r1 라이브 실측: 힌트 없이는 모델이 같은 SQL만 반복하다 교착.
+  // 힌트 없이는 모델이 같은 SQL만 반복하다 교착한다.
   if (/MACHCLI-ERR-300|Invalid date value/i.test(r)) return ' (힌트: 날짜 리터럴/형식 오류입니다. TO_DATE(\'2024-01-01\') 또는 TO_DATE(\'2024-01-01 09:00:00\', \'YYYY-MM-DD HH24:MI:SS\') 형태만 쓰세요. TO_DATE의 두 번째 인자는 형식 문자열만 가능하며 INTERVAL 식은 넣을 수 없습니다. 질문에 기간이 명시되지 않았다면 TIME 필터를 아예 빼고 전체 기간으로 조회하세요.)';
   // 코드로 못 잡은 경우에만 텍스트 휴리스틱 폴백(에러코드 없는 변형 대비)
   if (/Column name .* not found/i.test(r)) return HINT_TAG;
@@ -289,7 +289,7 @@ function register(registry, mc) {
             if (rollupCount > 0) out += 'ROLLUP: available (' + rollupCount + ' rollup tables)\n';
             else out += 'ROLLUP: not available\n';
             // 태그별 요약통계 가상뷰 — 항상 존재(TAG 테이블). 태그별 개수/최소/최대/기간 질문에서 모델이
-            // GROUP BY 조합을 직접 만들다 컬럼을 빼먹는 것(S9 r2 라이브 실측: MIN/MAX(VALUE) 누락) 방지.
+            // GROUP BY 조합을 직접 만들다 컬럼(MIN/MAX(VALUE) 등)을 빼먹는 것 방지.
             out += 'STAT: v$' + upperTable + '_stat (per-tag WHOLE-RANGE summary: name, row_count, min_value, max_value, min_time, max_time) — 태그별 "전체 기간" 개수·최소·최대·기간 요약 전용. 시간별/일별 등 시간 버킷 집계에는 사용 금지 — 그 경우 ROLLUP/DATE_TRUNC를 쓰세요\n';
             if (!profile) return cb(null, out.trim());
             appendProfile(mc, upperTable, nameCol || 'NAME', timeCol || 'TIME', valueCol || 'VALUE', out, cb);

@@ -1,21 +1,12 @@
-// TQL content fixes: template expansion, line breaks, escaped newlines
+// TQL content fixes: placeholder replacement, line breaks, escaped newlines
 var { msToDatetime } = require('./time_fix');
 
 var TQL_FUNC_RE = /\)[ \t]*(SQL_SELECT|SQL|SCRIPT|CHART_LINE|CHART_BAR3D|CHART|MAPVALUE|POPVALUE|MAPKEY|GROUPBYKEY|FFT|FLATTEN|PUSHKEY|CSV)\(/g;
-var TEMPLATE_REF_RE = /TEMPLATE:\s*(\d+-\d+)/;
 var TEMPLATE_TABLE_RE = /TABLE:\s*(\S+)/;
 var TEMPLATE_TAG_RE = /(?:^|\s)TAG:\s*(\S+)/;
 var TEMPLATE_TAG1_RE = /TAG1:\s*(\S+)/;
 var TEMPLATE_TAG2_RE = /TAG2:\s*(\S+)/;
 var TEMPLATE_UNIT_RE = /UNIT:\s*(\S+)/;
-var TEMPLATE_ID_RE = /(\d+[-_]\d+)/;
-
-// ExpandTemplateFunc callback - set by agent/templates.js
-var expandTemplateFunc = null;
-
-function setExpandTemplateFunc(fn) {
-  expandTemplateFunc = fn;
-}
 
 function fixTQLContent(toolName, args, fctx) {
   if (toolName !== 'save_tql_file' && toolName !== 'execute_tql_script') return;
@@ -24,40 +15,7 @@ function fixTQLContent(toolName, args, fctx) {
   var content = args[contentKey];
   if (!content || typeof content !== 'string') return;
 
-  // Case 1: TEMPLATE: reference in content
-  var tmplMatch = TEMPLATE_REF_RE.exec(content);
-  if (tmplMatch && expandTemplateFunc) {
-    var params = extractTemplateParams(content, fctx);
-    params.id = tmplMatch[1];
-    try {
-      var expanded = expandTemplateFunc(params.id, params);
-      if (expanded) {
-        args[contentKey] = expanded;
-        console.println('  [fix] Template ' + params.id + ' expanded');
-      }
-    } catch (e) {
-      console.println('  [fix] Template expansion failed: ' + e.message);
-    }
-  }
-
-  // Case 2: Auto-detect template from filename
-  if (toolName === 'save_tql_file' && expandTemplateFunc) {
-    var filename = args.filename || '';
-    var idMatch = TEMPLATE_ID_RE.exec(filename);
-    if (idMatch) {
-      var templateId = idMatch[1].replace('_', '-');
-      var params2 = extractTemplateParams(content, fctx);
-      try {
-        var expanded2 = expandTemplateFunc(templateId, params2);
-        if (expanded2) {
-          args[contentKey] = expanded2;
-          console.println('  [fix] Template ' + templateId + ' auto-expanded from filename');
-        }
-      } catch (e) { /* fallthrough */ }
-    }
-  }
-
-  // Case 3: Replace remaining {PLACEHOLDER} in raw TQL content
+  // Case 1: Replace {PLACEHOLDER} in raw TQL content
   content = args[contentKey];
   if (content && content.indexOf('{') >= 0) {
     var params3 = extractTemplateParams(content, fctx);
@@ -129,7 +87,7 @@ function fixTQLContent(toolName, args, fctx) {
     }
   }
 
-  // Case 4: Fix line breaks between TQL functions
+  // Case 2: Fix line breaks between TQL functions
   content = args[contentKey];
   var fixed = content.replace(TQL_FUNC_RE, ')\n$1(');
   if (fixed !== content) {
@@ -176,4 +134,4 @@ function fixEscapedNewlines(args) {
   }
 }
 
-module.exports = { fixTQLContent, fixEscapedNewlines, setExpandTemplateFunc, TEMPLATE_ID_RE };
+module.exports = { fixTQLContent, fixEscapedNewlines };

@@ -11,13 +11,13 @@ This document describes the built-in tools, automation features, templates, and 
 
 *Syntax*: `list_tables()`
 
-Query the available table list in Machbase Neo. It returns a CSV-formatted list of all tables owned by the current user.
+Query the available table list in Machbase Neo. It returns the names of all tables owned by the current user, one per line.
 
 ### Example: List Tables
 
 Ask the chat: "Show me the table list"
 
-The tool executes internally:
+The tool executes internally (the owner is resolved to the connected user):
 
 ```sql
 SELECT st.NAME FROM m$sys_tables AS st
@@ -26,8 +26,7 @@ WHERE su.NAME = 'SYS' AND st.FLAG = 0
 ORDER BY st.NAME
 ```
 
-```csv
-NAME
+```text
 EXAMPLE
 GOLD
 SENSOR
@@ -47,11 +46,8 @@ Get tag metadata from a tag table. It queries the `_tablename_meta` table and re
 list_table_tags(table_name="EXAMPLE")
 ```
 
-```csv
-NAME
-temperature
-humidity
-pressure
+```text
+[EXAMPLE] temperature, humidity, pressure
 ```
 
 ## describe_table()
@@ -170,10 +166,9 @@ Save a TQL or SQL script file to Machbase Neo. TQL files are validated by execut
 
 Before saving, the tool:
 
-1. Checks for invalid ROLLUP units.
-2. Executes the TQL script to validate correctness.
-3. If a ROLLUP column error occurs (`MACH-ERR 2264`), auto-creates SEC/MIN/HOUR rollup tables and retries.
-4. Creates parent folders automatically when needed.
+1. Executes the TQL script to validate correctness (it is not saved if validation fails).
+2. If the query returns 0 rows, snaps the time range to the table's actual MIN/MAX(TIME) boundaries and retries.
+3. Creates parent folders automatically when needed.
 
 ### Example: Save a Chart TQL
 
@@ -222,17 +217,19 @@ compile_tql_from_spec(
 
 *Syntax*: `forecast_table( spec [, filename] )`
 
-Forecast future values for a table's tag. The tool automatically selects a model (linear / quadratic / seasonal Holt-Winters), anchors the forecast to the last observed value, and adds a 95% confidence band. It returns a trend / confidence (R²) / forecast summary. When one tag is passed it forecasts that tag; with 2–5 tags it returns a per-tag trend summary; more than 5 tags prompts you to narrow down.
+Forecast future values for a table's tag. The tool fits several candidate models (SES / linear / quadratic / Holt / Theta / AR / Holt-Winters additive & multiplicative / harmonic / Prophet-style), ranks them with a holdout backtest, and auto-selects the best one. It anchors the forecast to the last observed value and adds a confidence band. **Calling it generates and saves an HTML report — with a tag dropdown × model dropdown to browse every tag's and model's forecast curve (confidence interval and backtest included) — and returns the link.** One tag forecasts that tag; 2–5 tags forecast all of them; more than 5 tags auto-selects the top 5 by data count (with a note, without prompting).
 
 - `spec` *object* required, forecast intent. Key fields:
   - `table` *required*
-  - `tag` — single tag to forecast (omit for auto / summary / prompt), or `tags: ["a","b"]` for multi-tag comparison
+  - `tag` — single tag to forecast (omit and the tool decides automatically), or `tags: ["a","b"]` for multi-tag comparison (up to 5)
   - `rollup` — bucket unit (`sec` … `month`), auto-selected from the range if omitted
   - `timeRange: { start, end }` — training window (whole dataset if omitted)
-  - `horizon` — number of future buckets to forecast (defaults to 25% of the training length)
-  - `method` — `auto` (default), `linear`, `quadratic`, or `holtwinters`
+  - `horizon` — number of future buckets to forecast (defaults to 20% of the training length)
+  - `method` — model to use (defaults to `auto` = the leaderboard winner). Values: `auto`, `ses`, `linear`, `quadratic`, `holt`, `theta`, `ar`, `holtwinters`, `holtwinters_mult`, `harmonic`, `prophet`. Korean aliases (`선형` / `2차` / `계절성`) and rank strings (`2위` / `rank2`) are also accepted
+  - `rank` — select a model by leaderboard rank (1-based, e.g. `2`)
+  - `lookback` — trend window in buckets (auto if omitted)
   - `output` *optional* — `{ title, subtitle }`
-- `filename` *string* optional, save path `"TABLE/name.tql"` (English only). If provided, saves a live-recomputing `.tql` (for a dashboard `tql_path`); if omitted, renders an inline forecast chart in the answer.
+- `filename` *string* optional, save path `"TABLE/name.tql"` (English only). If provided, the report **additionally** saves a live-recomputing `.tql` (for a dashboard `tql_path`). If omitted, only the HTML report is generated.
 
 ### Example: Forecast and Save
 
@@ -294,22 +291,17 @@ Dashboard created: GOLD/Gold_Analysis.dsh (3 charts)
 
 ## add_chart_to_dashboard()
 
-*Syntax*: `add_chart_to_dashboard( filename [, chart_title, chart_type, table, tag, column, tql_path, color, w, h] )`
+*Syntax*: `add_chart_to_dashboard( filename, chart_title, chart_type [, table, tag, column, tql_path] )`
 
-Add a chart panel to an existing dashboard.
+Add a chart panel to an existing dashboard. The tool lays out the panel size, position, and color automatically.
 
 - `filename` *string* required, dashboard filename
-- `chart_title` *string* chart title. Default: `New chart`
-- `chart_type` *string* chart type. Default: `Line`
+- `chart_title` *string* required, chart title
+- `chart_type` *string* required, chart type (for example `Line`, `Bar`, `Scatter`, `Tql chart`)
 - `table` *string* tag table name
 - `tag` *string* tag name(s), comma-separated
 - `column` *string* column name. Default: `VALUE`
 - `tql_path` *string* TQL file path for `Tql chart`
-- `color` *string* hex color. Default: `#367FEB`
-- `w` *integer* panel width in grid units (max 24, 0 means auto). Default: `0`
-- `h` *integer* panel height in grid units. Default: `0`
-
-> Note: Width and height use grid units rather than pixels. Large chart types such as Line, Bar, and Scatter default to 17 units. Small chart types such as Pie and Gauge default to 7 units.
 
 ### Example: Add a Line Chart
 
@@ -319,8 +311,7 @@ add_chart_to_dashboard(
     chart_title="Temperature Trend",
     chart_type="Line",
     table="EXAMPLE",
-    tag="temperature",
-    color="#5470c6"
+    tag="temperature"
 )
 ```
 
@@ -347,19 +338,14 @@ Remove a chart panel from a dashboard by panel UUID or title.
 
 ## update_chart_in_dashboard()
 
-*Syntax*: `update_chart_in_dashboard( filename [, panel_id, panel_title, new_title, new_chart_type, new_table, new_tag, new_column, new_color] )`
+*Syntax*: `update_chart_in_dashboard( filename [, panel_id, panel_title, new_title] )`
 
-Update an existing chart panel in a dashboard.
+Update the title of an existing chart panel in a dashboard. Target the panel by UUID or title.
 
 - `filename` *string* required, dashboard filename
 - `panel_id` *string* panel UUID
 - `panel_title` *string* panel title (first match)
 - `new_title` *string* new panel title
-- `new_chart_type` *string* new chart type
-- `new_table` *string* new table name
-- `new_tag` *string* new tag name(s)
-- `new_column` *string* new column name
-- `new_color` *string* new color
 
 ## get_dashboard()
 
@@ -384,8 +370,8 @@ Delete a dashboard file from Machbase Neo.
 Update the time range of a dashboard.
 
 - `filename` *string* required, dashboard filename
-- `time_start` *string* start time. Default: `now-1h`
-- `time_end` *string* end time. Default: `now`
+- `time_start` *string* start time (set to empty when omitted)
+- `time_end` *string* end time (set to empty when omitted)
 - `refresh` *string* auto-refresh interval. Default: `Off`
 
 ## preview_dashboard()
@@ -395,63 +381,6 @@ Update the time range of a dashboard.
 Get a dashboard preview and a direct Neo Web UI link.
 
 - `filename` *string* required, dashboard filename
-
-## TQL Analysis Templates
-
-The system includes predefined TQL chart templates for three data domains. During advanced analysis, the agentic loop expands these templates with actual table names, tag names, and time ranges, and then saves them as TQL files.
-
-### Financial Analysis (Type 1)
-
-| ID | Chart Name | Description |
-| :-: | :--- | :--- |
-| 1-1 | Average Trend | ROLLUP-based moving average trend line |
-| 1-2 | Volatility | Standard deviation and price change rate |
-| 1-3 | Price Band | MIN/MAX envelope with average overlay |
-| 1-4 | Tag Comparison | Two-tag overlay comparison chart |
-| 1-5 | Volume Trend | Data density and count trend over time |
-| 1-6 | Log Price | Log-scale price chart |
-
-### Sensor / Vibration Analysis (Type 2)
-
-| ID | Chart Name | Description |
-| :-: | :--- | :--- |
-| 2-1 | RMS Vibration | Root Mean Square vibration level using SUMSQ |
-| 2-2 | FFT Spectrum | Fast Fourier Transform frequency analysis |
-| 2-3 | Peak Envelope | MAX envelope for peak detection |
-| 2-4 | Peak-to-Peak | MAX minus MIN range over time |
-| 2-5 | Crest Factor | Peak-to-RMS ratio for impact detection |
-| 2-6 | Data Density | Record count distribution over time |
-| 2-7 | 3D Spectrum | 3D time-frequency-amplitude visualization |
-
-### General Analysis (Type 3)
-
-| ID | Chart Name | Description |
-| :-: | :--- | :--- |
-| 3-1 | Rollup Average | ROLLUP-based average trend |
-| 3-2 | Tag Comparison | Two-tag comparison chart |
-| 3-3 | Count Trend | Data count over time intervals |
-| 3-4 | MIN/MAX Envelope | Minimum and maximum boundary chart |
-
-### Template Reference Format
-
-Templates are referenced using a structured format with placeholders:
-
-```text
-TEMPLATE:1-1 TABLE:GOLD TAG:close UNIT:day
-TEMPLATE:1-4 TABLE:GOLD TAG1:open TAG2:close
-TEMPLATE:2-2 TABLE:SENSOR TAG:vibration_x UNIT:sec
-```
-
-The template expander replaces `{TABLE}`, `{TAG}`, `{UNIT}`, `{TIME_START}`, and `{TIME_END}` with actual values from the current analysis context.
-
-UNIT selection depends on data duration:
-
-- Hours of data
-  - `sec`
-- Days of data
-  - `hour`
-- Weeks to years of data
-  - `day`
 
 ## save_html_report()
 
@@ -627,12 +556,11 @@ execute_sql_query(sql_query="DROP TABLE SENSOR_DATA CASCADE")
 
 ## create_folder()
 
-*Syntax*: `create_folder( folder_name [, parent] )`
+*Syntax*: `create_folder( folder_name )`
 
 Create a folder in the Machbase Neo file system.
 
-- `folder_name` *string* required, folder name to create
-- `parent` *string* parent path. Default: root
+- `folder_name` *string* required, folder path to create
 
 ## list_files()
 
@@ -673,7 +601,7 @@ List all available manual documentation files in Machbase Neo. It returns the do
 
 *Syntax*: `search_documents( keyword )`
 
-Search the documentation catalog by keyword and return matching document paths. Use this before `get_full_document_content` to find the right document. If nothing matches, the full catalog is returned so the model can pick manually.
+Search the documentation catalog by keyword and return matching document paths. Use this before `get_full_document_content` to find the right document. If nothing matches, it returns a no-match message with the nearest candidate documents.
 
 - `keyword` *string* required, search keyword (for example `PIVOT`, `ROLLUP`, `TQL`, `chart`)
 
@@ -768,11 +696,13 @@ Check current status and connectivity by querying Machbase Neo system tables.
 debug_mcp_status()
 ```
 
-```text
-Status: OK
-Machbase: http://127.0.0.1:5654
-COUNT(*)
-152
+```json
+{
+  "tools_count": 32,
+  "tools": ["list_tables", "list_table_tags", "describe_table", "..."],
+  "runtime": "JSH",
+  "machbase": "connected"
+}
 ```
 
 ## Navigation

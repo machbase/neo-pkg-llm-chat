@@ -55,7 +55,7 @@ A configuration is stored per user (`configs/{user}.json`). The config name is t
 | Method | Path | Description |
 | :---: | :--- | :--- |
 | GET | `/{user_id}/ws` | Browser chat WebSocket (current gateway architecture) |
-| GET | `/ws` | Legacy in-process chat WebSocket |
+| GET | `/ws` | Browser chat WebSocket (old-convention path, wired to the same gateway handler — user_id is taken from the message body) |
 | GET | `/internal/ws` | Internal gateway ↔ worker channel (not for clients) |
 
 ### Relay Routes

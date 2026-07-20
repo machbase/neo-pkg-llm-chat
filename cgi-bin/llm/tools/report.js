@@ -193,14 +193,13 @@ function register(registry, mc) {
           '- 산업 표준/기준값 대비 평가\n' +
           '- 구체적 수치를 근거로 제시 (예: AccX 최대 5.86g는 ISO 기준 위험 수준)' },
         recommendations: { type: 'string', description: '종합 소견 및 권고 (한국어). ★1차 호출 시 비워두세요!★ 심도 있는 분석 기반의 보고서 형식으로 작성.\n\n' +
-          '## 형식: 마크다운, 최소 7개 번호 항목 (1. 2. ...)\n' +
-          '## 각 항목은 아래 세 요소를 **모두, 같은 순서로** 포함 (하나라도 빠뜨리지 말 것 — 모든 항목 형식 통일):\n' +
-          '- **제목** (볼드)\n' +
-          '- **근거**: 조회한 데이터 수치를 인용한 판단 근거 (1~2문장)\n' +
-          '- **실행방안**: 구체적 행동 (누가·무엇을·언제·어떻게, 수치 포함)\n' +
-          '- **기대효과**: 그 행동의 예상 결과\n' +
-          '※ 항목마다 실행방안 또는 기대효과 중 하나만 쓰지 말고 **둘 다** 반드시 포함하세요.\n\n' +
-          '## 내용: 즉시 조치/단기 개선/중장기 전략으로 구분하여 우선순위별 정리' },
+          '## 형식: 마크다운, 최소 7개 번호 항목, 중요한 것부터 순서대로.\n' +
+          '## 각 항목은 반드시 아래 골격 그대로 4줄(줄바꿈·하위 불릿 3칸 들여쓰기 포함, 전 항목 동일 형식):\n' +
+          '1. **제목**: 핵심 요약 한 문장\n' +
+          '   - **근거**: 조회한 데이터 수치를 인용한 판단 근거 (1~2문장)\n' +
+          '   - **실행방안**: 구체적 행동 (누가·무엇을·언제·어떻게, 수치 포함)\n' +
+          '   - **기대효과**: 그 행동의 예상 결과\n' +
+          '※ 근거·실행방안·기대효과 세 불릿을 항목마다 **모두, 각각 별도 줄로** 포함. 제목은 분류 태그·접두어 없이 내용만.' },
         rollup_unit: { type: 'string', enum: ['sec', 'min', 'hour', 'day', 'week', 'month'] },
         tag_name: { type: 'string', description: '분석 대상 태그명 또는 종목명. 사용자가 특정 대상을 언급하면 반드시 전달.' },
         time_start: { type: 'string', description: '분석 기간 시작 (epoch 밀리초 숫자). ★사용자가 기간을 명시적으로 말할 때만 전달(예: "최근 1시간", "어제", "7월 데이터"). 기간 언급이 없으면 절대 넣지 말 것 — 임의의 기간을 추측해 넣지 마세요(전체 데이터 분석 + 자동 롤업).' },
@@ -503,7 +502,7 @@ function saveHtmlReport(mc, args, cb) {
               var domainGuide = templateGuide ? ('\n★ 분석 지침 (아래 방향으로, 위 수치 수준에 맞는 톤을 스스로 판단해 작성):\n' + templateGuide + '\n') : '';
               var msg = '데이터를 조회했습니다. 아래 통계와 계산 결과를 기반으로 analysis와 recommendations를 작성하여 다시 호출하세요.\n' +
                 '★ analysis: 최소 5개 ## 섹션, 각 2~3문단. 마크다운 필수.\n' +
-                '★ recommendations: 7개 이상 번호 항목. 즉시/단기/중장기로 우선순위 구분. **각 항목은 [근거 수치 → 실행방안 → 기대효과] 세 요소를 모두, 같은 형식으로 포함**(하나만 쓰지 말 것 — 전 항목 통일).\n' +
+                '★ recommendations: 7개 이상 번호 항목, 중요한 것부터 순서대로. 각 항목은 "N. **제목**: 요약" 줄 + 3칸 들여쓴 "- **근거**:" "- **실행방안**:" "- **기대효과**:" 세 불릿을 **각각 별도 줄로 모두** 포함(전 항목 동일 형식, 제목은 분류 태그 없이 내용만).\n' +
                 domainGuide + '\n' + summary;
               return cb(null, msg);
             }
@@ -1308,7 +1307,7 @@ function findOHLCVTags(tags, stock) {
     tags.forEach(function (t) { var upper = t.toUpperCase(); if (upper.indexOf(prefix) !== 0) return; var suffix = t.substring(prefix.length).toLowerCase(); if (fields.indexOf(suffix) >= 0) result[suffix] = t; });
   }
   // 접두어(SILVER_open 등) 매칭 실패 또는 stock 미지정 → bare 이름(open/high/low/close/volume)으로 폴백.
-  // silver 테이블처럼 태그가 SILVER_open이 아니라 open/high/low/close 그대로면 접두어 검색이 0건 → 차트가 안 나오던 버그.
+  // 태그가 SILVER_open 형태가 아니라 open/high/low/close 그대로인 테이블은 접두어 검색이 0건 → 폴백 없이는 차트가 빠진다.
   // 멀티종목 테이블(SILVER_open, GOLD_open)은 접두어로 이미 채워져 폴백 미발동(bare 'open' 태그도 없음).
   if (!result.close || !result.open) {
     var lower = {}; tags.forEach(function (t) { lower[t.toLowerCase()] = t; });
@@ -1318,12 +1317,15 @@ function findOHLCVTags(tags, stock) {
 }
 function extractStockPrefix(tagVal) { var c = tagVal.split(',')[0].trim(); ['_close', '_open', '_high', '_low', '_volume', '_adj_close'].forEach(function (s) { var idx = c.toLowerCase().indexOf(s); if (idx > 0) c = c.substring(0, idx); }); return c.toUpperCase(); }
 function calcTotalCount(csvData) { var total = 0; try { var p = JSON.parse(csvData); if (p && p.data && p.data.rows) p.data.rows.forEach(function (r) { if (r.length >= 2) total += parseInt(r[1], 10) || 0; }); } catch (e) {} return total; }
+// ⚠️ 인라인 스타일 색은 **CSS 변수 + 옛 색 폴백**(var(--x, #구색)) 형태로만 쓸 것.
+//    색을 하드코딩했더니 다크 테마 템플릿에서 남색 제목(#1a365d)이 배경에 묻혀 안 보였다(라이브 스크린샷).
+//    변수를 정의한 새 템플릿(Neo 토큰)에선 테마를 따라가고, 변수가 없는 고객 커스텀 템플릿에선 폴백 색 그대로 — 하위호환.
 function mdToHTML(text) {
   if (!text) return '';
   function inlineFmt(s) {
     s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
-    s = s.replace(/`(.+?)`/g, '<code style="background:#edf2f7;padding:2px 6px;border-radius:4px;font-size:13px;">$1</code>');
+    s = s.replace(/`(.+?)`/g, '<code style="background:var(--bg-input,#edf2f7);padding:2px 6px;border-radius:4px;font-size:13px;">$1</code>');
     return s;
   }
 
@@ -1346,15 +1348,15 @@ function mdToHTML(text) {
     if (!trimmed) { closeUL(); continue; }
 
     // Headers
-    if (/^####\s+/.test(trimmed)) { closeUL(); result.push('<h4 style="font-size:14px;font-weight:700;color:#2d3748;margin:18px 0 8px;">' + inlineFmt(trimmed.replace(/^####\s+/, '')) + '</h4>'); continue; }
-    if (/^###\s+/.test(trimmed)) { closeUL(); result.push('<h3 style="font-size:15px;font-weight:700;color:#1a365d;margin:20px 0 10px;">' + inlineFmt(trimmed.replace(/^###\s+/, '')) + '</h3>'); continue; }
-    if (/^##\s+/.test(trimmed)) { closeUL(); result.push('<h2 style="font-size:17px;font-weight:700;color:#1a365d;margin:24px 0 12px;border-bottom:2px solid #e2e8f0;padding-bottom:6px;">' + inlineFmt(trimmed.replace(/^##\s+/, '')) + '</h2>'); continue; }
+    if (/^####\s+/.test(trimmed)) { closeUL(); result.push('<h4 style="font-size:14px;font-weight:700;color:var(--text-primary,#2d3748);margin:18px 0 8px;">' + inlineFmt(trimmed.replace(/^####\s+/, '')) + '</h4>'); continue; }
+    if (/^###\s+/.test(trimmed)) { closeUL(); result.push('<h3 style="font-size:15px;font-weight:700;color:var(--text-primary,#1a365d);margin:20px 0 10px;">' + inlineFmt(trimmed.replace(/^###\s+/, '')) + '</h3>'); continue; }
+    if (/^##\s+/.test(trimmed)) { closeUL(); result.push('<h2 style="font-size:17px;font-weight:700;color:var(--text-primary,#1a365d);margin:24px 0 12px;border-bottom:2px solid var(--border-default,#e2e8f0);padding-bottom:6px;">' + inlineFmt(trimmed.replace(/^##\s+/, '')) + '</h2>'); continue; }
 
     // Ordered list: "1. text" → 번호 직접 보존, div 들여쓰기
     var olMatch = trimmed.match(/^(\d+)[.)]\s+(.*)/);
     if (olMatch) {
       closeUL();
-      result.push('<div style="margin:10px 0 6px 8px;"><span style="font-weight:700;color:#2b6cb0;margin-right:8px;">' + olMatch[1] + '.</span>' + inlineFmt(olMatch[2]) + '</div>');
+      result.push('<div style="margin:10px 0 6px 8px;"><span style="font-weight:700;color:var(--primary-hover,#2b6cb0);margin-right:8px;">' + olMatch[1] + '.</span>' + inlineFmt(olMatch[2]) + '</div>');
       continue;
     }
 
@@ -1390,13 +1392,13 @@ function mdToHTML(text) {
         }
         var thHtml = '';
         for (var hc = 0; hc < headCells.length; hc++) {
-          thHtml += '<th style="border:1px solid #cbd5e0;padding:8px 10px;background:#f7fafc;color:#1a365d;font-weight:700;text-align:left;">' + inlineFmt(headCells[hc]) + '</th>';
+          thHtml += '<th style="border:1px solid var(--border-medium,#cbd5e0);padding:8px 10px;background:var(--bg-elevated,#f7fafc);color:var(--text-primary,#1a365d);font-weight:700;text-align:left;">' + inlineFmt(headCells[hc]) + '</th>';
         }
         var bodyHtml = '';
         for (var br = 0; br < bodyRows.length; br++) {
           bodyHtml += '<tr>';
           for (var dc = 0; dc < bodyRows[br].length; dc++) {
-            bodyHtml += '<td style="border:1px solid #e2e8f0;padding:8px 10px;color:#2d3748;">' + inlineFmt(bodyRows[br][dc]) + '</td>';
+            bodyHtml += '<td style="border:1px solid var(--border-default,#e2e8f0);padding:8px 10px;color:var(--text-secondary,#2d3748);">' + inlineFmt(bodyRows[br][dc]) + '</td>';
           }
           bodyHtml += '</tr>';
         }

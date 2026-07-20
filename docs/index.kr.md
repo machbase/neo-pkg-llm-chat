@@ -27,14 +27,14 @@ Machbase Neo 좌측 사이드 패널에는 사용 가능한 패키지 목록이 
 
 ## LLM 프로바이더
 
-4가지 LLM 프로바이더를 지원합니다. 모든 프로바이더는 동기 및 스트리밍 채팅을 지원합니다.
+4가지 LLM 프로바이더를 지원합니다. 프로바이더 호출 자체는 단발(non-streaming) 요청·응답으로 처리되며, 도구 실행 단계별 진행 상황은 WebSocket을 통해 브라우저로 스트리밍되어 표시됩니다.
 
-| 프로바이더 | API | 스트리밍 | 로컬 |
-| :--- | :--- | :---: | :---: |
-| Claude | Anthropic API | 지원 | 아니오 |
-| ChatGPT | OpenAI API | 지원 | 아니오 |
-| Gemini | Google Gemini API | 지원 | 아니오 |
-| Ollama | Ollama REST API | 지원 | 예 |
+| 프로바이더 | API | 로컬 |
+| :--- | :--- | :---: |
+| Claude | Anthropic API | 아니오 |
+| ChatGPT | OpenAI API | 아니오 |
+| Gemini | Google Gemini API | 아니오 |
+| Ollama | Ollama REST API | 예 |
 
 프로바이더와 연결 설정은 웹 기반 Settings 화면에서 구성합니다. API Key, 모델 목록, Machbase Neo 연결 정보는 브라우저에서 직접 저장할 수 있습니다.
 
@@ -46,7 +46,7 @@ Machbase Neo 좌측 사이드 패널에는 사용 가능한 패키지 목록이 
 
 - "리포트", "보고서", "report", "summary report"가 포함된 질문
   - 리포트 모드로 분류되어 HTML 분석 리포트 생성 흐름을 사용합니다.
-- "심층", "다각도", "고급", "스펙트럼", "엔벨로프", "FFT", "RMS", "advanced", "spectrum", "envelope", "anomaly"가 포함된 질문
+- "심층", "다각도", "고급", "스펙트럼", "엔벨로프", "진동 분석", "이상치", "이상 탐지", "FFT", "RMS", "advanced", "spectrum", "envelope", "anomaly", "vibration analysis", "frequency", "crest factor", "peak-to-peak"가 포함된 질문
   - 고급 모드로 분류되어 분석 의도(IR)로 컴파일된 심층 차트를 생성합니다.
 - 그 외 분석/대시보드 요청
   - 기본 모드로 분류되어 테이블 기반 차트 생성 흐름을 사용합니다.
@@ -81,6 +81,8 @@ post-loop 가드:
 | `dashboard_omission` | 도구를 하나도 안 부르고 "대시보드 생성했다"는 거짓 완료 보고를 차단 |
 | `chart_omission` | 고급 분석이 끝났는데 대시보드에 차트가 빠졌을 때 재촉 |
 | `report_omission` | 리포트 모드인데 `save_html_report`가 호출되지 않았을 때 재촉 |
+| `forecast_label` | 일반 분석 리포트를 만들어놓고 답변에서 "예측 리포트"라 부르는(검증·신뢰구간 없는 과거 분석을 예측으로 위장) 라벨을 교정 |
+| `doc_index_answer` | 문서 도구 결과가 섹션 목록/탐색 안내뿐인데 본문 재조회 없이 답하려 하면 본문 조회를 강제 |
 | `dashboard_answer` | 성공적으로 만든 대시보드 URL을 최종 답변이 빠뜨렸을 때 구제 |
 | `tql_inject` (tql_omission) | 검증된 ```tql 차트가 최종 답변에 온전히 포함되도록 보장 |
 | `raw_tql` | 도구 결과에 없는 = 손으로 쓴 ```tql을 탐지해 컴파일러로 재유도 |

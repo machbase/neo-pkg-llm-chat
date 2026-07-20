@@ -141,8 +141,8 @@ function checkToolCall(name, args) {
   return { denied: false };
 }
 
-// Redact credential-like content from USER-FACING output. Model-independent backstop for
-// eval #5 category 1: the model can state secrets from memory or relay them from a KB doc
+// Redact credential-like content from USER-FACING output. Model-independent backstop:
+// the model can state secrets from memory or relay them from a KB doc
 // (e.g. user-management.md ships "SYS/MANAGER"), which tool-boundary guards cannot catch.
 // Masks values while keeping structure, so legitimate doc answers stay readable.
 function redactSecrets(text, extraSecrets) {
@@ -202,7 +202,7 @@ var REFUSAL_TEXT = '보안 정책상 해당 요청은 수행하거나 관련 정
 // the user genuinely needs it, so point them to the authenticated console path.
 var MGMT_GUIDANCE_TEXT = '보안상 사용자 계정·비밀번호를 제가 직접 생성·변경·삭제해 드릴 수는 없습니다(요청자 권한을 확인할 수 없습니다). 권한 있는 관리자가 SQL 콘솔에서 직접 수행하셔야 합니다. 구체적인 명령/절차가 필요하시면 "~방법 알려줘"라고 문의해 주세요.';
 
-// Deterministic query screen for the USER QUERY (eval #5). Matches ATTACK SHAPES, NOT topic
+// Deterministic query screen for the USER QUERY. Matches ATTACK SHAPES, NOT topic
 // words — legit how-to/feature questions ("설치 방법", "로그인 기능 동작 확인", "유저 생성 방법")
 // pass through. Returns a refusal message (caller short-circuits BEFORE the LLM, so weak models
 // can't ramble) or null to proceed. HARD cases → REFUSAL_TEXT; management → MGMT_GUIDANCE_TEXT.

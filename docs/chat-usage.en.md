@@ -42,13 +42,24 @@ Examples:
 
 ![Suggestion chips screen](./images/llm-chat-suggestions.png)
 
+## Favorites (Frequently Used Questions)
+
+Click the **Favorites** button next to the input area to open a panel for saving questions you use often.
+
+- Type a question in the panel's input and press Enter to add it to favorites.
+- Click a saved item to fill it into the message input.
+- Items can be reordered by dragging, and each item can be removed.
+- Re-adding an existing question does not create a duplicate — it highlights the existing item instead.
+
+Favorites are stored per logged-in user on the server (persisted across devices) and isolated per user. Without a logged-in user, they are kept temporarily in browser local storage.
+
 ## Automatic Mode Switching
 
 Depending on the question text, the internal execution mode may change automatically.
 
 - `report` / `summary report` or their Korean equivalents (`리포트`, `보고서`)
   - Prioritizes the HTML report generation flow.
-- `advanced`, `spectrum`, `envelope`, `anomaly`, `FFT`, `RMS` or their Korean equivalents (`심층`, `다각도`, `고급`, `스펙트럼`, `엔벨로프`)
+- `advanced`, `spectrum`, `envelope`, `anomaly`, `vibration analysis`, `frequency`, `crest factor`, `peak-to-peak`, `FFT`, `RMS` or their Korean equivalents (`심층`, `다각도`, `고급`, `스펙트럼`, `엔벨로프`, `진동 분석`, `이상치`, `이상 탐지`)
   - Prioritizes the advanced analysis flow (in-depth charts compiled from analysis intent).
 - General query, analysis, or dashboard requests
   - Use the basic analysis flow.

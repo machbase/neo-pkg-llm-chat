@@ -146,15 +146,15 @@ function register(registry, mc) {
               for (var w = 0; w < _kids.length; w++) if (used.indexOf(_kids[w]) < 0) used.push(_kids[w]);
             }
             // No file path in the result — weak models echo it back as a doc link (forbidden).
-            // command-line.md(CLI 레퍼런스, 24KB)는 약한 모델이 섹션을 9~11회 과잉탐색·반복조회하다 강제답변 garbage/빈내용으로
-            // degenerate(A4·A5 라이브 실측). otherSectionsFooter(다른 섹션 나열)가 그 유혹을 키우므로, 이 문서에선 "여기서 답하고
-            // 그만 읽어라" 넛지로 대체. serve 섹션 하나에 서버 시작 명령(A4)+모든 실행 플래그(--host/--data 등, A5)가 다 있음.
+            // command-line.md(CLI 레퍼런스, 24KB)는 약한 모델이 섹션을 과잉탐색·반복조회하다 강제답변 garbage/빈내용으로
+            // degenerate하기 쉽다. otherSectionsFooter(다른 섹션 나열)가 그 유혹을 키우므로, 이 문서에선 "여기서 답하고
+            // 그만 읽어라" 넛지로 대체. serve 섹션 하나에 서버 시작 명령 + 모든 실행 플래그(--host/--data 등)가 다 있음.
             var _clFooter = /command-line/.test(String(filePath))
               ? '\n\n(command-line.md는 CLI 레퍼런스입니다. 위 섹션이 질문의 명령어·플래그를 담고 있으면 더 읽지 말고 여기서 바로 답하세요. 서버 시작 명령과 모든 실행 플래그(--host·--data·--config·--pid 등)는 machbase-neo serve 섹션에 모여 있습니다. 같은/다른 섹션을 추가로 조회하지 마세요.)'
               : otherSectionsFooter(sections, used);
             return cb(null, emitSections(top, null, top.length > 1 ? 8000 : TOTAL_CAP) + _clFooter);
           }
-          // 본문 스캔: 매치 위치 중심 발췌(앞부분 캡 방식은 섹션 뒤쪽 매치가 통째로 잘렸음).
+          // 본문 스캔: 매치 위치 중심 발췌(앞부분 캡 방식은 섹션 뒤쪽 매치가 통째로 잘린다).
           for (var k = 0; k < sections.length; k++) {
             if (sections[k].content.toLowerCase().indexOf(kw) >= 0) {
               var body = excerptAround(sections[k].content, kw) || capSection(sections[k].content);
@@ -235,7 +235,7 @@ function register(registry, mc) {
         var blocks = extractBlocks(content, lang);
         var note = '';
         // 언어 필터 미스 → 전체 블록 폴백. 문서 태깅이 제각각이라(TQL 예제가 ```js로 태깅된 tql-guide 등)
-        // 필터 전멸이 "예제 없음" 거짓 결론으로 이어졌음(라이브 실측). 빈 결과보다 전체가 낫다.
+        // 필터 전멸이 "예제 없음" 거짓 결론으로 이어진다. 빈 결과보다 전체가 낫다.
         if (blocks.length === 0 && lang) {
           blocks = extractBlocks(content, '');
           if (blocks.length) note = '("' + lang + '" 태그 블록이 없어 이 문서의 전체 코드블록을 반환합니다)\n\n';
@@ -530,7 +530,7 @@ var EXCERPT_WIN = 700;   // 매치 앞뒤 발췌 폭
 var EXCERPT_MAX = 3;     // 발췌 최대 매치 수
 var INDEX_CAP = 60;      // 섹션 목록 상한(목록 자체가 컨텍스트를 밀어내지 않게)
 
-// 키워드 매치 위치 중심 발췌 — 앞부분 캡 방식은 깊은 매치(에러코드 표 뒤쪽 등)가 통째로 안 보였음
+// 키워드 매치 위치 중심 발췌 — 앞부분 캡 방식은 깊은 매치(에러코드 표 뒤쪽 등)를 통째로 놓친다
 function excerptAround(content, kw) {
   var low = content.toLowerCase();
   var positions = [];
@@ -659,8 +659,8 @@ function extractBlocks(content, langFilter) {
   var match;
   while ((match = re.exec(content)) !== null) {
     var lang = match[1] || '';
-    // 무태그 펜스는 필터를 통과시킨다 — 문서의 TQL 예제 다수가 무태그(tql-guide.md 26개 전부)라
-    // language="tql" 필터가 전멸시켜 "예제 없음" 거짓 결론을 유발했음(라이브 실측).
+    // 무태그 펜스는 필터를 통과시킨다 — 문서의 TQL 예제 다수가 무태그라
+    // language="tql" 필터로 전멸시키면 "예제 없음" 거짓 결론을 유발한다.
     if (langFilter && lang && lang.toLowerCase() !== langFilter) continue;
     blocks.push({ lang: lang, code: match[2].trim() });
   }

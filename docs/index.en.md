@@ -27,14 +27,14 @@ Select `neo-pkg-llm-chat` from the left panel and click **Uninstall** to remove 
 
 ## LLM Providers
 
-The package supports four LLM providers. All providers support both synchronous and streaming chat.
+The package supports four LLM providers. Provider calls themselves are single-shot (non-streaming) request/response; per-tool-step progress is streamed to the browser over WebSocket.
 
-| Provider | API | Streaming | Local |
-| :--- | :--- | :---: | :---: |
-| Claude | Anthropic API | Yes | No |
-| ChatGPT | OpenAI API | Yes | No |
-| Gemini | Google Gemini API | Yes | No |
-| Ollama | Ollama REST API | Yes | Yes |
+| Provider | API | Local |
+| :--- | :--- | :---: |
+| Claude | Anthropic API | No |
+| ChatGPT | OpenAI API | No |
+| Gemini | Google Gemini API | No |
+| Ollama | Ollama REST API | Yes |
 
 Provider and connection settings are configured from the web-based Settings screen. API keys, model lists, and Machbase Neo connection information can all be saved directly in the browser.
 
@@ -46,7 +46,7 @@ The agentic loop is the core execution engine of this package. When a user sends
 
 - Questions containing `report` / `summary report` or their Korean equivalents (`리포트`, `보고서`)
   - Classified as report mode and use the HTML analysis report flow.
-- Questions containing `advanced`, `spectrum`, `envelope`, `anomaly`, `vibration analysis`, `FFT`, or `RMS` or their Korean equivalents (`심층`, `다각도`, `고급`, `스펙트럼`, `엔벨로프`)
+- Questions containing `advanced`, `spectrum`, `envelope`, `anomaly`, `vibration analysis`, `frequency`, `crest factor`, `peak-to-peak`, `FFT`, or `RMS` or their Korean equivalents (`심층`, `다각도`, `고급`, `스펙트럼`, `엔벨로프`, `진동 분석`, `이상치`, `이상 탐지`)
   - Classified as advanced mode and produce in-depth charts compiled from analysis intent (IR).
 - Other analysis or dashboard requests
   - Classified as basic mode and use the table-based chart flow.
@@ -81,6 +81,8 @@ Post-loop guards:
 | `dashboard_omission` | Catches a false "dashboard created" claim when no tool was actually called |
 | `chart_omission` | Re-prompts when advanced analysis finished but charts are missing from the dashboard |
 | `report_omission` | Re-prompts when report mode is active but `save_html_report` was never called |
+| `forecast_label` | Corrects the label when a plain analysis report is finished but the answer calls it a "forecast report" (passing off unvalidated past analysis, with no backtest or confidence interval, as a forecast) |
+| `doc_index_answer` | Forces a body fetch when the document tool result is only a section list / navigation hint but the model tries to answer without re-querying |
 | `dashboard_answer` | Recovers a successfully created dashboard URL that the final answer left out |
 | `tql_inject` (tql_omission) | Ensures the validated ```tql chart is present and intact in the final answer |
 | `raw_tql` | Detects hand-written ```tql that came from no tool result and redirects to the compiler |

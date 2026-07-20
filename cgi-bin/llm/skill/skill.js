@@ -22,6 +22,10 @@ function createRegistry() {
   register(require('./general')());
   defaultSkill = skills['General'];
 
+  // 4.5 Forecast 분기가 잡는 키워드. **리포트/대시보드 언급이 없는 순수 예측 요청**에만 쓰인다
+  // (리포트가 붙으면 2단계 Report가, 대시보드가 붙으면 Basic/Advanced가 가져간다 — 둘 다 forecast_table을 갖고 있다).
+  var FORECAST_ANY = ['예측', 'forecast', 'predict', 'prediction', '예상', '전망', '향후', '이후 데이터', '미래 값', 'extrapolat'];
+
   function classify(query) {
     var lower = query.toLowerCase();
 
@@ -30,7 +34,9 @@ function createRegistry() {
       return skills['CodeExec'];
     }
 
-    // 2. Report
+    // 2. Report — "리포트/보고서"가 붙으면 **무조건 여기**(예측이든 아니든). 리포트 요청의 주인은 항상 Report 스킬.
+    //    → "예측 리포트 만들어줘"도 여기로 와서 **일반 분석 리포트**가 나온다(현재 정책상 이게 맞다).
+    //      예측 HTML 리포트는 **"예측해줘"(리포트 언급 없는 순수 예측)** 로만 만든다 — 아래 4.5.
     if (containsKeyword(lower, ['리포트', '보고서', 'report', 'summary report'])) {
       return skills['Report'];
     }
@@ -56,12 +62,13 @@ function createRegistry() {
       return skills['SystemInfo'];
     }
 
-    // 4.5 Forecast(예측) — 이후 데이터 예측 요청 → CodeExec(forecast_table)로 인라인 예측 차트.
-    //  · 순수 문서 질문(예측이 뭐야/사용법)은 제외해 DocLookup으로 보냄.
-    //  · 대시보드/리포트 요청은 제외 → 아래 Basic/Advanced/Report로 라우팅(거기에도 forecast_table 노출됨).
-    if (containsKeyword(lower, ['예측', '예상', '전망', '이후 데이터', '미래 값', '향후', 'forecast', 'predict', 'prediction', 'extrapolat'])
+    // 4.5 Forecast(예측) — **리포트/대시보드 언급 없는 순수 예측 요청**만("SILVER 예측해줘").
+    //  · 리포트가 붙으면 위 2단계가 이미 Report로 보냈다(Report도 forecast_table을 갖는다).
+    //  · 대시보드가 붙으면 Basic/Advanced로(거기서 .tql 저장 후 대시보드에 꽂는다).
+    //  · 순수 문서 질문(예측이 뭐야/사용법)은 제외해 DocLookup으로.
+    if (containsKeyword(lower, FORECAST_ANY)
       && !containsKeyword(lower, ['뭐야', '뭐임', '뭔데', '뭐냐', '뭐지', '뭔가요', '란?', '이란', '사용법', '문법', '설명해', 'what is', 'how to'])
-      && !containsKeyword(lower, ['대시보드', 'dashboard', '리포트', '보고서', 'report'])) {
+      && !containsKeyword(lower, ['대시보드', 'dashboard'])) {
       return skills['CodeExec'];
     }
 
@@ -78,8 +85,8 @@ function createRegistry() {
       return skills['CodeExec'];
     }
 
-    // 6. DocLookup — '뭐임/뭔데/뭐냐/뭐지'는 구어 개념질문("tql 이 뭐임")이 General로 새서 가드가
-    //    전부 무력화되던 라우팅 구멍(2026-07-02 라이브 재현) 때문에 추가.
+    // 6. DocLookup — '뭐임/뭔데/뭐냐/뭐지' 같은 구어 개념질문("tql 이 뭐임")도 잡는다.
+    //    이 토큰들이 없으면 개념질문이 General로 새서 DocLookup 가드가 전부 무력화된다.
     if (containsKeyword(lower, [
       '뭐야', '뭐임', '뭔데', '뭐냐', '뭐지', '뭔가요', '란?', '이란', '사용법', '문법', '예제', '알려줘', '설명해', '어떻게',
       'how to', 'what is', 'what are', 'explain', 'usage', 'example', 'syntax', 'help me understand',

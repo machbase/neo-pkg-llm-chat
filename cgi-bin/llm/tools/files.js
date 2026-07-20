@@ -53,7 +53,7 @@ function register(registry, mc) {
     fn: function (args, cb) {
       var filename = argStr(args, 'filename', '');
       if (!filename) return cb(null, 'Error: filename is required');
-      // Block path traversal / absolute paths (eval #5, 3a). Timer cleanup deletes
+      // Block path traversal / absolute paths. Timer cleanup deletes
       // NAME/NAME.tql and the NAME folder — both are relative paths with no '..', so allowed.
       var norm = filename.replace(/\\/g, '/');
       if (norm.indexOf('..') >= 0 || norm.charAt(0) === '/' || /^[A-Za-z]:/.test(norm)) {

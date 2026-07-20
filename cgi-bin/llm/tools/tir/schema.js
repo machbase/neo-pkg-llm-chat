@@ -9,8 +9,6 @@
 //   - kind        : 데이터 의도(metrics=단일태그 집계/원시, tags=여러태그) → SQL + 기본 SCRIPT
 //   - output.sink : 출력 의도(chart / [later] csv / insert / json ...)     → 최종 싱크
 // 현재 구현된 sink는 compile.js의 SINKS 레지스트리가 결정한다(미지원이면 compile이 거절).
-//
-// 라이브 검증으로 확정된 제약: 2026-06-08, Neo MCP 0.7.3, SILVER 테이블.
 
 var ROLLUP_UNITS = ['sec', 'min', 'hour', 'day', 'week', 'month']; // 'ms' 불가
 var ROLLUP_AGGS = ['avg', 'sum', 'min', 'max', 'count', 'sumsq'];   // ROLLUP 지원 집계 (STDDEV 미지원)
@@ -154,7 +152,7 @@ function validate(spec) {
       push(errors, 'kind="tags"는 tags 배열(>=1)이 필수입니다.');
     }
     if (spec.rollup != null) {
-      // 라이브 확정: ROLLUP 쿼리에 NAME 컬럼 → MACH-ERR 2264
+      // ROLLUP 쿼리에 NAME 컬럼 → MACH-ERR 2264
       push(errors, 'kind="tags"(여러 태그 비교)는 ROLLUP과 동시 사용 불가입니다(MACH-ERR 2264). rollup=null로 원시 비교하거나, 태그별로 차트를 분리해 각각 rollup을 쓰세요.');
     }
   } else if (spec.kind === 'ohlc') {
@@ -173,9 +171,8 @@ function validate(spec) {
   } else if (spec.kind === 'forecast') {
     // 단일 태그 예측. 여러 태그는 도구(forecast_table)가 태그별로 분해해 각각 forecast로 호출.
     if (!spec.tag) push(errors, 'kind="forecast"는 tag(예측할 단일 태그명)가 필수입니다. 여러 태그를 예측하려면 도구가 태그별로 나눠 처리합니다.');
-    if (spec.method != null && ['auto', 'linear', 'quadratic', 'holtwinters'].indexOf(String(spec.method).toLowerCase()) < 0) {
-      push(errors, 'kind="forecast"의 method는 auto/linear/quadratic/holtwinters 중 하나입니다(생략 시 auto). ARIMA/Prophet/LSTM은 런타임 제약으로 미지원.');
-    }
+    // method는 별칭("계절성","선형","2차","hw")·순위("2위","rank2")도 허용 — 도구(forecast_algo.fcNormMethod)가 정규화하고
+    // 해석 불가면 자동선택으로 폴백하므로 여기서 거절하지 않는다(과잉차단 방지).
     if (spec.horizon != null) {
       var hz = parseInt(spec.horizon, 10);
       if (isNaN(hz) || hz < 1) push(errors, 'kind="forecast"의 horizon은 1 이상의 정수(예측할 미래 버킷 수)여야 합니다. 생략하면 학습 길이의 10%가 자동 적용됩니다.');

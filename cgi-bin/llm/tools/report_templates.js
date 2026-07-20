@@ -94,6 +94,9 @@ function ensureCache() {
 }
 
 // [{ id, title, file, custom, compute, guide }] — builtin first, then custom. For LLM exposure / routing.
+// ⚠️ 이 폴더(neo/report)에 있는 건 **전부 save_html_report가 채울 수 있어야 한다** — 여기 목록이 그대로 LLM에
+//    노출되고 질의 라우팅 대상이 되기 때문. 도구 전용 템플릿(예: 예측)은 **다른 폴더**에 두어 스캔 자체를 피한다
+//    (neo/forecast/ — forecast_report.js가 따로 로드). 플래그로 걸러내는 방식은 새 소비자가 생기면 또 샌다.
 function listReportTemplates() {
   ensureCache();
   var out = [];
@@ -156,6 +159,7 @@ function matchByQuery(query, customOnly) {
   for (var i = 0; i < keys.length; i++) {
     var m = _meta[keys[i]];
     if (!m) continue;
+    if (m.internal) continue; // 도구 전용 템플릿은 질의 라우팅 대상 아님("예측 리포트" → save_html_report로 새면 깨진다)
     if (customOnly ? !m.custom : m.custom) continue;
     var slug = (/^[A-Za-z]-\d+-(.+)$/.exec(m.id) || [])[1] || '';
     var kws = routingTokens(slug).concat(routingTokens(m.title || ''));

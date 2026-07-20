@@ -26,7 +26,7 @@ function seenRecentlyTQL(tql) {
 var POINT_BUCKET_THRESHOLD = 50000; // 실제 점 개수가 이보다 많으면 적응형 버킷, 이하면 raw(+lttb 렌더)
 
 // 약한 모델이 긴 spec 문자열에서 흔히 내는 JSON 오류를 보정해 살린다(strict 파싱 실패 시에만 → 유효 JSON은 불변).
-// 라이브 확정 오류: 따옴표 없는 키(예: `,tag:` → "invalid character 't' looking for beginning of object key string").
+// 대표 오류: 따옴표 없는 키(예: `,tag:` → "invalid character 't' looking for beginning of object key string").
 // 보정은 best-effort 폴백 — 잘못 고쳐도 validator/컴파일러가 다시 잡으므로 순손해 없음(원래 실패하던 입력만 대상).
 // 잘린(EOF) JSON 살리기: 문자열을 스캔해 마지막 완전한 최상위 필드까지 자르고 열린 브래킷을 닫는다.
 // 모델이 긴 spec 문자열을 중간에 끊어 보내는 경우(Unexpected end of JSON input) 부분 복구.
@@ -196,7 +196,7 @@ function normalizeSpec(spec) {
   }
   // kind=metrics(또는 tag만 준 경우)인데 metrics 배열 누락/빈 경우 → 단일 시리즈 기본값 자동 채움.
   // 의도("이 태그를 차트로")는 명확하니 컴파일러가 합리적 기본을 채운다(rollup 있으면 avg, 없으면 raw).
-  // → 약한 모델이 metrics를 빠뜨려 검증 거부 무한루프(volume 등 단일 태그)에 빠지던 문제 제거.
+  // → 약한 모델이 metrics를 빠뜨려도 검증 거부 무한루프에 빠지지 않는다.
   if ((spec.kind === 'metrics' || (!spec.kind && spec.tag && !spec.tags)) && spec.tag &&
       (!Array.isArray(spec.metrics) || spec.metrics.length === 0)) {
     spec.kind = 'metrics';

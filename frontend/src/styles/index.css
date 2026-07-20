@@ -296,6 +296,30 @@ textarea {
     color: var(--color-on-surface-disabled);
 }
 
+/* Clickable trailing icon (e.g. password show/hide toggle) */
+.input-icon-btn {
+    position: absolute;
+    right: 0.5rem;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-base);
+    color: var(--color-on-surface-disabled);
+    cursor: pointer;
+    transition: color 0.15s ease, background-color 0.15s ease;
+}
+.input-icon-btn:hover {
+    color: var(--color-on-surface-secondary);
+    background-color: var(--color-surface-hover);
+}
+
 input[type="checkbox"] {
     width: var(--size-checkbox);
     height: var(--size-checkbox);
@@ -612,9 +636,9 @@ pre {
 
 /* Card */
 .card {
-    background-color: var(--color-surface-alt);
+    background-color: var(--color-surface-elevated);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-base);
+    border-radius: var(--radius-lg);
     padding: var(--spacing-20);
     transition: border-color 0.2s ease;
 }
@@ -842,8 +866,8 @@ details.card > :not(summary) {
 .page-header {
     display: flex;
     min-height: var(--size-header-height);
-    padding: var(--spacing-24) var(--spacing-40);
-    background-color: var(--color-surface-alt);
+    padding: var(--spacing-24) var(--spacing-40) var(--spacing-0);
+    background-color: transparent;
     flex-shrink: 0;
 }
 

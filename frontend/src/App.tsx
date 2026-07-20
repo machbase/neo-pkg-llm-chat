@@ -184,7 +184,7 @@ export default function App() {
 
     return (
         <>
-            <div className="page bg-surface-alt" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+            <div className="page bg-surface" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
                 {activeTab === null && (
                     <div className="flex-1 flex items-center justify-center">
                         <span className="spinner" />
@@ -201,13 +201,13 @@ export default function App() {
                                         <h1 className="page-title">{selectedConfig === null ? "New Configuration" : "Configuration"}</h1>
                                         <p className="page-desc">Manage LLM providers, API keys, models, and connection settings.</p>
                                     </div>
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-8">
                                         {/* Gate chat entry: a user must have a SAVED, usable config.
                                             selectedConfig === null means nothing is saved/loaded yet
                                             (filling the form without saving doesn't count) — matches the
                                             backend gate that checks the config FILE exists. */}
                                         <button
-                                            className="btn btn-content btn-success"
+                                            className="btn btn-content btn-ghost"
                                             onClick={() => setActiveTab("chat")}
                                             disabled={selectedConfig === null || !isConfigUsable(config)}
                                             title={selectedConfig === null || !isConfigUsable(config) ? "사용 가능한 설정(제공자·API 키·모델)을 저장한 뒤 채팅할 수 있습니다." : undefined}
@@ -216,14 +216,14 @@ export default function App() {
                                         </button>
                                         <button className="btn btn-content btn-primary" onClick={handleSave} disabled={saving}>
                                             {saving ? <span className="spinner" /> : <Icon name="save" className="icon-sm" />}
-                                            {selectedConfig === null ? "Create Config" : "Save Settings"}
+                                            Save
                                         </button>
                                     </div>
                                 </div>
                             </div>
                             <div className="page-body">
                                 <div className="page-body-inner">
-                                    <div className="flex flex-col gap-4">
+                                    <div className="flex flex-col gap-24">
                                         <MachbaseSection config={config.machbase} onChange={handleMachbaseChange} errors={validationErrors} />
                                         <ApiKeysSection
                                             claude={config.claude}

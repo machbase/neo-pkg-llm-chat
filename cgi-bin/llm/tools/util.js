@@ -110,7 +110,7 @@ function register(registry, mc) {
             }
 
             // 4) Session info via V$SESSION
-            // USER_NAME intentionally NOT selected — session account names are sensitive (eval #5, 1a).
+            // USER_NAME intentionally NOT selected — session account names are sensitive.
             mc.querySQL("SELECT ID, CLIENT_TYPE, LOGIN_TIME FROM V$SESSION", '', '', '', function (err4, raw4) {
               if (!err4 && raw4) {
                 try {

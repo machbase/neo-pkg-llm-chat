@@ -54,7 +54,8 @@ var OllamaSegTableSchema = '## Table Schema\n' +
   'LOG TABLE: free column structure. ROLLUP not available.\n' +
   'Direct SQL: no GROUP BY needed. TQL SQL(): GROUP BY required.\n\n' +
   '## Analysis Type (check first!)\n' +
-  '- "리포트","보고서" → HTML report\n' +
+  '- "예측","전망","향후","미래" (forecast) → call forecast_table. It builds its own HTML forecast report — do NOT build a dashboard, do NOT call save_html_report.\n' +
+  '- "리포트","보고서" → HTML report (save_html_report). This is a PAST-data analysis report, never call it a forecast.\n' +
   '- "심층","다각도","고급","FFT","RMS" → Advanced analysis\n' +
   '- Otherwise "분석","대시보드" → Basic analysis\n';
 

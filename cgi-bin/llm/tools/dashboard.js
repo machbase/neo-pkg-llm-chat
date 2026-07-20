@@ -254,7 +254,7 @@ function validateTqlPaths(mc, charts, cb) {
   // ⚠️ mc.readFile은 **동기**다(client.js: cb가 httpDo 반환 전에 동기 호출). 따라서 비동기 fan-in 패턴
   // (루프 안에서 remaining++ 후 콜백에서 --remaining===0)을 쓰면 콜백이 매 반복마다 즉시 발화해
   // remaining이 1→0을 반복 → finish()가 **차트당 1번씩** 불린다. tql_path 차트 6개면 cb가 6번 호출되어
-  // 대시보드가 6번 생성되고 상위 executeToolCalls 콜백이 6갈래로 포크 → 최종답변이 6번 방출된다(deep 분석 한정 버그).
+  // 대시보드가 6번 생성되고 상위 executeToolCalls 콜백이 6갈래로 포크 → 최종답변이 6번 방출된다.
   // 해법: 전체 pending 수(total)를 읽기 발행 **전에** 고정하고, 모두 resolve된 뒤에만 finish; + finished 가드로 단 1회 보장.
   var results = [];
   var pending = [];
@@ -528,7 +528,17 @@ function register(registry, mc) {
         //  - 요청 끝 ≤ 데이터 max(직접 과거창) → 그대로 존중
         //  - 요청 끝 > 데이터 max(상대 "최근 N일" 등) → 데이터 끝으로 시프트(빈 꼬리 방지)
         // bounds는 describe_table가 채운 range_cache 우선 사용(조회 0회), 미스면 1회 조회 후 캐시.
+        // 결측/해석불가('auto' 등 모델 센티널) 판정 — 'now' 계열은 Neo가 라이브 평가하는 유효 표현이라 제외.
+        function timeArgMissing(v) { return !v || (!/^now([+-]|$)/.test(v) && !(parseInt(v, 10) > 0)); }
+
         function applySnap(minMs, maxMs) {
+          // 결측/해석불가면 데이터 전체 범위로 채움 — ''/'auto'가 .dsh timeRange에 박혀 Invalid date로 깨지는 것 방지.
+          if (minMs > 0 && maxMs > 0) {
+            var filled = false;
+            if (timeArgMissing(timeStart)) { timeStart = String(minMs); filled = true; }
+            if (timeArgMissing(timeEnd)) { timeEnd = String(maxMs); filled = true; }
+            if (filled) console.println('[dashboard] Time range filled from data bounds: ' + timeStart + ' ~ ' + timeEnd);
+          }
           var startMs = parseInt(timeStart, 10);
           var endMs = parseInt(timeEnd, 10) || startMs;
           if (minMs > 0 && maxMs > 0 && startMs > 0 && (endMs > maxMs || endMs < minMs)) {
@@ -544,7 +554,8 @@ function register(registry, mc) {
           afterTimeShift();
         }
 
-        if (tableName && timeStart && parseInt(timeStart, 10) > 0) {
+        // 유효한 시작값(스냅 대상)뿐 아니라 결측/해석불가(채움 대상)도 bounds 확보 경로로 진입시킨다.
+        if (tableName && (parseInt(timeStart, 10) > 0 || timeArgMissing(timeStart) || timeArgMissing(timeEnd))) {
           var cached = rangeCache.get(tableName);
           if (cached) return applySnap(cached.min, cached.max);
           var snapTimeCol = (colsByTable[String(tableName).toUpperCase()] || {}).t || 'TIME';

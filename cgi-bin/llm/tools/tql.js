@@ -1,5 +1,4 @@
 var { argStr } = require('./registry');
-var { expandTemplate } = require('./tql_templates');
 var { extractUserTables, checkTableOwnership } = require('./ownership');
 
 // 쿼리 결과에 행이 있는지 (Machbase는 200+{"success":false}로도 에러를 줄 수 있어 success/rows 확인)
@@ -49,7 +48,7 @@ function register(registry, mc) {
       type: 'object',
       properties: {
         filename: { type: 'string', description: 'File path (e.g., "GOLD/avg_trend.tql"). Must be English only.' },
-        tql_content: { type: 'string', description: 'Raw TQL script content, written directly (no TEMPLATE syntax)' },
+        tql_content: { type: 'string', description: 'Raw TQL script content, written directly' },
       },
       required: ['filename', 'tql_content'],
     },
@@ -58,44 +57,6 @@ function register(registry, mc) {
       var tqlContent = argStr(args, 'tql_content', '');
       if (!filename) return cb(null, 'Error: filename is required');
       if (!tqlContent) return cb(null, 'Error: tql_content is required');
-
-      // Expand TEMPLATE shorthand: "TEMPLATE:1-1 TABLE:SILVER TAG:close UNIT:day"
-      var tmplMatch = tqlContent.match(/^TEMPLATE:\s*(\d+-\d+)\b/i);
-      if (tmplMatch) {
-        var tmplParams = {};
-        var pairs = tqlContent.replace(/^TEMPLATE:\s*\d+-\d+\s*/i, '').trim();
-        pairs.split(/\s+/).forEach(function (p) {
-          var kv = p.split(':');
-          if (kv.length >= 2) tmplParams[kv[0].toUpperCase()] = kv.slice(1).join(':');
-        });
-
-        // TIME_START/TIME_END 미제공 시 DB에서 실제 시간 범위 조회
-        if ((!tmplParams.TIME_START || !tmplParams.TIME_END) && tmplParams.TABLE) {
-          mc.querySQL('SELECT MIN(TIME), MAX(TIME) FROM ' + tmplParams.TABLE.toUpperCase(), 'default', '', '', function (err, raw) {
-            var minT = '', maxT = '';
-            if (!err) {
-              try {
-                var p = JSON.parse(raw);
-                if (p && p.data && p.data.rows && p.data.rows.length > 0) {
-                  minT = String(p.data.rows[0][0]).substring(0, 19);
-                  maxT = String(p.data.rows[0][1]).substring(0, 19);
-                }
-              } catch (e) {}
-            }
-            if (minT) tmplParams.TIME_START = tmplParams.TIME_START || minT;
-            if (maxT) tmplParams.TIME_END = tmplParams.TIME_END || maxT;
-            var expanded = expandTemplate(tmplMatch[1], tmplParams);
-            if (!expanded) return cb(null, 'Error: Template ' + tmplMatch[1] + ' not found');
-            tqlContent = expanded;
-            processTql();
-          });
-          return;
-        }
-
-        var expanded = expandTemplate(tmplMatch[1], tmplParams);
-        if (!expanded) return cb(null, 'Error: Template ' + tmplMatch[1] + ' not found');
-        tqlContent = expanded;
-      }
 
       processTql();
       return;
