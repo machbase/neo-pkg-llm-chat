@@ -307,6 +307,8 @@ function buildAndSave(mc, opts, items, cb) {
     GENERATED_DATE: stamp(),
     // CAP 초과 자동 선정이면 "5 / 312개"로 전체 규모를 스펙 패널에 명시(분석의 '데이터' 행이 삭제돼 여기가 유일한 자리).
     TAG_COUNT: String(tags.length) + ((opts.topTotal > tags.length) ? '<span class="unit"> / ' + opts.topTotal + '</span>' : ''),
+    // 보조 줄 = 선정 기준(태그 이름 나열은 긴 이름이 칸을 침범해 삭제 — 대신 "왜 이 태그들인가"를 짧게).
+    TAG_PICK_NOTE: (opts.topTotal > tags.length) ? '데이터 많은 순 상위 선정' : '테이블 전체 태그',
     DATA_UNIT: uKo + ' 단위 데이터',              // 버킷 수(태그 합산이라 오해 유발) 대신 데이터 간격을 말한다
     TIME_RANGE: isFinite(minT) ? (fmtDate(minT) + ' ~ ' + fmtDate(maxT)) : '-',
     ROLLUP_LABEL: uKo,
