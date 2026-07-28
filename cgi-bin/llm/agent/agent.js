@@ -40,7 +40,7 @@ var FORECAST_CALL_NUDGE_CAP = 2; // 예측 의도 질문(CodeExec)에서 forecas
 var FORECAST_SHORTAGE_CAP = 2;   // forecast_table "전 태그 데이터 부족"이 이 횟수면 추가 호출 차단 — 약한 모델이 rollup만 바꿔가며 재시도하는 루프 방지(인자가 달라 REPEAT_CALL_CAP에 안 걸림)
 // 예측 의도 감지 — skill.js 4.5 FORECAST_ANY와 동일 키워드. **CodeExec 스킬 게이트와 결합**해야 순수 예측 요청만 잡힌다
 // (설명/사용법 질문은 DocLookup으로, "예측 리포트"는 Report로, 대시보드는 Basic/Advanced로 이미 분류돼 CodeExec가 아님).
-var FORECAST_INTENT_RE = /예측|forecast|predict|예상|전망|향후|이후\s*데이터|미래\s*값|extrapolat/i;
+var FORECAST_INTENT_RE = /예측|forecast|predict|예상|전망|향후|미래\s*값|extrapolat/i;
 // "선언 후 미실행" 감지(ollama): 답변이 조회를 미래형으로 예고("~하겠습니다/할 것입니다")하는데 실제 실행이 없는 경우.
 // 좁게(조회/가져올/추출/쿼리 + 미래형만) 잡아 리포트 서술("분석하겠습니다") 오탐을 피한다.
 var ANNOUNCE_NO_ACTION_RE = /(조회하겠|조회할 것|가져오겠|가져올 것|추출하겠|추출할 것|불러오겠|쿼리로 가져|select[^.\n]{0,40}(가져|조회|실행))/i;
@@ -536,6 +536,7 @@ function runLoop(agent, step, cb) {
       }
       var finalContent = collapseRepeatedBlocks(msg.content);
       finalContent = normalizeProductName(finalContent);                             // 제품명 오표기 정정(마하베이스→마크베이스) — 전 프로바이더
+      finalContent = fixDuplicateSummarized(finalContent);                           // TAG 테이블 CREATE에 SUMMARIZED 값컬럼 2개+ → 첫 개만 유지(ERR-2251 항상 무효) — 전 프로바이더
       if (agent.llm.type === 'ollama') finalContent = normalizeHan(finalContent);   // 약한 모델 한자/중국어 누출 보정
       if (agent.llm.type === 'ollama') finalContent = balanceFences(finalContent);  // 안 닫힌 ```tql 펜스 복구(블록 병합→실행오류 방지)
       if (agent.llm.type === 'ollama') finalContent = dedupeTqlBlocks(finalContent); // 같은 SQL의 ```tql 블록 재탕 제거
@@ -1148,6 +1149,40 @@ function stripDocPathLines(text) {
 function normalizeProductName(s) {
   if (!s) return s;
   return s.split('마하베이스').join('마크베이스').split('마하 베이스').join('마크베이스');
+}
+
+// CREATE TAG TABLE 예시에서 SUMMARIZED(값) 컬럼을 2개 이상 정의한 것을 결정론 교정 — TAG 테이블은 SUMMARIZED 하나만
+// 허용(ERR-2251, 항상 무효)이라 첫 SUMMARIZED만 남기고 나머지는 제거(그 컬럼은 일반 값 컬럼이 됨). how-to 답변은 SQL을
+// 실행하지 않아 hintForError가 못 잡으므로 답변 텍스트를 직접 교정. 예시라 "첫 값 컬럼=요약"이 합리적 기본값. 결과값 무관.
+// 각 CREATE TAG TABLE의 컬럼목록 괄호블록만 대상(중첩 괄호 VARCHAR(50) 깊이 추적). 여러 CREATE는 각각 첫 개 유지.
+function fixDuplicateSummarized(s) {
+  if (!s || !/CREATE\s+TAG\s+TABLE/i.test(s)) return s;
+  var re = /CREATE\s+TAG\s+TABLE\b/gi, m, edits = [];
+  while ((m = re.exec(s)) !== null) {
+    var p = s.indexOf('(', m.index);
+    if (p < 0) { re.lastIndex = m.index + 15; continue; }
+    var depth = 0, close = -1;
+    for (var j = p; j < s.length; j++) {
+      var ch = s.charAt(j);
+      if (ch === '(') depth++;
+      else if (ch === ')') { depth--; if (depth === 0) { close = j; break; } }
+    }
+    if (close < 0) break;
+    var block = s.slice(p, close + 1);
+    if ((block.match(/\bSUMMARIZED\b/gi) || []).length >= 2) {
+      var seen = false;
+      var fixed = block.replace(/\s*\bSUMMARIZED\b/gi, function (mm) {
+        if (!seen) { seen = true; return mm; } // 첫 개는 그대로 유지
+        return ''; // 나머지는 앞 공백까지 제거 → 일반 컬럼
+      });
+      edits.push({ start: p, end: close + 1, text: fixed });
+    }
+    re.lastIndex = close + 1;
+  }
+  if (!edits.length) return s;
+  for (var e = edits.length - 1; e >= 0; e--) s = s.slice(0, edits[e].start) + edits[e].text + s.slice(edits[e].end);
+  console.println('[Answer] TAG 테이블 중복 SUMMARIZED 자동교정(첫 값컬럼만 유지)');
+  return s;
 }
 
 // Ollama 약한 모델이 마크다운 목록 골격을 깨뜨려 내보내는 것을 결정론적으로 복원 — 의미 변경 없이 공백·줄바꿈만 손댄다.

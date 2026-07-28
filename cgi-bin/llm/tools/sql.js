@@ -147,6 +147,9 @@ function hintForError(reason, sql) {
     return HINT_GROUPBY + _extra;
   }
   if (/2037/.test(r)) return HINT_TRUNC;
+  // ERR-2251 "duplicate flag (SUMMARIZED)" — TAG 테이블에 SUMMARIZED 값 컬럼을 2개 이상 정의(모델이 온도·습도를 둘 다 값으로).
+  // 어느 컬럼을 남길지는 의도(설계) 선택이라 자동 재작성 금지 → 넛지로 모델이 고르게(값 하나만 SUMMARIZED, 나머지 일반 컬럼 or 태그 분리).
+  if (/2251|duplicate flag/i.test(r)) return ' (힌트: TAG 테이블은 SUMMARIZED(값) 컬럼을 하나만 가질 수 있습니다. 값 컬럼 하나에만 SUMMARIZED를 붙이고 나머지는 일반 컬럼으로 하세요. 예: temperature DOUBLE SUMMARIZED, humidity DOUBLE. 값이 여러 개면 태그를 분리하는 것도 방법입니다: name=\'dev_temp\', name=\'dev_hum\'.)';
   // MACHCLI-ERR-300 "Invalid date value" — 잘못된 날짜 리터럴/TO_DATE 오용(예: 두 번째 인자에 'INTERVAL DAY + 1').
   // 힌트 없이는 모델이 같은 SQL만 반복하다 교착한다.
   if (/MACHCLI-ERR-300|Invalid date value/i.test(r)) return ' (힌트: 날짜 리터럴/형식 오류입니다. TO_DATE(\'2024-01-01\') 또는 TO_DATE(\'2024-01-01 09:00:00\', \'YYYY-MM-DD HH24:MI:SS\') 형태만 쓰세요. TO_DATE의 두 번째 인자는 형식 문자열만 가능하며 INTERVAL 식은 넣을 수 없습니다. 질문에 기간이 명시되지 않았다면 TIME 필터를 아예 빼고 전체 기간으로 조회하세요.)';

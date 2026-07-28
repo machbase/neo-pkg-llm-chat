@@ -88,6 +88,10 @@ export const RenderMd = ({ content, isInterrupt, isProcess = false, disableExec 
             // Strikethrough
             line = line.replace(/~~\s*([^~]+?)\s*~~/g, '~~$1~~');
             line = line.replace(/(~~\S+?~~)(?=[가-힣a-zA-Z0-9])/g, '$1 ');
+            // Fix: bare URL directly followed by Korean → marked's autolink swallows the Korean
+            // (e.g. ".../machbase-neo/에서"). Insert a space so the link ends at the URL. Proper [text](url)
+            // links are unaffected (URL there is followed by ')', not Korean); inline code is masked above.
+            line = line.replace(/(https?:\/\/[\w\-._~:\/?#\[\]@!$&'()*+,;=%]+)(?=[가-힣])/g, '$1 ');
             line = line.replace(/%%C(\d+)%%/g, (_, i) => codes[parseInt(i)]);
             return line;
         }).join('\n');

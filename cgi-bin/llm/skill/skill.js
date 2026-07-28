@@ -24,7 +24,7 @@ function createRegistry() {
 
   // 4.5 Forecast 분기가 잡는 키워드. **리포트/대시보드 언급이 없는 순수 예측 요청**에만 쓰인다
   // (리포트가 붙으면 2단계 Report가, 대시보드가 붙으면 Basic/Advanced가 가져간다 — 둘 다 forecast_table을 갖고 있다).
-  var FORECAST_ANY = ['예측', 'forecast', 'predict', 'prediction', '예상', '전망', '향후', '이후 데이터', '미래 값', 'extrapolat'];
+  var FORECAST_ANY = ['예측', 'forecast', 'predict', 'prediction', '예상', '전망', '향후', '미래 값', 'extrapolat'];
 
   function classify(query) {
     var lower = query.toLowerCase();

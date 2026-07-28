@@ -1,7 +1,7 @@
 {
     "name": "neo-pkg-llm-chat",
-    "version": "3.2.1",
-    "minServerVersion": "8.5.4",
+    "version": "3.2.2",
+    "minServerVersion": "8.5.9",
     "scripts": {
         "install": "./scripts/install.js",
         "start": "./scripts/start.js",
