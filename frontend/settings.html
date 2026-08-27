@@ -3,6 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Apply the saved theme before first paint (utils/theme.ts owns the key). -->
+    <script>try{if(localStorage.getItem('llmChatTheme')==='light')document.documentElement.classList.add('theme-light')}catch(e){}</script>
     <title>Machbase Neo AI — Settings</title>
   </head>
   <body>

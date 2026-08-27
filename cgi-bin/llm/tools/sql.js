@@ -332,8 +332,17 @@ function register(registry, mc) {
       if (denied) return cb(null, 'Error: ' + denied);
 
       var format = argStr(args, 'format', 'csv');
-      var timeformat = argStr(args, 'timeformat', '');
-      var timezone = argStr(args, 'timezone', '');
+      // 기본값을 KST 읽기형으로: 빈 timeformat은 epoch(ms) 숫자를 반환해 사용자에게 비친화적 + epoch는 절대시각이라 tz 무의미.
+      // Default(읽기형) + Asia/Seoul이라야 "2024-01-01 00:00:00"(KST)로 나온다(서울시 배포 = KST). 모델이 인자로 오버라이드 가능.
+      var timeformat = argStr(args, 'timeformat', 'Default');
+      var timezone = argStr(args, 'timezone', 'Asia/Seoul');
+      // 표시용 쿼리엔 KST 읽기형 강제: 프롬프트가 timeformat:"ms"를 지시해 약한 모델이 ms(epoch 숫자)를 넘겨도,
+      // 사용자에게 보여줄 결과는 epoch가 아니라 KST 읽기형이어야 한다(epoch는 절대시각이라 tz도 무의미). 단 시간범위
+      // 계산(MIN/MAX(TIME))은 ms 숫자가 필요하므로 그 쿼리만 예외로 ms 유지. timezone은 위 기본 Asia/Seoul 그대로.
+      if (/^(ms|us|ns)$/i.test(timeformat) && !/\b(MIN|MAX)\s*\(\s*TIME\s*\)/i.test(sql)) {
+        timeformat = 'Default';
+        console.println('[SQL] 표시용 쿼리 timeformat ms→Default(KST 읽기형) 자동교정');
+      }
       var limit = argInt(args, 'limit', 500);
 
       if (upper.indexOf('LIMIT') === -1 && upper.indexOf('SELECT') === 0) {

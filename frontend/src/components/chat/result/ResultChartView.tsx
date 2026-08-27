@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { getChartAssetBase } from "../../../services/baseUrl";
 import { buildChartIframeHtml } from "../../../utils/buildChartIframeHtml";
+import { useTheme } from "../../../utils/theme";
 import type { TqlChartPayload } from "../../../types/exec";
 
 /**
@@ -8,9 +9,11 @@ import type { TqlChartPayload } from "../../../types/exec";
  * 에셋은 서비스 프록시 경로로 재작성되므로 base href 는 현재 페이지 origin 만 있으면 된다.
  */
 export const ResultChartView = ({ data }: { data: TqlChartPayload }) => {
+    // 테마가 바뀌면 srcdoc을 다시 만들어 iframe이 새 테마로 재마운트된다.
+    const theme = useTheme();
     const html = useMemo(
-        () => buildChartIframeHtml(data, getChartAssetBase()),
-        [data],
+        () => buildChartIframeHtml(data, getChartAssetBase(), theme),
+        [data, theme],
     );
 
     const width = data.style?.width ?? "600px";

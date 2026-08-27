@@ -98,7 +98,9 @@ export const RenderMd = ({ content, isInterrupt, isProcess = false, disableExec 
         return marked.parse(fixed) as string;
     }, [content, isInterrupt]);
 
-    const COPY_ICON = `<svg viewBox="0 0 24 24" fill="rgba(255,255,255,0.5)" height="100%" width="100%">
+    // fill=currentColor — the button carries the themed colour, so the glyph
+    // follows light/dark without a second palette here.
+    const COPY_ICON = `<svg viewBox="0 0 24 24" fill="currentColor" height="100%" width="100%">
         <path d="M20 2H10c-1.103 0-2 .897-2 2v4H4c-1.103 0-2 .897-2 2v10c0 1.103.897 2 2 2h10c1.103 0 2-.897 2-2v-4h4c1.103 0 2-.897 2-2V4c0-1.103-.897-2-2-2zM4 20V10h10l.002 10H4zm16-6h-4v-4c0-1.103-.897-2-2-2h-4V4h10v10z"/>
     </svg>`;
 
@@ -156,13 +158,14 @@ export const RenderMd = ({ content, isInterrupt, isProcess = false, disableExec 
 
                     const showSuccess = () => {
                         copyButton.classList.add('copied');
-                        copyButton.innerHTML = `<svg viewBox="0 0 24 24" fill="#71e071" height="100%" width="100%"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
+                        copyButton.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor" height="100%" width="100%"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>`;
                         setTimeout(() => { copyButton.classList.remove('copied'); copyButton.innerHTML = COPY_ICON; }, 2000);
                     };
 
                     const showError = () => {
-                        copyButton.innerHTML = `<svg viewBox="0 0 24 24" fill="#ff5353" height="100%" width="100%"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>`;
-                        setTimeout(() => { copyButton.innerHTML = COPY_ICON; }, 2000);
+                        copyButton.classList.add('copy-failed');
+                        copyButton.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor" height="100%" width="100%"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>`;
+                        setTimeout(() => { copyButton.classList.remove('copy-failed'); copyButton.innerHTML = COPY_ICON; }, 2000);
                     };
 
                     try {

@@ -2487,17 +2487,6 @@ details.card > :not(summary) {
     pointer-events: none;
 }
 
-.chat-floating-bottom {
-    position: absolute;
-    bottom: 80px;
-    right: max(12px, calc(50% - 368px));
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-4);
-    z-index: var(--z-index-floating);
-    pointer-events: none;
-}
-
 .chat-scroll-btn {
     pointer-events: auto;
     width: 32px;
@@ -2526,33 +2515,40 @@ details.card > :not(summary) {
     display: flex;
     align-items: flex-end;
     gap: var(--spacing-8);
-    padding: var(--spacing-8) var(--spacing-12) var(--spacing-12);
+    padding: var(--spacing-8) 52px var(--spacing-12) var(--spacing-12);
     box-sizing: border-box;
     flex-shrink: 0;
     background: transparent;
     position: relative;
 }
 
-.chat-settings-btn {
-    width: 32px;
-    height: 32px;
-    min-width: 32px;
+/* Two button groups sharing the lane right of the input. Both absolute, so
+   neither resizes the input row; the wrap reserves the width via padding-right
+   and the input keeps the same 696px.
+
+   Anchoring is the whole point: the scroll pair hangs off the TOP of the wrap
+   and the theme/settings pair off the BOTTOM, so they open away from each other
+   and cannot collide however tall the input grows. */
+.chat-scroll-actions {
+    position: absolute;
+    right: var(--spacing-12);
+    bottom: calc(100% + var(--spacing-4));
     display: flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-circle);
-    background: var(--color-surface-elevated);
-    color: var(--color-on-surface-muted);
-    cursor: pointer;
-    transition: all 0.15s ease;
-    margin-bottom: var(--spacing-4);
+    flex-direction: column;
+    gap: var(--spacing-6);
+    z-index: var(--z-index-floating);
+    pointer-events: none;
 }
 
-.chat-settings-btn:hover {
-    color: var(--color-on-surface);
-    border-color: var(--color-border-medium);
-    background: var(--color-surface-hover-light);
+.chat-side-actions {
+    position: absolute;
+    right: var(--spacing-12);
+    bottom: var(--spacing-12);
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-6);
+    z-index: var(--z-index-floating);
+    pointer-events: none;
 }
 .chat-input-wrap::before {
     content: "";
@@ -3366,7 +3362,8 @@ details.card > :not(summary) {
 
 .code-block-wrapper:hover .code-copy-button,
 .code-copy-button:focus-visible,
-.code-copy-button.copied {
+.code-copy-button.copied,
+.code-copy-button.copy-failed {
     opacity: 1;
     pointer-events: auto;
 }
@@ -3382,6 +3379,13 @@ details.card > :not(summary) {
 .code-copy-button.copied {
     background-color: var(--color-success-muted);
     border-color: var(--color-success);
+    color: var(--color-success);
+}
+
+.code-copy-button.copy-failed {
+    background-color: var(--color-error-muted);
+    border-color: var(--color-error);
+    color: var(--color-error);
 }
 
 /* ─── TQL/SQL 자동 mount (Run 버튼 없이 ChatExecResult로 인라인 교체) ─── */

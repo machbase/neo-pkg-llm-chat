@@ -1,0 +1,361 @@
+/* LIGHT THEME — cool-slate palette (ink #23262e), shared with the vibe /
+   hydro packages so the three read as one product family.
+
+   Two parts:
+     1) token remap — every --color-* / --shadow-* from index.css's @theme,
+        restated for a light ground. Anything that already reads a token
+        flips for free.
+     2) component overrides — rules in index.css that hardcode a
+        dark-assuming value (white overlays, black recesses, neon semantics).
+
+   Scoped on the `.theme-light` CLASS, set on <html> so the portaled popovers
+   (model dropdown, prompt / favorites panels, toast) are covered too. Rules
+   here are unlayered, so they win over Tailwind's `@layer theme` :root vars. */
+
+/* ══════════════════════════════════════════════════════════════════════════
+   1. TOKENS
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.theme-light {
+    /* ─── Surface ─── */
+    /* Page ground is the grey one and everything raised is white — the inverse
+       of dark, where raised surfaces are the lighter ones. */
+    --color-surface: #eff1f5;
+    --color-surface-alt: #ffffff;
+    --color-surface-elevated: #ffffff;
+    --color-surface-panel: #ffffff;
+    --color-surface-input: #ffffff;
+    --color-surface-hover: rgba(35, 38, 46, 0.055);
+    --color-surface-hover-light: #e6e9ee;
+    --color-surface-hover-block: rgba(35, 38, 46, 0.09);
+    --color-surface-active: #005fb8;
+    --color-surface-active-hover: #006cd2;
+    --color-surface-tab-active: #ffffff;
+    --color-surface-tab-hover: rgba(35, 38, 46, 0.055);
+    --color-surface-sub-tab-active: #e8eaee;
+
+    /* ─── Text ─── */
+    --color-on-surface: #23262e;
+    --color-on-surface-secondary: #545b66;
+    --color-on-surface-tertiary: #7b828d;
+    --color-on-surface-disabled: #9aa0aa;
+    --color-on-surface-muted: #6b7280;
+    --color-on-surface-hint: #6b7280;
+    --color-on-surface-active: #23262e;
+    /* Text sitting on a saturated fill stays white in both themes. */
+    --color-on-primary: #ffffff;
+    --color-on-success: #ffffff;
+    --color-on-error: #ffffff;
+    --color-on-warning: #ffffff;
+
+    /* ─── Border ─── */
+    --color-border: rgba(35, 38, 46, 0.12);
+    --color-border-light: rgba(35, 38, 46, 0.08);
+    --color-border-medium: rgba(35, 38, 46, 0.24);
+    --color-border-focus: #006cd2;
+    --color-border-active: #005fb8;
+
+    /* ─── Primary ─── */
+    /* Accent blue is theme-invariant — it already reads on white. */
+
+    /* ─── Favorites accent ─── */
+    --color-fav-accent: #d99700;
+    --color-fav-flash: rgba(0, 117, 226, 0.16);
+
+    /* ─── Semantic ─── */
+    /* The dark tones are set for a dark ground and wash out on white; these are
+       the deepened equivalents (same hues) used by vibe / hydro light. */
+    --color-success: #1f9d55;
+    --color-success-light: #2fae63;
+    --color-success-muted: rgba(31, 157, 85, 0.12);
+    --color-error: #d64545;
+    --color-error-light: #e05a5a;
+    --color-error-muted: rgba(214, 69, 69, 0.10);
+    --color-warning: #c77d0a;
+    --color-warning-muted: rgba(199, 125, 10, 0.12);
+    --color-info: #005fb8;
+    --color-danger: #d64545;
+
+    /* ─── Status ─── */
+    --color-status-true: #1f9d55;
+    --color-status-false: #d64545;
+    --color-status-none: #6b7280;
+
+    /* ─── Switch ─── */
+    /* The knob is white in both themes, so the OFF track must stay a mid grey —
+       a near-white track would hide the knob. */
+    --color-switch-off: rgba(35, 38, 46, 0.26);
+    --color-switch-on: #005fb8;
+    --color-switch-on-hover: #0075e2;
+    --color-switch-thumb: #ffffff;
+    --color-switch-thumb-active: #ffffff;
+    --color-switch-border: rgba(35, 38, 46, 0.26);
+    --color-switch-border-active: #0075e2;
+
+    /* ─── Dropdown / Menu ─── */
+    --color-dropdown: #ffffff;
+    --color-dropdown-border: rgba(35, 38, 46, 0.12);
+    --color-dropdown-option-hover: rgba(35, 38, 46, 0.06);
+    --color-menu: #ffffff;
+    --color-menu-item-hover: rgba(35, 38, 46, 0.06);
+    --color-menu-item-text: #23262e;
+
+    /* ─── Scrollbar ─── */
+    --color-scrollbar-thumb: rgba(35, 38, 46, 0.22);
+    --color-scrollbar-thumb-hover: rgba(35, 38, 46, 0.36);
+
+    /* ─── Shadows ─── */
+    /* Black at dark-mode alpha reads as soot on white — same geometry, cool ink
+       at a lower alpha. */
+    --shadow-switch: 1px 2px 3px rgba(35, 38, 46, 0.14);
+    --shadow-sm: 0 2px 2px rgba(35, 38, 46, 0.08);
+    --shadow-md: 0 4px 4px rgba(35, 38, 46, 0.08);
+    --shadow-lg: 0 8px 8px rgba(35, 38, 46, 0.10);
+    --shadow-xl: 0 10px 25px rgba(35, 38, 46, 0.16);
+    --shadow-dropdown: 0 4px 12px rgba(35, 38, 46, 0.14);
+    --shadow-overlay: 0 2px 8px rgba(35, 38, 46, 0.16);
+}
+
+/* Paint the page ground before React mounts (the pre-paint script in the HTML
+   entry sets the class on <html>, ahead of any component styling). */
+html.theme-light,
+html.theme-light body {
+    background: var(--color-surface);
+    color: var(--color-on-surface);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   2. COMPONENT OVERRIDES — index.css rules with hardcoded dark-mode values
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ─── Form controls ─── */
+.theme-light select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%237b828d' viewBox='0 0 16 16'%3E%3Cpath d='M4.646 5.646a.5.5 0 0 1 .708 0L8 8.293l2.646-2.647a.5.5 0 0 1 .708.708l-3 3a.5.5 0 0 1-.708 0l-3-3a.5.5 0 0 1 0-.708z'/%3E%3C/svg%3E");
+}
+
+.theme-light .switch:hover {
+    background-color: rgba(35, 38, 46, 0.34);
+    border-color: rgba(35, 38, 46, 0.42);
+}
+
+/* ─── Badges ─── */
+.theme-light .badge-success {
+    border-color: rgba(31, 157, 85, 0.32);
+}
+.theme-light .badge-error {
+    border-color: rgba(214, 69, 69, 0.32);
+}
+.theme-light .badge-warning {
+    border-color: rgba(199, 125, 10, 0.32);
+}
+.theme-light .badge-primary {
+    border-color: rgba(0, 95, 184, 0.35);
+    background-color: rgba(0, 95, 184, 0.10);
+    color: #00437f;
+}
+.theme-light .badge-muted {
+    border-color: rgba(107, 114, 128, 0.28);
+    background-color: rgba(107, 114, 128, 0.10);
+    color: var(--color-on-surface-muted);
+}
+
+/* Provider brand hues kept; darkened to the minimum that reads on a pale fill. */
+.theme-light .badge-claude {
+    border-color: rgba(196, 92, 30, 0.32);
+    background-color: rgba(232, 121, 58, 0.13);
+    color: #b8551c;
+}
+.theme-light .badge-chatgpt {
+    border-color: rgba(13, 122, 96, 0.32);
+    background-color: rgba(16, 163, 127, 0.13);
+    color: #0b7a5f;
+}
+.theme-light .badge-gemini {
+    border-color: rgba(109, 62, 218, 0.32);
+    background-color: rgba(139, 92, 246, 0.13);
+    color: #6435d0;
+}
+.theme-light .badge-ollama {
+    border-color: rgba(107, 114, 128, 0.32);
+    background-color: rgba(107, 114, 128, 0.12);
+    color: #59606c;
+}
+
+/* ─── Destructive buttons ─── */
+/* .btn-danger 의 글자색은 --color-on-surface 라, 라이트에서 토큰이 뒤집히면
+   빨간 채움 위에 잉크색 글리프가 얹힌다(대비 2.6:1). 채움 위 글자는 두 테마 모두 흰색. */
+.theme-light .btn-danger {
+    color: #ffffff;
+}
+
+/* 행마다 반복되는 아이콘 버튼은 꽉 찬 빨강이 줄줄이 서면 페이지를 잡아먹는다.
+   목록에서는 연한 톤(badge-error 와 같은 계열), 확인 모달의 CTA 는 채움 유지. */
+.theme-light .btn-danger.btn-icon {
+    background-color: rgba(214, 69, 69, 0.10);
+    border-color: rgba(214, 69, 69, 0.32);
+    color: var(--color-error);
+}
+.theme-light .btn-danger.btn-icon:hover {
+    background-color: var(--color-error);
+    border-color: var(--color-error);
+    color: #ffffff;
+}
+
+/* ─── Tag ─── */
+.theme-light .tag {
+    background-color: var(--color-on-surface-muted);
+}
+
+/* ─── Overlays ─── */
+.theme-light .modal-overlay {
+    background-color: rgba(35, 38, 46, 0.32);
+}
+
+.theme-light .spinner {
+    border-color: rgba(35, 38, 46, 0.18);
+    border-top-color: currentColor;
+}
+
+/* ─── Toast ─── */
+.theme-light .toast-success {
+    border-color: rgba(31, 157, 85, 0.32);
+}
+.theme-light .toast-error {
+    border-color: rgba(214, 69, 69, 0.32);
+}
+
+/* ─── Chat shell ─── */
+.theme-light .chat-welcome-icon-wrap {
+    box-shadow: 0 4px 20px rgba(0, 95, 184, 0.22);
+}
+
+.theme-light .chat-prompt-panel-popup > .chat-prompt-panel,
+.theme-light .chat-fav-panel {
+    box-shadow: 0 12px 32px rgba(35, 38, 46, 0.16);
+}
+
+.theme-light .chat-suggestion-chip:hover {
+    box-shadow: 0 2px 8px rgba(35, 38, 46, 0.10);
+}
+
+.theme-light .chat-input-container {
+    box-shadow: 0 2px 12px rgba(35, 38, 46, 0.07);
+}
+.theme-light .chat-input-container:focus-within {
+    box-shadow: 0 -2px 20px rgba(35, 38, 46, 0.10), 0 0 0 1px var(--color-border-focus);
+}
+.theme-light .chat-input-container--disconnected {
+    box-shadow: 0 -2px 20px rgba(35, 38, 46, 0.10), 0 0 0 1px var(--color-error) !important;
+}
+
+/* @keyframes are global by name, so the light pulse needs its own — the gold
+   halo set for a dark ground barely registers on white. */
+@keyframes chatModelPulseLight {
+    0%,
+    100% {
+        box-shadow: 0 0 0 0 rgba(199, 125, 10, 0.55);
+    }
+    50% {
+        box-shadow: 0 0 0 7px rgba(199, 125, 10, 0);
+    }
+}
+
+.theme-light .chat-model-btn--pulse {
+    animation-name: chatModelPulseLight;
+}
+
+.theme-light .chat-model-dropdown {
+    box-shadow: 0 8px 32px rgba(35, 38, 46, 0.18);
+}
+
+.theme-light .chat-error-banner {
+    border-color: rgba(214, 69, 69, 0.32);
+}
+
+/* ─── Code blocks & copy affordance ─── */
+.theme-light .code-copy-button {
+    background-color: rgba(35, 38, 46, 0.05);
+    border-color: rgba(35, 38, 46, 0.12);
+}
+.theme-light .code-copy-button:hover {
+    background-color: rgba(35, 38, 46, 0.10);
+}
+
+/* ─── Exec result ─── */
+.theme-light .chat-exec-result {
+    background: rgba(35, 38, 46, 0.035);
+}
+
+.theme-light .chat-code-view-toggle {
+    background: rgba(35, 38, 46, 0.04);
+    border-color: rgba(35, 38, 46, 0.14);
+}
+.theme-light .chat-code-view-toggle:hover {
+    background: rgba(35, 38, 46, 0.08);
+}
+.theme-light .chat-code-view-toggle.is-active {
+    background: rgba(0, 95, 184, 0.10);
+    border-color: rgba(0, 95, 184, 0.42);
+    color: #005fb8;
+}
+
+.theme-light .chat-exec-result__abort {
+    color: #c03b3b;
+    background: rgba(214, 69, 69, 0.09);
+    border-color: rgba(214, 69, 69, 0.35);
+}
+.theme-light .chat-exec-result__abort:hover {
+    background: rgba(214, 69, 69, 0.16);
+    color: #a52f2f;
+}
+
+.theme-light .chat-exec-result__spinner {
+    border-color: rgba(35, 38, 46, 0.18);
+    border-top-color: #1f9d55;
+}
+
+.theme-light .chat-exec-result__code-fallback,
+.theme-light .chat-exec-result__text {
+    background: rgba(35, 38, 46, 0.05);
+}
+
+.theme-light .chat-exec-result__copy {
+    background: rgba(255, 255, 255, 0.92);
+    border-color: rgba(35, 38, 46, 0.22);
+    color: var(--color-on-surface-secondary);
+}
+.theme-light .chat-exec-result__copy:hover {
+    background: #ffffff;
+    color: var(--color-on-surface);
+}
+.theme-light .chat-exec-result__copy.is-copied {
+    color: var(--color-success);
+}
+
+/* ─── Result table ─── */
+.theme-light .chat-result-table__truncated-banner {
+    background: rgba(199, 125, 10, 0.12);
+    border-color: rgba(199, 125, 10, 0.38);
+    color: #96600a;
+}
+.theme-light .chat-result-table th,
+.theme-light .chat-result-table td {
+    border-color: rgba(35, 38, 46, 0.12);
+}
+.theme-light .chat-result-table th {
+    background: rgba(35, 38, 46, 0.05);
+}
+.theme-light .chat-result-table__null {
+    color: rgba(35, 38, 46, 0.40);
+}
+
+/* ─── Markdown ─── */
+.theme-light .chat-markdown pre {
+    background: rgba(35, 38, 46, 0.04);
+}
+.theme-light .chat-markdown :not(pre) > code {
+    background: rgba(35, 38, 46, 0.06);
+}
+.theme-light .chat-markdown th {
+    background: rgba(35, 38, 46, 0.05);
+}

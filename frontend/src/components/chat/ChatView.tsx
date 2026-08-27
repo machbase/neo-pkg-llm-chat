@@ -6,6 +6,7 @@ import { PromptSuggestionsPanel } from './PromptSuggestionsPanel';
 import { FavoritesPanel } from './FavoritesPanel';
 import { useFavorites } from '../../hooks/useFavorites';
 import Icon from '../common/Icon';
+import ThemeToggle from '../common/ThemeToggle';
 import neoLogo from '../../assets/image/neowFavicon';
 
 interface SuggestionChip {
@@ -400,21 +401,6 @@ export const ChatView = ({
                     </div>
                 )}
 
-                {/* Scroll buttons (bottom-right) */}
-                {messages.length > 0 && (showScrollTop || showScrollBottom) && (
-                    <div className="chat-floating-bottom">
-                        {showScrollTop && (
-                            <button className="chat-scroll-btn" onClick={handleScrollToTop} title="Scroll to top">
-                                <Icon name="keyboard_arrow_up" className="icon-sm" />
-                            </button>
-                        )}
-                        {showScrollBottom && (
-                            <button className="chat-scroll-btn" onClick={handleScrollToBottom} title="Scroll to bottom">
-                                <Icon name="keyboard_arrow_down" className="icon-sm" />
-                            </button>
-                        )}
-                    </div>
-                )}
 
                 {/* Input */}
                 <div ref={inputWrapRef} className={`chat-input-wrap ${showSlideDown ? 'chat-input-wrap--slide-down' : ''}`}>
@@ -595,11 +581,31 @@ export const ChatView = ({
                             </div>
                         </div>
                     </div>
-                    {onOpenSettings && (
-                        <button className="chat-settings-btn" onClick={onOpenSettings} title="Settings">
-                            <Icon name="settings" className="icon-sm" />
-                        </button>
+                    {/* Scroll buttons ride entirely above the input's top edge —
+                        anchored to it, so they stay clear however tall the input grows. */}
+                    {messages.length > 0 && (showScrollTop || showScrollBottom) && (
+                        <div className="chat-scroll-actions">
+                            {showScrollTop && (
+                                <button className="chat-scroll-btn" onClick={handleScrollToTop} title="Scroll to top">
+                                    <Icon name="keyboard_arrow_up" className="icon-sm" />
+                                </button>
+                            )}
+                            {showScrollBottom && (
+                                <button className="chat-scroll-btn" onClick={handleScrollToBottom} title="Scroll to bottom">
+                                    <Icon name="keyboard_arrow_down" className="icon-sm" />
+                                </button>
+                            )}
+                        </div>
                     )}
+                    {/* Theme + settings stay beside the input, anchored to its bottom. */}
+                    <div className="chat-side-actions">
+                        <ThemeToggle className="chat-scroll-btn" />
+                        {onOpenSettings && (
+                            <button className="chat-scroll-btn" onClick={onOpenSettings} title="Settings">
+                                <Icon name="settings" className="icon-sm" />
+                            </button>
+                        )}
+                    </div>
                 </div>
 
                 {/* Suggestion chips */}

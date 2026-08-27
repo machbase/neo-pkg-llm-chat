@@ -8,6 +8,7 @@ import { ApiKeysSection } from "./sections/ApiKeysSection";
 import { ModelsSection } from "./sections/ModelsSection";
 import { Chat } from "./components/chat/Chat";
 import Icon from "./components/common/Icon";
+import ThemeToggle from "./components/common/ThemeToggle";
 import Toast from "./components/common/Toast";
 import type { AppConfig, ModelProvider } from "./types/settings";
 
@@ -202,6 +203,7 @@ export default function App() {
                                         <p className="page-desc">Manage LLM providers, API keys, models, and connection settings.</p>
                                     </div>
                                     <div className="flex items-center gap-8">
+                                        <ThemeToggle className="btn btn-icon btn-ghost" />
                                         {/* Gate chat entry: a user must have a SAVED, usable config.
                                             selectedConfig === null means nothing is saved/loaded yet
                                             (filling the form without saving doesn't count) — matches the

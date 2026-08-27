@@ -1,5 +1,6 @@
 import type { TqlChartPayload } from "../types/exec";
 import { CHART_ASSET_PREFIX } from "../services/baseUrl";
+import type { Theme } from "./theme";
 
 const escapeHtml = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
@@ -44,8 +45,9 @@ function ensureDarkThemeAsset(assets: string[]): string[] {
  * TQL 차트 응답 + apiBase로 iframe srcdoc용 HTML 문자열 조립.
  * apiBase는 호출자가 미리 await getApiBaseOrigin()으로 받아서 전달 (sync function).
  * jsAssets/jsCodeAssets URL은 응답값 그대로 사용 — backend가 root-level forward 처리.
+ * theme은 앱 테마 — 차트가 채팅 배경과 같은 명암을 갖도록 맞춘다.
  */
-export function buildChartIframeHtml(payload: TqlChartPayload, apiBase: string): string {
+export function buildChartIframeHtml(payload: TqlChartPayload, apiBase: string, theme: Theme = "dark"): string {
   const isGeomap = typeof payload.geomapID === "string";
   // chartID(echarts) 또는 geomapID(geomap) — 둘 중 응답에 들어온 것을 마운트 div id로 사용
   const mountID = payload.chartID ?? payload.geomapID ?? "";
@@ -56,21 +58,25 @@ export function buildChartIframeHtml(payload: TqlChartPayload, apiBase: string):
   const cssAssetTags = (payload.cssAssets ?? [])
     .map((href) => `<link rel="stylesheet" href="${escapeUrl(toProxyAsset(href))}">`)
     .join("\n  ");
-  // echarts 차트는 테마를 "dark"로 강제. geomap(leaflet)은 echarts를 쓰지 않으므로 제외.
+  // echarts 차트 테마를 앱 테마에 맞춘다. geomap(leaflet)은 echarts를 쓰지 않으므로 제외.
   // 테마는 (a) jsAssets의 테마 파일이 echarts.registerTheme로 등록하고
   //         (b) jsCodeAssets가 echarts.init(dom, "<name>")로 사용한다.
-  // 따라서 asset URL만 바꾸면 init이 미등록 테마를 참조해 라이트로 떨어진다 →
-  // dark 테마 파일을 로드(a)하고 echarts.init을 패치해 인자를 "dark"로 치환(b)한다.
-  const jsAssets = isGeomap ? payload.jsAssets : ensureDarkThemeAsset(payload.jsAssets);
+  // dark: asset URL만 바꾸면 init이 미등록 테마를 참조해 라이트로 떨어지므로,
+  //       dark 테마 파일을 로드(a)하고 init 인자를 "dark"로 치환(b)한다.
+  // light: echarts 기본 테마가 곧 라이트라 등록할 파일이 없다 — init 인자를 null로
+  //        떨궈 서버가 지정한 테마(다크일 수 있음)를 무시한다.
+  const isLight = theme === "light";
+  const jsAssets = isGeomap || isLight ? payload.jsAssets : ensureDarkThemeAsset(payload.jsAssets);
   const jsAssetTags = jsAssets
     .map((src) => `<script src="${escapeUrl(toProxyAsset(src))}"></script>`)
     .join("\n  ");
-  // echarts.init을 패치해 (1) 테마를 "dark"로 강제하고
+  // echarts.init을 패치해 (1) 테마를 앱 테마로 강제하고
   // (2) 인스턴스 setOption에서 backgroundColor를 transparent로 덮어써
-  //     dark 테마의 짙은 배경(#100c2a) 대신 앱(iframe) 배경이 그대로 비치게 한다.
+  //     테마 자체 배경(dark의 #100c2a, light의 흰색) 대신 앱(iframe) 배경이 비치게 한다.
+  const themeArg = isLight ? "null" : '"dark"';
   const themePatchTag = isGeomap
     ? ""
-    : `<script>(function(){if(window.echarts&&typeof echarts.init==="function"){var _init=echarts.init;echarts.init=function(dom,_theme,opts){var c=_init.call(echarts,dom,"dark",opts);var _set=c.setOption;c.setOption=function(o){if(o&&typeof o==="object"){o.backgroundColor="transparent";}return _set.apply(this,arguments);};return c;};}})();</script>`;
+    : `<script>(function(){if(window.echarts&&typeof echarts.init==="function"){var _init=echarts.init;echarts.init=function(dom,_theme,opts){var c=_init.call(echarts,dom,${themeArg},opts);var _set=c.setOption;c.setOption=function(o){if(o&&typeof o==="object"){o.backgroundColor="transparent";}return _set.apply(this,arguments);};return c;};}})();</script>`;
   const jsCodeTags = payload.jsCodeAssets
     .map((src) => `<script src="${escapeUrl(toProxyAsset(src))}"></script>`)
     .join("\n  ");
