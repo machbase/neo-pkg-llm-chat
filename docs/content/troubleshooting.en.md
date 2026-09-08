@@ -51,5 +51,5 @@ In this case, wait a little longer, or stop the response and retry with a simple
 
 ## Navigation
 
-- [Previous: HTTP API and WebSocket](./http-api-and-websocket.en.md)
-- [Back to Index](./index.en.md)
+- [Previous: HTTP API and WebSocket]({{< relref "http-api-and-websocket" >}})
+- [Back to Index]({{< relref "/" >}})

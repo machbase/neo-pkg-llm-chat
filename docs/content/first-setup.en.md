@@ -21,7 +21,7 @@ Input fields:
 
 This is the Machbase connection used by the LLM for query execution and dashboard creation.
 
-![Machbase Connection settings screen](./images/llm-settings-connection.png)
+![Machbase Connection settings screen]({{< asset "images/llm-settings-connection.png" >}})
 
 ## API Keys & Endpoints
 
@@ -71,7 +71,7 @@ Configuration tips:
 - Use the exact value shown in the provider documentation for Model ID.
 - For Ollama, use the name of the model you pulled locally.
 
-![Models settings screen](./images/llm-settings-models.png)
+![Models settings screen]({{< asset "images/llm-settings-models.png" >}})
 
 ## Check Before Saving
 
@@ -91,5 +91,5 @@ Later, you can open the Settings screen again from the Settings button in the lo
 
 ## Navigation
 
-- [Back to Index](./index.en.md)
-- [Next: How to Use Chat](./chat-usage.en.md)
+- [Back to Index]({{< relref "/" >}})
+- [Next: How to Use Chat]({{< relref "chat-usage" >}})

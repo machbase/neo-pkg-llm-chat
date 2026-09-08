@@ -707,6 +707,6 @@ debug_mcp_status()
 
 ## 문서 이동
 
-- [이전: Chat 사용 방법](./chat-usage.kr.md)
-- [목차로 돌아가기](./index.kr.md)
-- [다음: HTTP API와 WebSocket](./http-api-and-websocket.kr.md)
+- [이전: Chat 사용 방법]({{< relref "chat-usage" >}})
+- [목차로 돌아가기]({{< relref "/" >}})
+- [다음: HTTP API와 WebSocket]({{< relref "http-api-and-websocket" >}})

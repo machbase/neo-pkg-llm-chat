@@ -5,7 +5,7 @@ weight: 10
 
 # LLM Chat Technical Documentation
 
-[한국어](./index.kr.md) | **English**
+[한국어]({{< relref "/" >}}) | **English**
 
 The Machbase Neo LLM Chat package is an LLM-based chat interface for interacting with the Machbase Neo time-series database in natural language.
 Through conversation, you can query data, generate dashboards, create analysis reports, and explore manual documents.
@@ -19,7 +19,7 @@ Select the LLM Chat package and click the `Install` button to install it.
 
 Installation may take a short time, so wait until it is completed.
 
-![Package installation screen](./images/package-install.png)
+![Package installation screen]({{< asset "images/package-install.png" >}})
 
 ### Uninstall
 
@@ -118,16 +118,16 @@ Post-loop guards:
   - Connection status
   - Message input
 
-![LLM Chat main screen](./images/llm-chat-main.png)
+![LLM Chat main screen]({{< asset "images/llm-chat-main.png" >}})
 
 ## Documents
 
-- [First Setup](./first-setup.en.md)
-- [How to Use Chat](./chat-usage.en.md)
-- [Technical Reference](./technical-reference.en.md)
-- [HTTP API and WebSocket](./http-api-and-websocket.en.md)
-- [Troubleshooting](./troubleshooting.en.md)
+- [First Setup]({{< relref "first-setup" >}})
+- [How to Use Chat]({{< relref "chat-usage" >}})
+- [Technical Reference]({{< relref "technical-reference" >}})
+- [HTTP API and WebSocket]({{< relref "http-api-and-websocket" >}})
+- [Troubleshooting]({{< relref "troubleshooting" >}})
 
 ## Navigation
 
-- [Next: First Setup](./first-setup.en.md)
+- [Next: First Setup]({{< relref "first-setup" >}})

@@ -5,7 +5,7 @@ weight: 10
 
 # LLM Chat 기술 문서
 
-**한국어** | [English](./index.en.md)
+**한국어** | [English]({{< relref "/" >}})
 
 Machbase Neo LLM Chat 패키지는 Machbase Neo 시계열 데이터베이스와 자연어로 상호작용할 수 있는 LLM 채팅 인터페이스입니다.
 대화를 통해 데이터 조회, 대시보드 생성, 분석 리포트 작성, 메뉴얼 문서 탐색이 가능합니다.
@@ -19,7 +19,7 @@ Machbase Neo 좌측 사이드 패널에는 사용 가능한 패키지 목록이 
 
 설치에는 약간의 시간이 걸릴 수 있으므로, 완료될 때까지 잠시 기다립니다.
 
-![패키지 설치 화면](./images/package-install.png)
+![패키지 설치 화면]({{< asset "images/package-install.png" >}})
 
 ### 제거
 
@@ -118,16 +118,16 @@ post-loop 가드:
   - 연결 상태 표시
   - 메시지 입력창
 
-![LLM Chat 메인 화면](./images/llm-chat-main.png)
+![LLM Chat 메인 화면]({{< asset "images/llm-chat-main.png" >}})
 
 ## 문서 목록
 
-- [첫 설정](./first-setup.kr.md)
-- [Chat 사용 방법](./chat-usage.kr.md)
-- [기술 참고](./technical-reference.kr.md)
-- [HTTP API와 WebSocket](./http-api-and-websocket.kr.md)
-- [문제 해결](./troubleshooting.kr.md)
+- [첫 설정]({{< relref "first-setup" >}})
+- [Chat 사용 방법]({{< relref "chat-usage" >}})
+- [기술 참고]({{< relref "technical-reference" >}})
+- [HTTP API와 WebSocket]({{< relref "http-api-and-websocket" >}})
+- [문제 해결]({{< relref "troubleshooting" >}})
 
 ## 문서 이동
 
-- [다음: 첫 설정](./first-setup.kr.md)
+- [다음: 첫 설정]({{< relref "first-setup" >}})

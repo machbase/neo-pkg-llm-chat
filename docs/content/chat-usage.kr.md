@@ -40,7 +40,7 @@ Chat 화면 아래쪽의 **Select model** 버튼을 눌러 사용할 모델을 �
 - 분석 대시보드 만들어줘
 - 분석 리포트 작성해줘
 
-![추천 질문 칩 화면](./images/llm-chat-suggestions.png)
+![추천 질문 칩 화면]({{< asset "images/llm-chat-suggestions.png" >}})
 
 ## 즐겨찾기 (자주 쓰는 질문)
 
@@ -110,6 +110,6 @@ Chat 화면 아래쪽의 **Select model** 버튼을 눌러 사용할 모델을 �
 
 ## 문서 이동
 
-- [이전: 첫 설정](./first-setup.kr.md)
-- [목차로 돌아가기](./index.kr.md)
-- [다음: 기술 참고](./technical-reference.kr.md)
+- [이전: 첫 설정]({{< relref "first-setup" >}})
+- [목차로 돌아가기]({{< relref "/" >}})
+- [다음: 기술 참고]({{< relref "technical-reference" >}})

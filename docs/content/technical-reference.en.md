@@ -707,6 +707,6 @@ debug_mcp_status()
 
 ## Navigation
 
-- [Previous: How to Use Chat](./chat-usage.en.md)
-- [Back to Index](./index.en.md)
-- [Next: HTTP API and WebSocket](./http-api-and-websocket.en.md)
+- [Previous: How to Use Chat]({{< relref "chat-usage" >}})
+- [Back to Index]({{< relref "/" >}})
+- [Next: HTTP API and WebSocket]({{< relref "http-api-and-websocket" >}})

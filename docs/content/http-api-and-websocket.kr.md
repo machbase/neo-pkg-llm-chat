@@ -168,6 +168,6 @@ curl http://localhost:8884/api/configs
 
 ## 문서 이동
 
-- [이전: 기술 참고](./technical-reference.kr.md)
-- [목차로 돌아가기](./index.kr.md)
-- [다음: 문제 해결](./troubleshooting.kr.md)
+- [이전: 기술 참고]({{< relref "technical-reference" >}})
+- [목차로 돌아가기]({{< relref "/" >}})
+- [다음: 문제 해결]({{< relref "troubleshooting" >}})

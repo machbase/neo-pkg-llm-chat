@@ -21,7 +21,7 @@ weight: 20
 
 이 정보는 LLM이 질의 실행이나 대시보드 생성에 사용할 Machbase 연결입니다.
 
-![Machbase Connection 설정 화면](./images/llm-settings-connection.png)
+![Machbase Connection 설정 화면]({{< asset "images/llm-settings-connection.png" >}})
 
 ## API Keys & Endpoints
 
@@ -71,7 +71,7 @@ LLM Chat은 Provider별로 사용할 Model을 별도로 등록합니다.
 - Model ID는 Provider 문서에 나오는 정확한 값을 사용합니다.
 - Ollama는 로컬에 `pull`한 모델 이름을 그대로 쓰면 됩니다.
 
-![Models 설정 화면](./images/llm-settings-models.png)
+![Models 설정 화면]({{< asset "images/llm-settings-models.png" >}})
 
 ## 저장 전 확인 사항
 
@@ -91,5 +91,5 @@ LLM Chat은 Provider별로 사용할 Model을 별도로 등록합니다.
 
 ## 문서 이동
 
-- [목차로 돌아가기](./index.kr.md)
-- [다음: Chat 사용 방법](./chat-usage.kr.md)
+- [목차로 돌아가기]({{< relref "/" >}})
+- [다음: Chat 사용 방법]({{< relref "chat-usage" >}})

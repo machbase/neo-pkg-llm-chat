@@ -168,6 +168,6 @@ Inner `message.type` phases, in order:
 
 ## Navigation
 
-- [Previous: Technical Reference](./technical-reference.en.md)
-- [Back to Index](./index.en.md)
-- [Next: Troubleshooting](./troubleshooting.en.md)
+- [Previous: Technical Reference]({{< relref "technical-reference" >}})
+- [Back to Index]({{< relref "/" >}})
+- [Next: Troubleshooting]({{< relref "troubleshooting" >}})

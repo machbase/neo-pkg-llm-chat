@@ -51,5 +51,5 @@ weight: 60
 
 ## 문서 이동
 
-- [이전: HTTP API와 WebSocket](./http-api-and-websocket.kr.md)
-- [목차로 돌아가기](./index.kr.md)
+- [이전: HTTP API와 WebSocket]({{< relref "http-api-and-websocket" >}})
+- [목차로 돌아가기]({{< relref "/" >}})

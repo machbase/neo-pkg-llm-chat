@@ -40,7 +40,7 @@ Examples:
 - Create an analysis dashboard
 - Write an analysis report
 
-![Suggestion chips screen](./images/llm-chat-suggestions.png)
+![Suggestion chips screen]({{< asset "images/llm-chat-suggestions.png" >}})
 
 ## Favorites (Frequently Used Questions)
 
@@ -110,6 +110,6 @@ This is mainly used when:
 
 ## Navigation
 
-- [Previous: First Setup](./first-setup.en.md)
-- [Back to Index](./index.en.md)
-- [Next: Technical Reference](./technical-reference.en.md)
+- [Previous: First Setup]({{< relref "first-setup" >}})
+- [Back to Index]({{< relref "/" >}})
+- [Next: Technical Reference]({{< relref "technical-reference" >}})
