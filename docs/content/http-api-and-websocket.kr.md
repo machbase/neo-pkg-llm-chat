@@ -3,7 +3,7 @@ title: HTTP API와 WebSocket
 weight: 50
 ---
 
-# HTTP API와 WebSocket
+#
 
 이 문서는 LLM Chat 패키지 서비스가 제공하는 HTTP API 엔드포인트와 WebSocket 프로토콜을 정리합니다.
 
