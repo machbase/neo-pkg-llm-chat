@@ -3,7 +3,7 @@ title: First Setup
 weight: 20
 ---
 
-# First Setup
+#
 
 If no settings have been saved yet, the Settings screen appears first when you open the package.  
 If settings already exist, you may go directly to the Chat screen.

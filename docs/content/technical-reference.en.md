@@ -3,7 +3,7 @@ title: Technical Reference
 weight: 40
 ---
 
-# Technical Reference
+#
 
 This document describes the built-in tools, automation features, templates, and file/document access functions used internally by the LLM Chat package.
 
