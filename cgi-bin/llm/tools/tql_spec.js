@@ -8,6 +8,7 @@
 // raw TQL 작성/문법 함정은 컴파일러가 보장 → LLM은 의도(JSON)만 책임.
 
 var { compileSafe, toDateLiteral } = require('./tir/compile');
+var { parseTableRef, resolveTableRef } = require('./table_access');
 var { argStr } = require('./registry');
 var rangeCache = require('./range_cache');
 
@@ -151,7 +152,8 @@ function detectPointCount(mc, spec, cb) {
 // 테이블의 실제 컬럼명 탐지 (PK/BASETIME/SUMMARIZED). cb({n,t,v}). describe_table와 동일 로직.
 // 모델은 컬럼명을 몰라도 됨 — 커스텀 컬럼(NAME/TIME/VALUE 아닌) 테이블 자동 대응.
 function detectColumns(mc, table, cb) {
-  var u = String(table).toUpperCase();
+  // M$SYS_TABLES 의 NAME 은 소유자를 뺀 테이블 이름이다. 'SYS.BITCOIN' 을 그대로 넣으면 못 찾는다.
+  var u = parseTableRef(table).table;
   var sql = "SELECT m2.NAME, m2.FLAG FROM M$SYS_TABLES m1, M$SYS_COLUMNS m2 " +
     "WHERE m1.ID = m2.TABLE_ID AND m1.DATABASE_ID = m2.DATABASE_ID AND m1.NAME = '" + u + "' AND m1.FLAG = 0";
   mc.querySQL(sql, '', '', '', function (err, res) {
@@ -222,8 +224,11 @@ function normalizeSpec(spec) {
 
 // 테이블의 실제 태그 목록 탐지 (_table_meta의 태그명 컬럼). cb([tags]).
 function detectTags(mc, table, nameCol, cb) {
-  var u = String(table).toLowerCase();
-  mc.querySQL('SELECT ' + nameCol + ' FROM _' + u + '_meta', '', '', '', function (err, res) {
+  // 태그 목록은 부속 테이블 _<t>_meta 에 있고, 그 이름에도 소유자·database 접두가 붙는다.
+  // 이름을 통째로 소문자화해 붙이면 'MACHBASEDB.SYS.BITCOIN' 이 '_machbasedb.sys.bitcoin_meta' 가 된다.
+  var ref = parseTableRef(table);
+  var meta = (ref.prefix ? ref.prefix + '.' : '') + '_' + ref.table.toLowerCase() + '_meta';
+  mc.querySQL('SELECT ' + nameCol + ' FROM ' + meta, '', '', '', function (err, res) {
     var tags = [];
     if (!err) {
       try { var p = JSON.parse(res); if (p && p.success && p.data && p.data.rows) { for (var i = 0; i < p.data.rows.length; i++) tags.push(String(p.data.rows[i][0])); } } catch (e) {}
@@ -298,7 +303,7 @@ function resolveOHLC(spec, allTags) {
 // 테이블에 ROLLUP 테이블이 있는지 탐지 (describe_table와 동일 쿼리). cb(boolean).
 // 탐지 실패 시 false(DATE_TRUNC) — DATE_TRUNC는 ROLLUP 테이블에서도 동작하므로 안전한 기본값.
 function detectRollupAvailable(mc, table, cb) {
-  var u = String(table).toUpperCase();
+  var u = parseTableRef(table).table;
   mc.querySQL("SELECT COUNT(*) FROM M$SYS_TABLES WHERE NAME LIKE '_" + u + "_ROLLUP_%' AND FLAG = 2", '', '', '', function (err, res) {
     if (err) return cb(false);
     var n = 0;
@@ -421,6 +426,11 @@ function register(registry, mc) {
       // 컴파일 전 DB에서 자동 주입: ① 실제 컬럼명(커스텀 컬럼 대응) ② 집계면 ROLLUP 가용성(ROLLUP/DATE_TRUNC).
       // 모델은 컬럼명도 ROLLUP 유무도 몰라도 됨 — 도구가 채운다.
       if (spec && typeof spec === 'object' && spec.table) {
+        // 이름을 소유자·database 까지 한 번 해석해 둔다 — 아래의 컬럼·태그·시간범위·점개수 조회가
+        // 모두 이 값을 쓴다. 접두 없이 두면 남의 소유 테이블에서 태그 목록이 조용히 비어(빈 차트)
+        // 시간범위 탐지도 실패한다. 해석 실패는 무시하고 원래 이름으로 진행(기존 오류 흐름 유지).
+        resolveTableRef(mc, spec.table, function (refErr, ref) {
+        if (!refErr && ref) spec.table = ref.qualified;
         detectColumns(mc, spec.table, function (c) {
           spec.nameCol = c.n; spec.timeCol = c.t; spec.valueCol = c.v;
           resolveTimeRange(mc, spec, function () { // timeRange 누락/범위밖 → 캐시 경계로 자동 보정(0건 방지)
@@ -451,6 +461,7 @@ function register(registry, mc) {
           });
           }); // resolveTimeRange
         });
+        }); // resolveTableRef
       } else {
         proceed();
       }

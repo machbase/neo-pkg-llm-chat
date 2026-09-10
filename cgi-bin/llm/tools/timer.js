@@ -1,4 +1,5 @@
 var { argStr, argBool } = require('./registry');
+var { withUserRoot } = require('./paths');
 
 function register(registry, mc) {
   registry.register({
@@ -34,7 +35,9 @@ function register(registry, mc) {
     fn: function (args, cb) {
       var name = argStr(args, 'name', '');
       var schedule = argStr(args, 'schedule', '');
-      var tqlPath = argStr(args, 'path', '');
+      // save_tql_file 이 {user}/ 아래 저장하므로 타이머가 실행할 경로도 같아야 한다.
+      // 안 맞으면 타이머가 파일을 못 찾아 매 주기 실패한다(조용히 — 실행 로그를 봐야 보인다).
+      var tqlPath = withUserRoot(mc, argStr(args, 'path', ''));
       var autoStart = argBool(args, 'auto_start', false);
       if (!name || !schedule || !tqlPath) return cb(null, 'Error: name, schedule, and path are required');
 

@@ -17,10 +17,10 @@ export function MachbaseSection({ config, onChange, errors = [] }: Props) {
     const hasError = (field: string) => errors.includes(`machbase.${field}`)
 
     return (
-        <div className="card">
-            <div className="card-title">
+        <div className="settings-section">
+            <div className="settings-section-header">
                 <div>
-                    <h3>Machbase Connection</h3>
+                    <h3>Machbase connection</h3>
                     <p className="text-sm text-on-surface-secondary mt-1">Database connection settings for Machbase Neo</p>
                 </div>
             </div>

@@ -8,9 +8,8 @@ var ReportOmissionGuard = {
     if (msg.toolCalls && msg.toolCalls.length > 0) return msg;
 
     // 리포트 모드에서 save_html_report가 불렸는지 확인.
-    // ※ Report 스킬은 현재 save_html_report만 갖는다(예측 리포트는 "예측해줘" → forecast_table 경로 전용).
-    //   나중에 Report에 forecast_table을 노출하면 **이 목록에도 반드시 추가**할 것 — 안 그러면 예측 리포트를
-    //   제대로 만들어도 가드가 재촉해 일반 리포트를 하나 더 만든다.
+    // ※ 이 목록은 skill/report.js의 allowTools와 짝을 이룬다 — 여기에 없는 도구로 리포트를 만들면
+    //   가드가 미완성으로 보고 재촉해 리포트가 하나 더 생긴다.
     var REPORT_TOOLS = ['save_html_report'];
     var reportCalled = false;
     for (var i = 0; i < agent.messages.length && !reportCalled; i++) {

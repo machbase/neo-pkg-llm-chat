@@ -1,20 +1,20 @@
 /**
- * Central security guard for tool execution (evaluation indicator #5: error-avoidance).
+ * Central security guard for tool execution.
  *
  * One chokepoint, invoked from registry.execute() for EVERY tool call from EVERY LLM
  * backend, plus a redundant inner check in sql.js. Three jobs:
  *   1) NAME deny-list  — refuse any server-control / shell tool by name (capability-absence backstop).
  *   2) SQL screening   — first-keyword tokenizer (comment/whitespace-stripped, multi-statement
- *                        rejected) blocks INSERT/UPDATE/DELETE/ALTER/TRUNCATE/etc.; DROP gets the
- *                        existing "run it yourself in the console" guidance; CREATE of data
+ *                        rejected) blocks INSERT/UPDATE/DELETE/ALTER/TRUNCATE/etc.; DROP gets a
+ *                        "run it yourself in the console" guidance; CREATE of data
  *                        structures (TAG/LOG/INDEX/ROLLUP) is allowed (timer + legitimate setup),
  *                        but CREATE USER / GRANT / REVOKE and unknown CREATE are denied.
  *   3) TQL screening   — reject forbidden require()s (process/service/shell), and screen every
  *                        SQL(`...`) body inside the TQL with the same SQL rules.
  *
  * NOTE (residual, by design): legitimate timer-collection TQL writes via the APPEND()/INSERT()
- * TQL *sinks* — those are NOT blocked here or the timer feature breaks. The evaluation's
- * "force insert" probe uses `INSERT INTO ... VALUES` (a SQL statement) which IS blocked.
+ * TQL *sinks* — those are NOT blocked here or the timer feature breaks.
+ * `INSERT INTO ... VALUES` (a SQL statement) IS blocked.
  */
 
 // Mutation verbs we refuse outright. DROP and CREATE are handled separately above this test.

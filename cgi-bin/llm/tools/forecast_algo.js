@@ -364,7 +364,7 @@ function fcParseRank(m) {
 function fcRun(ts, ys, opts) {
   opts = opts || {};
   var n = ys.length, DAY = 86400000, i;
-  // 기본 호라이즌 = 학습의 20%(2026-07-15 사용자 확정, 25→20). 이 도구는 정밀 예측이 아니라 **방향성** 용도라
+  // 기본 호라이즌 = 학습의 20%. 이 도구는 정밀 예측이 아니라 **방향성** 용도라
   // 기본값 고정이 맞고, "이후 10일" 같은 자연어 기간 오버라이드는 일부러 안 만든다(사용자가 버킷 단위를 모름).
   var H = opts.horizon; if (!(H >= 1)) H = Math.max(1, Math.round(n * 0.20));
   var L = opts.lookback; if (!(L >= 2)) L = Math.max(10, Math.round(n * 0.33)); if (L > n) L = n; if (L < 2) L = n;

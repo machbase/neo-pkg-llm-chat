@@ -23,6 +23,20 @@ export function getCurrentUser(): string | null {
   }
 }
 
+/** Raw Neo session token, or an empty string when not logged in. */
+export function getAuthToken(): string {
+  return localStorage.getItem('accessToken') ?? '';
+}
+
+/**
+ * Authorization header carrying the Neo session token. The LLM backend verifies it
+ * and derives the user from it, so config calls must send it — without it they are 401.
+ */
+export function authHeaders(): Record<string, string> {
+  const token = localStorage.getItem('accessToken');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 /** Returns true when the current user is the super-admin account */
 export function isSysUser(): boolean {
   return getCurrentUser() === 'sys';

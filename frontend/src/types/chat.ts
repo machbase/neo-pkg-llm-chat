@@ -6,6 +6,12 @@ export interface Message {
     type: 'block' | 'msg' | 'answer' | 'question' | 'error';
     isProcess: boolean;
     isInterrupt: boolean;
+    /**
+     * Display label of the model that produced this message, e.g. "claude / haiku".
+     * Only stamped on streamed answers, so its presence is what gates the footer:
+     * stop notices and errors carry none and stay bare.
+     */
+    model?: string;
 }
 
 export interface PkgModel {

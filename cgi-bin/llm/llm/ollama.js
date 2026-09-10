@@ -21,8 +21,9 @@ function ollamaChat(client, messages, toolDefs, cb) {
     model: client.model, messages: messagesToOllama(messages),
     tools: toolDefs && toolDefs.length > 0 ? toolDefs : undefined, stream: false,
     // qwen3.5 등 네이티브 thinking 모델: 신버전 ollama(0.17+)는 프롬프트 /no_think을 무시하고 think 파라미터로만 제어.
-    // think:false로 thinking 비활성 → 답변 내용 동일하면서 호출당 수백 토큰+수초 절약(확인: eval_count 820→5).
+    // think:false로 thinking 비활성 → 답변 내용 동일하면서 호출당 수백 토큰+수초 절약.
     think: false,
+    keep_alive: '30m',
     options: { temperature: client.temperature, num_predict: client.numPredict, num_ctx: client.numCtx, num_gpu: client.numGPU, num_keep: client.numKeep },
   };
   var body = JSON.stringify(reqBody);
@@ -46,7 +47,8 @@ function ollamaChatSync(client, messages, toolDefs) {
   var reqBody = {
     model: client.model, messages: messagesToOllama(messages),
     tools: toolDefs && toolDefs.length > 0 ? toolDefs : undefined, stream: false,
-    think: false,     // ollamaChat 참조: 네이티브 thinking 비활성(프롬프트 /no_think은 신버전 ollama가 무시)
+    think: false,          // ollamaChat 참조: 네이티브 thinking 비활성(프롬프트 /no_think은 신버전 ollama가 무시)
+    keep_alive: '30m',     // ollamaChat 참조: 기본 5분이면 유휴 후 첫 질문이 모델 재적재 비용을 문다
     options: { temperature: client.temperature, num_predict: client.numPredict, num_ctx: client.numCtx, num_gpu: client.numGPU, num_keep: client.numKeep },
   };
   var body = JSON.stringify(reqBody);

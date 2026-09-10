@@ -1,29 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { Marked } from 'marked';
-import { markedHighlight } from 'marked-highlight';
-import hljs from 'highlight.js';
+import DOMPurify from 'dompurify';
+import { renderMarkdown, PURIFY_CONFIG } from './markdown';
 import { ChatExecResult } from './ChatExecResult';
-
-const marked = new Marked(
-    markedHighlight({
-        langPrefix: 'hljs language-',
-        highlight(code: string, lang: string) {
-            if (lang && hljs.getLanguage(lang)) {
-                return hljs.highlight(code, { language: lang }).value;
-            }
-            return hljs.highlightAuto(code).value;
-        },
-    }),
-    {
-        renderer: {
-            link({ href, text }) {
-                const escaped = href.replace(/"/g, '&quot;');
-                return `<a href="${escaped}" onclick="event.preventDefault();(window.top||window).open('${escaped}','_blank')" rel="noopener noreferrer">${text}</a>`;
-            },
-        },
-    }
-);
 
 interface RenderMdProps {
     content: string;
@@ -52,7 +31,7 @@ const normalizeLang = (raw: string | undefined): ExecLang | null => {
 };
 
 // lang prefix가 명시 안 됐거나 매칭 실패 시 코드 내용으로 TQL/SQL 추론
-const TQL_KEYWORDS = /\b(FAKE|CHART(_LINE|_BAR|_SCATTER|_PIE)?|MAPVALUE|MAPKEY|MAPDATA|PUSHKEY|PUSHVALUE|TAKE|DROP|FILTER|GROUP|JSON|CSV|TENGO|SCRIPT|BYTES|STRING|TIMEWINDOW|oscillator|range)\s*\(/;
+const TQL_KEYWORDS = /\b(FAKE|CHART(_LINE|_BAR|_SCATTER|_PIE)?|MAPVALUE|MAPKEY|MAPDATA|PUSHKEY|PUSHVALUE|TAKE|DROP|FILTER|GROUP|JSON|CSV|TENGO|SCRIPT|BYTES|STRING|TIMEWINDOW|oscillator)\s*\(/;
 const SQL_KEYWORDS = /\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|CREATE\s+TABLE|DROP\s+TABLE|EXEC)\b/i;
 const detectLangFromCode = (code: string): ExecLang | null => {
     if (TQL_KEYWORDS.test(code)) return 'tql';
@@ -71,31 +50,9 @@ export const RenderMd = ({ content, isInterrupt, isProcess = false, disableExec 
 
     const html = useMemo(() => {
         if (isInterrupt || !content) return '';
-        // Fix: marked fails to parse **bold**/*italic*/~~strike~~ with inner spaces or CJK word boundaries
-        const fixed = content.split('\n').map(line => {
-            const codes: string[] = [];
-            line = line.replace(/`[^`]+`/g, (m) => { codes.push(m); return '%%C' + (codes.length - 1) + '%%'; });
-            // Bold
-            line = line.replace(/\*\*\s*([^*]+?)\s*\*\*/g, '**$1**');
-            line = line.replace(/(\*\*\S+?\*\*)(?=[가-힣a-zA-Z0-9])/g, '$1 ');
-            // Bold+Italic (***)
-            line = line.replace(/\*\*\*\s*([^*]+?)\s*\*\*\*/g, '***$1***');
-            line = line.replace(/(\*\*\*\S+?\*\*\*)(?=[가-힣a-zA-Z0-9])/g, '$1 ');
-            // Italic (single *)
-            line = line.replace(/(?<!\*)\*\s+([^*]+?)\s*\*(?!\*)/g, '*$1*');
-            line = line.replace(/(?<!\*)\*([^*]+?)\s+\*(?!\*)/g, '*$1*');
-            line = line.replace(/((?<!\*)\*[^*]+?\*(?!\*))(?=[가-힣a-zA-Z0-9])/g, '$1 ');
-            // Strikethrough
-            line = line.replace(/~~\s*([^~]+?)\s*~~/g, '~~$1~~');
-            line = line.replace(/(~~\S+?~~)(?=[가-힣a-zA-Z0-9])/g, '$1 ');
-            // Fix: bare URL directly followed by Korean → marked's autolink swallows the Korean
-            // (e.g. ".../machbase-neo/에서"). Insert a space so the link ends at the URL. Proper [text](url)
-            // links are unaffected (URL there is followed by ')', not Korean); inline code is masked above.
-            line = line.replace(/(https?:\/\/[\w\-._~:\/?#\[\]@!$&'()*+,;=%]+)(?=[가-힣])/g, '$1 ');
-            line = line.replace(/%%C(\d+)%%/g, (_, i) => codes[parseInt(i)]);
-            return line;
-        }).join('\n');
-        return marked.parse(fixed) as string;
+        // 경계 방어 — markdown.ts의 렌더러를 빠져나온 것이 있어도 innerHTML에 닿기 전에 걷어낸다.
+        // (marked를 올려 싱크가 늘어도 여기서 막힌다)
+        return DOMPurify.sanitize(renderMarkdown(content), PURIFY_CONFIG);
     }, [content, isInterrupt]);
 
     // fill=currentColor — the button carries the themed colour, so the glyph
@@ -208,7 +165,7 @@ export const RenderMd = ({ content, isInterrupt, isProcess = false, disableExec 
             }
 
             const shouldMountRun =
-                (normalizedLang === 'tql' || normalizedLang === 'sql' || normalizedLang === 'sh') &&
+                (normalizedLang === 'tql' || normalizedLang === 'sql') &&
                 !disableExec &&
                 isProcess === false;
 
@@ -221,6 +178,24 @@ export const RenderMd = ({ content, isInterrupt, isProcess = false, disableExec 
 
     // dangerouslySetInnerHTML 객체 reference 안정화 — html string 동일이면 React가 innerHTML re-set skip.
     const dangerousHTML = useMemo(() => ({ __html: html }), [html]);
+
+    // 패키지 UI는 iframe 안에서 뜨므로 링크를 최상위 창으로 연다. 인라인 onclick을 대신하는 위임 핸들러.
+    useEffect(() => {
+        const el = containerRef.current;
+        if (!el) return;
+        const onClick = (e: MouseEvent) => {
+            const a = (e.target as HTMLElement | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
+            if (!a || !el.contains(a)) return;
+            e.preventDefault();
+            try {
+                (window.top || window).open(a.href, '_blank', 'noopener');
+            } catch {
+                window.open(a.href, '_blank', 'noopener');
+            }
+        };
+        el.addEventListener('click', onClick);
+        return () => el.removeEventListener('click', onClick);
+    }, []);
 
     // RenderMd unmount 시 모든 active root cleanup
     useEffect(() => {

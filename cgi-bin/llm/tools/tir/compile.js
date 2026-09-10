@@ -17,6 +17,8 @@ var validate = require('./schema').validate;
 var algoSource = require('../forecast_algo').algoSource; // forecast 예측 엔진 소스(SCRIPT에 구워넣음 → 워커와 동일 로직, 라이브 재계산)
 
 // --- 레이아웃 상수 (conventions.md 6차/8차/9차 확정값) ---
+// gridBottom은 [줌 슬라이더 → 범례 1줄 → x축 라벨] 한 벌만 담는다. 시리즈가 많으면 기본 범례는
+// 여러 줄로 접히며 위(=x축 라벨)를 침범하므로, 범례는 항상 type:"scroll"(줄바꿈 없이 페이지 화살표)로 낸다.
 var LAYOUT = {
   gridLeft: 72, gridLeftWide: 90, gridRight: 30, gridTop: 66, gridBottom: 78,
   legendBottom: 30, zoomBottom: 6, zoomHeight: 16,
@@ -418,7 +420,7 @@ function chartBlock(spec, seriesNames) {
     '    chartOption({\n' +
     '        title: ' + titleObj + ',\n' +
     '        grid: { left: ' + gridLeft + ', right: ' + LAYOUT.gridRight + ', top: ' + LAYOUT.gridTop + ', bottom: ' + LAYOUT.gridBottom + ' },\n' +
-    '        legend: { bottom: ' + LAYOUT.legendBottom + ' },\n' +
+    '        legend: { type: "scroll", bottom: ' + LAYOUT.legendBottom + ' },\n' +
     '        tooltip: { trigger: "axis" },\n' +
     '        xAxis: { type: "time" },\n' +
     '        yAxis: { type: "value" },\n' +
@@ -476,7 +478,7 @@ function forecastChartBlock(spec) {
     '    chartOption({\n' +
     '        title: ' + titleObj + ',\n' +
     '        grid: { left: ' + gridLeft + ', right: ' + LAYOUT.gridRight + ', top: ' + LAYOUT.gridTop + ', bottom: ' + LAYOUT.gridBottom + ' },\n' +
-    '        legend: { bottom: ' + LAYOUT.legendBottom + ', data: ["실측", "예측", "95% 구간", "백테스트(검증)"] },\n' +
+    '        legend: { type: "scroll", bottom: ' + LAYOUT.legendBottom + ', data: ["실측", "예측", "95% 구간", "백테스트(검증)"] },\n' +
     '        tooltip: { trigger: "axis" },\n' +
     '        xAxis: { type: "time" },\n' +
     '        yAxis: { type: "value", scale: true },\n' +

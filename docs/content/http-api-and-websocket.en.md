@@ -3,7 +3,7 @@ title: HTTP API and WebSocket
 weight: 50
 ---
 
-#
+# HTTP API and WebSocket
 
 This document summarizes the HTTP API endpoints and WebSocket protocol exposed by the LLM Chat package service.
 

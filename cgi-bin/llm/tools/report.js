@@ -1,6 +1,7 @@
 var { argStr } = require('./registry');
 var { expandReportTemplate, loadReportTemplates, getTemplateMeta, listReportTemplates } = require('./report_templates');
 var { detectColumns } = require('./tql_spec');
+var { withUserRoot, ensureParentOf, shortTableName } = require('./paths');
 
 // Cache DB-derived params from 1st call so 2nd call (with analysis) can reuse them
 var _paramsCache = {};
@@ -232,9 +233,13 @@ function saveHtmlReport(mc, args, cb) {
   var kind = templateKind(templateID);
   var now = new Date();
   var ts = now.getFullYear() + pad2(now.getMonth() + 1) + pad2(now.getDate()) + '_' + pad2(now.getHours()) + pad2(now.getMinutes()) + pad2(now.getSeconds());
-  var filename = anyStr(norm, 'filename') || (tableName + '/' + tableName + '_Analysis_Report_' + ts + '.html');
+  // 경로·파일명에는 접두를 뺀 테이블 이름만 쓴다(폴더가 MACHBASEDB.SYS.X 로 생기지 않게).
+  var pathName = shortTableName(tableName);
+  var filename = anyStr(norm, 'filename') || (pathName + '/' + pathName + '_Analysis_Report_' + ts + '.html');
   if (!filename.toLowerCase().endsWith('.html')) filename += '.html';
-  if (filename.indexOf('/') < 0) filename = tableName + '/' + filename;
+  if (filename.indexOf('/') < 0) filename = pathName + '/' + filename;
+  // 계정 폴더로 감싼다 — 리포트 링크도 이 이름에서 만들어진다.
+  filename = withUserRoot(mc, filename);
 
   var params = { GENERATED_DATE: formatDateLocal(now), TABLE: tableName };
   console.println('[report] === saveHtmlReport called === table=' + tableName + ' templateID=' + templateID);
@@ -555,7 +560,6 @@ function saveToFile(mc, templateID, params, filename, cb) {
 
   var html;
   try { html = expandReportTemplate(templateID, params); } catch (e) { return cb(null, 'Template error: ' + e.message); }
-  var slashIdx = filename.indexOf('/');
   function doWrite() {
     mc.writeFile(filename, html, function (err) {
       if (err) return cb(null, 'File save failed: ' + err.message);
@@ -563,9 +567,7 @@ function saveToFile(mc, templateID, params, filename, cb) {
       cb(null, 'Report saved: ' + filename + '\n\n[리포트 열기](' + reportURL + ')');
     });
   }
-  if (slashIdx > 0) {
-    mc.createFolder(filename.substring(0, slashIdx), function () { doWrite(); });
-  } else { doWrite(); }
+  ensureParentOf(mc, filename, function () { doWrite(); });
 }
 
 // --- R-3 Driving Data Fetcher (aligned with Go report.go) ---
@@ -1318,7 +1320,7 @@ function findOHLCVTags(tags, stock) {
 function extractStockPrefix(tagVal) { var c = tagVal.split(',')[0].trim(); ['_close', '_open', '_high', '_low', '_volume', '_adj_close'].forEach(function (s) { var idx = c.toLowerCase().indexOf(s); if (idx > 0) c = c.substring(0, idx); }); return c.toUpperCase(); }
 function calcTotalCount(csvData) { var total = 0; try { var p = JSON.parse(csvData); if (p && p.data && p.data.rows) p.data.rows.forEach(function (r) { if (r.length >= 2) total += parseInt(r[1], 10) || 0; }); } catch (e) {} return total; }
 // ⚠️ 인라인 스타일 색은 **CSS 변수 + 옛 색 폴백**(var(--x, #구색)) 형태로만 쓸 것.
-//    색을 하드코딩했더니 다크 테마 템플릿에서 남색 제목(#1a365d)이 배경에 묻혀 안 보였다(라이브 스크린샷).
+//    하드코딩한 색은 다크 테마 템플릿에서 배경에 묻힌다(남색 제목 #1a365d 등).
 //    변수를 정의한 새 템플릿(Neo 토큰)에선 테마를 따라가고, 변수가 없는 고객 커스텀 템플릿에선 폴백 색 그대로 — 하위호환.
 function mdToHTML(text) {
   if (!text) return '';

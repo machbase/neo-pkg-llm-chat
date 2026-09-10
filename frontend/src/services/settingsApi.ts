@@ -1,11 +1,12 @@
 import type { AppConfig, ApiResponse } from "../types/settings";
 import { defaultConfig } from "../types/settings";
 import { getApiBase } from "./baseUrl";
+import { authHeaders } from "../utils/auth";
 
 // ── Config list ──
 export async function getConfigList(): Promise<string[]> {
     const API_BASE = await getApiBase();
-    const res = await fetch(`${API_BASE}/configs`);
+    const res = await fetch(`${API_BASE}/configs`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const body = (await res.json()) as ApiResponse<{ configs: Array<string | { name: string; running: boolean }> }>;
     if (!body.success) throw new Error(body.reason);
@@ -16,7 +17,7 @@ export async function getConfigList(): Promise<string[]> {
 // ── Config detail ──
 export async function getConfig(name: string): Promise<AppConfig> {
     const API_BASE = await getApiBase();
-    const res = await fetch(`${API_BASE}/configs/${encodeURIComponent(name)}`);
+    const res = await fetch(`${API_BASE}/configs/${encodeURIComponent(name)}`, { headers: authHeaders() });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const body = (await res.json()) as ApiResponse<{ config: AppConfig; running: boolean }>;
     if (!body.success) throw new Error(body.reason);
@@ -46,7 +47,7 @@ export async function createConfig(name: string, config: AppConfig): Promise<str
     const API_BASE = await getApiBase();
     const res = await fetch(`${API_BASE}/configs/${encodeURIComponent(name)}?_method=PUT`, {
         method: "POST",
-        headers: { "Content-Type": "text/plain" },
+        headers: { "Content-Type": "text/plain", ...authHeaders() },
         body: JSON.stringify(config),
     });
     const body = (await res.json()) as ApiResponse<{ name: string }>;
@@ -59,7 +60,7 @@ export async function updateConfig(name: string, config: AppConfig): Promise<str
     const API_BASE = await getApiBase();
     const res = await fetch(`${API_BASE}/configs/${encodeURIComponent(name)}?_method=PUT`, {
         method: "POST",
-        headers: { "Content-Type": "text/plain" },
+        headers: { "Content-Type": "text/plain", ...authHeaders() },
         body: JSON.stringify(config),
     });
     const body = (await res.json()) as ApiResponse<{ name: string }>;
@@ -72,7 +73,7 @@ export async function deleteConfig(name: string): Promise<void> {
     const API_BASE = await getApiBase();
     const res = await fetch(`${API_BASE}/configs/${encodeURIComponent(name)}?_method=DELETE`, {
         method: "POST",
-        headers: { "Content-Type": "text/plain" },
+        headers: { "Content-Type": "text/plain", ...authHeaders() },
     });
     const body = (await res.json()) as ApiResponse<{ name: string }>;
     if (!body.success) throw new Error(body.reason);

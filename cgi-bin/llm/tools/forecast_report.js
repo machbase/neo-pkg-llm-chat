@@ -6,10 +6,10 @@
 //
 // 차트는 외부 라이브러리 없이 canvas 2D(기존 리포트 관례 — 오프라인 안전, CDN 불가 환경 대응).
 // 분석문은 **결정론적으로 생성**한다(LLM 2차 호출 없음): 리포트 저장을 모델에게 맡기면 2차 호출을 건너뛰고
-// 가짜 URL을 지어내는 사례가 있었다(report-save-fabrication 계열). 숫자는 도구가, 서술은 템플릿이 책임진다.
+// 가짜 URL을 지어낸다. 숫자는 도구가, 서술은 템플릿이 책임진다.
 
 // ★템플릿은 **neo/forecast/** 에 둔다 — neo/report/ 가 아니다.
-//   neo/report/ 에 넣었더니 리포트 생태계 전체에 자동 등록돼 3군데서 샜다:
+//   neo/report/ 에 두면 리포트 생태계 전체에 자동 등록돼 세 군데로 샌다:
 //     ① listReportTemplates() → LLM에게 "사용 가능한 리포트 템플릿"으로 노출 → save_html_report가 고름
 //     ② matchBuiltinByQuery("예측 리포트") → 제목 토큰 매칭
 //     ③ 그 경로로 가면 {FORECAST_DATA_JSON}이 미치환 → `var D = {FORECAST_DATA_JSON};` JS 문법오류 → **빈 페이지**
@@ -17,6 +17,7 @@
 //   **폴더를 분리하면 리포트 스캐너가 애초에 못 본다**(구조적으로 불가능). 그래서 로더도 여기서 따로 갖는다.
 var fs = require('fs');
 var path = require('path');
+var { withUserRoot, ensureParentOf, shortTableName } = require('./paths');
 
 var _tmplCache = null, _tmplTs = 0;
 var TMPL_TTL = 30000;
@@ -165,11 +166,11 @@ function tagPayload(parsed, res, descOf) {
 
 // 결정론적 분석문(HTML). LLM 없이 **수치 근거로** 쓴다. 예측값을 확정된 미래처럼 서술하지 않는다.
 //
-// ★가볍게 + 라벨 행으로(2026-07-13/14 사용자 확정):
+// ★가볍게 + 라벨 행으로:
 //   ① 내용은 "방향 / 예측값(대표) / 얼마나 믿을지 / 한계"만 — 추세 연장 기법이 말할 수 있는 전부다.
 //      섹션을 잘게 쪼개 길게 쓰면 과잉 분석("추세만 보는 내용을 잘게 쪼갤 필요 있나").
-//      '데이터' 행은 **삭제**(스펙 패널과 100% 중복 — 분석이 요약표 바로 아래로 오면서 스펙 패널과 붙었다).
-//   ② 형식은 **라벨 + 한 줄 행**(.a-row) — 산문 문단을 이어 붙였더니 "내용은 적절한데 가독성이 떨어진다".
+//      '데이터' 행은 **넣지 않는다**(바로 위 스펙 패널과 100% 중복).
+//   ② 형식은 **라벨 + 한 줄 행**(.a-row) — 산문 문단을 이어 붙이면 가독성이 떨어진다.
 //      항목별로 끊어야 스캔이 된다. 모델 선택 근거·제외 사유 상세는 아래 모델 비교표가 담당(반복 금지).
 function analysisHtml(horizonLabel, rows, items) {
   var ok = [], bad = [], i;
@@ -235,7 +236,7 @@ function analysisHtml(horizonLabel, rows, items) {
     out.push(row('제외', bad.map(function (b) { return '<code>' + esc(b.tag) + '</code> — ' + esc(b.reason); }).join(' &nbsp;·&nbsp; ')));
   }
 
-  // ⑤ 한계 — 추세 연장 기법이라는 것 한 줄. 앰버 콜아웃(a-caution)으로 강조 — 빨강(오류 의미론)은 과함(사용자 확정).
+  // ⑤ 한계 — 추세 연장 기법이라는 것 한 줄. 앰버 콜아웃(a-caution)으로 강조 — 빨강(오류 의미론)은 과하다.
   out.push(row('한계', '과거의 추세·주기를 앞으로 연장하는 통계 기법입니다 — 특정 값이 아니라 <strong>범위와 방향</strong>으로 읽으세요. 모델별 성적·제외 사유는 아래 모델 비교표 참고.', 'a-caution'));
 
   return out.join('\n');
@@ -260,7 +261,7 @@ function statsRows(rows) {
     // 위험 행(MAPE >= RISK_MAPE, "예측 사실상 무의미")만 앞에 상태 점 하나 + MAPE 강조.
     // 모든 셀에 뿌리면 경고 인플레이션이 되므로 **믿기 어려운 행에만** 한정한다(숫자 자체가 이미 신호).
     // 뜻은 **행 전체 호버**로만 안내. ⚠️ 네이티브 title이 아니라 data-tip — title은 커서를 ~1초 정지해야
-    // 떠서 사실상 발견 불가(라이브 피드백). 템플릿의 즉석 툴팁 스크립트(tr[data-tip])가 커서 따라 바로 띄운다.
+    // 떠서 사실상 발견 불가. 템플릿의 즉석 툴팁 스크립트(tr[data-tip])가 커서 따라 바로 띄운다.
     var risk = (r.mape >= RISK_MAPE);
     out.push('<tr' + (risk ? ' data-tip="' + RISK_TIP + '"' : '') + '>' +
       '<td>' + (risk ? '<span class="dot"></span>' : '') + esc(r.tag) + '</td>' +
@@ -321,8 +322,10 @@ function buildAndSave(mc, opts, items, cb) {
   var html;
   try { html = expandTemplate(params); } catch (e) { return cb(e); }
 
-  var filename = table + '/' + table + '_Forecast_Report_' + fileStamp() + '.html';
-  mc.createFolder(table, function () {
+  // 계정 폴더로 감싼다 — 아래 url 도 이 이름에서 만들어진다.
+  var pathName = shortTableName(table);
+  var filename = withUserRoot(mc, pathName + '/' + pathName + '_Forecast_Report_' + fileStamp() + '.html');
+  ensureParentOf(mc, filename, function () {
     mc.writeFile(filename, html, function (err) {
       if (err) return cb(err);
       cb(null, { filename: filename, url: mc.baseURL + '/db/tql/' + filename, sizeKB: Math.round(html.length / 1024) });

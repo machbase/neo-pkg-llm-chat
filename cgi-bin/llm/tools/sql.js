@@ -1,5 +1,5 @@
 var { argStr, argInt } = require('./registry');
-var { extractUserTables, checkTableOwnership } = require('./ownership');
+var { prepareSql, resolveTableRef, listAccessible, qualify } = require('./table_access');
 var rangeCache = require('./range_cache');
 var security = require('./security');
 
@@ -164,20 +164,27 @@ function register(registry, mc) {
   // list_tables
   registry.register({
     name: 'list_tables',
-    description: 'List all TAG tables in Machbase Neo database.',
+    description: 'List accessible TAG tables as fully qualified names (e.g. MACHBASEDB.SYS.BITCOIN). Use the name exactly as listed in SQL/TQL — an unqualified name resolves to the connected account and fails for tables owned by others.',
     parameters: { type: 'object', properties: {} },
     fn: function (args, cb) {
-      var owner = (mc.user || 'SYS').toUpperCase();
-      mc.querySQL("SELECT st.NAME FROM M$SYS_TABLES AS st JOIN M$SYS_USERS AS su ON st.USER_ID = su.USER_ID WHERE su.NAME = '" + owner + "' AND st.FLAG = 0 ORDER BY st.NAME", '', '', '', function (err, result) {
+      // 소유자 조건을 걸지 않는다 — 세션 사용자 기준으로 DB 가 이미 걸러 주므로,
+      // 조건을 걸면 GRANT 로 접근 가능한 테이블이 빠진다.
+      listAccessible(mc, true, function (err, rows) {
         if (err) return cb(null, 'Error: ' + err.message);
-        try {
-          var parsed = JSON.parse(result);
-          if (!parsed.success) return cb(null, 'Error: ' + parsed.reason);
-          var rows = parsed.data.rows;
-          var out = '';
-          for (var i = 0; i < rows.length; i++) out += rows[i][0] + '\n';
-          cb(null, out.trim() || 'No tables found.');
-        } catch (e) { cb(null, 'Error: ' + e.message); }
+        if (rows.length === 0) return cb(null, 'No tables found.');
+        // 표시는 데이터베이스·테이블 두 열로, 쿼리에 쓸 전체 이름은 따로 적어 준다.
+        // 건수도 도구가 확정한다 — 모델이 세면 틀린 수를 답변에 적는다.
+        var out = '| 데이터베이스 | 테이블 |\n|---|---|\n';
+        var full = [];
+        for (var i = 0; i < rows.length; i++) {
+          out += '| ' + rows[i].db + ' | ' + rows[i].table + ' |\n';
+          full.push(qualify(rows[i].db, rows[i].owner, rows[i].table));
+        }
+        out += '\n(' + rows.length + ' tables)\n\n'
+          + 'The table above is already displayed to the user — do not repeat it in your answer. '
+          + 'Use these full names when writing SQL/TQL:\n'
+          + full.join('\n');
+        cb(null, out);
       });
     },
   });
@@ -196,9 +203,11 @@ function register(registry, mc) {
     fn: function (args, cb) {
       var table = argStr(args, 'table_name', '');
       if (!table) return cb(null, 'Error: table_name is required');
-      checkTableOwnership(mc, [table.toUpperCase()], function (ownerErr) {
-        if (ownerErr) return cb(null, 'Error: ' + ownerErr.message);
-        mc.querySQL("SELECT NAME FROM _" + table.toLowerCase() + "_meta", '', '', '', function (err, result) {
+      resolveTableRef(mc, table, function (refErr, ref) {
+        if (refErr) return cb(null, 'Error: ' + refErr.message);
+        // 부속 객체도 소유자 접두가 필요하다 — 접두 없이는 접속 계정 스키마에서 찾는다.
+        var meta = ref.prefix + '._' + ref.table.toLowerCase() + '_meta';
+        mc.querySQL('SELECT NAME FROM ' + meta, '', '', '', function (err, result) {
           if (err) return cb(null, 'Error: ' + err.message);
           try {
             var parsed = JSON.parse(result);
@@ -206,7 +215,7 @@ function register(registry, mc) {
             var rows = parsed.data.rows;
             var tags = [];
             for (var i = 0; i < rows.length; i++) tags.push(rows[i][0]);
-            cb(null, '[' + table + '] ' + tags.join(', '));
+            cb(null, '[' + ref.qualified + '] ' + tags.join(', '));
           } catch (e) { cb(null, 'Error: ' + e.message); }
         });
       });
@@ -216,7 +225,7 @@ function register(registry, mc) {
   // describe_table
   registry.register({
     name: 'describe_table',
-    description: 'Get table type (TAG/LOG) and column structure (name, type, role). Call this BEFORE generating TQL/SQL to know the actual column names. Includes ownership check.',
+    description: 'Get table type (TAG/LOG) and column structure (name, type, role). Call this BEFORE generating TQL/SQL to know the actual column names. Accepts an owner-qualified name (e.g. SYS.BITCOIN) and verifies access.',
     parameters: {
       type: 'object',
       properties: {
@@ -229,9 +238,13 @@ function register(registry, mc) {
       var table = argStr(args, 'table_name', '');
       if (!table) return cb(null, 'Error: table_name is required');
       var profile = (args.profile === true || String(args.profile) === 'true');
-      var owner = (mc.user || 'SYS').toUpperCase();
 
-      var upperTable = table.toUpperCase();
+      // 접속 계정으로 고정하면 GRANT 로 접근 가능한 남의 테이블이 빠지고, 부속
+      // 객체(_meta·v$stat)도 소유자 접두 없이는 찾지 못한다.
+      resolveTableRef(mc, table, function (refErr, ref) {
+      if (refErr) return cb(null, 'Error: ' + refErr.message);
+      var owner = ref.owner;
+      var upperTable = ref.table;
 
       // 테이블 타입 + 컬럼 정보를 한번에 조회
       var sql = "SELECT m1.TYPE AS TABLE_TYPE, m2.NAME AS COLUMN_NAME, m2.TYPE AS COL_TYPE, m2.FLAG AS COL_FLAG, m2.ID AS COL_ID " +
@@ -254,7 +267,7 @@ function register(registry, mc) {
 
           var tableType = rows[0][0] === 6 ? 'TAG' : 'LOG';
           var TYPE_NAMES = { 5: 'varchar', 6: 'datetime', 8: 'int32', 12: 'int64', 16: 'float', 20: 'double' };
-          var out = '[' + upperTable + '] type: ' + tableType + '\n';
+          var out = '[' + ref.qualified + '] type: ' + tableType + '\n';
 
           var nameCol = '', timeCol = '', valueCol = '';
           for (var i = 0; i < rows.length; i++) {
@@ -293,11 +306,12 @@ function register(registry, mc) {
             else out += 'ROLLUP: not available\n';
             // 태그별 요약통계 가상뷰 — 항상 존재(TAG 테이블). 태그별 개수/최소/최대/기간 질문에서 모델이
             // GROUP BY 조합을 직접 만들다 컬럼(MIN/MAX(VALUE) 등)을 빼먹는 것 방지.
-            out += 'STAT: v$' + upperTable + '_stat (per-tag WHOLE-RANGE summary: name, row_count, min_value, max_value, min_time, max_time) — 태그별 "전체 기간" 개수·최소·최대·기간 요약 전용. 시간별/일별 등 시간 버킷 집계에는 사용 금지 — 그 경우 ROLLUP/DATE_TRUNC를 쓰세요\n';
+            out += 'STAT: ' + ref.prefix + '.v$' + upperTable + '_stat (per-tag WHOLE-RANGE summary: name, row_count, min_value, max_value, min_time, max_time) — 태그별 "전체 기간" 개수·최소·최대·기간 요약 전용. 시간별/일별 등 시간 버킷 집계에는 사용 금지 — 그 경우 ROLLUP/DATE_TRUNC를 쓰세요\n';
             if (!profile) return cb(null, out.trim());
-            appendProfile(mc, upperTable, nameCol || 'NAME', timeCol || 'TIME', valueCol || 'VALUE', out, cb);
+            appendProfile(mc, ref, nameCol || 'NAME', timeCol || 'TIME', valueCol || 'VALUE', out, cb);
           });
         } catch (e) { cb(null, 'Error: ' + e.message); }
+      });
       });
     },
   });
@@ -321,8 +335,8 @@ function register(registry, mc) {
       var rawSql = argStr(args, 'sql_query', '');
       if (!rawSql) return cb(null, 'Error: sql_query is required');
       var sql = sanitizeSql(rawSql); // 방언 자동교정(DATE_TRUNC 인자순서 등) — 약한 모델 기계적 실수 결정론 방어
-      // 교정됐으면 실제 실행 SQL을 같은 포맷으로 로그 — 평가 채점기(raw의 sql_query: 라인 재실행)가
-      // 모델의 원본(실행 불가)이 아니라 실제 실행된 쿼리를 검증할 수 있게.
+      // 교정됐으면 실제 실행 SQL을 같은 포맷으로 로그 — 로그의 sql_query: 줄을 읽는 쪽이
+      // 모델의 원본(실행 불가)이 아니라 실제 실행된 쿼리를 보게 한다.
       if (sql !== rawSql) console.println('  |- sql_query: ' + sql);
 
       var upper = sql.toUpperCase().trim();
@@ -349,10 +363,11 @@ function register(registry, mc) {
         sql = sql.replace(/;?\s*$/, '') + ' LIMIT ' + limit;
       }
 
-      var userTables = extractUserTables(sql);
       var finalSQL = sql;
-      checkTableOwnership(mc, userTables, function (ownerErr) {
-        if (ownerErr) return cb(null, 'Error: ' + ownerErr.message);
+      // 접근 확인 + 소유자 접두 자동 보정. 접두를 빼먹은 쿼리는 실패가 확정이므로 실행 전에 고친다.
+      prepareSql(mc, finalSQL, function (accessErr, preparedSQL) {
+        if (accessErr) return cb(null, 'Error: ' + accessErr.message);
+        finalSQL = preparedSQL;
         // Always request JSON from Machbase, format to CSV in code if needed
         mc.querySQL(finalSQL, timeformat, timezone, '', function (err, result) {
           if (err) return cb(null, 'Error: ' + err.message + hintForError(err.message, finalSQL));
@@ -382,9 +397,10 @@ function register(registry, mc) {
 }
 
 // Append dashboard profile (tags + per-tag stats + time range) for TAG tables — one-call exploration.
-function appendProfile(mc, table, nameCol, timeCol, valueCol, out, cb) {
-  var tableLower = table.toLowerCase();
-  mc.querySQL('SELECT ' + nameCol + ' FROM _' + tableLower + '_meta', '', '', '', function (errT, resT) {
+function appendProfile(mc, ref, nameCol, timeCol, valueCol, out, cb) {
+  var table = ref.qualified;
+  var meta = ref.prefix + '._' + ref.table.toLowerCase() + '_meta';
+  mc.querySQL('SELECT ' + nameCol + ' FROM ' + meta, '', '', '', function (errT, resT) {
     var tags = [];
     if (!errT) {
       try {

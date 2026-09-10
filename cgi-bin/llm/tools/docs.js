@@ -61,21 +61,39 @@ function register(registry, mc) {
         var top = [];
         for (var j = 0; j < scored.length && j < 12; j++) top.push(scored[j].r);
         var out = 'Found ' + scored.length + ' document(s)' + (scored.length > top.length ? ' (top ' + top.length + ')' : '') + ':\n';
+        // 요약을 함께 보여준다 — 모델은 제목·키워드만으로 12개 중 무엇을 열지 골라야 했고,
+        // 정답이 1위인데도 지나치는 일이 잦았다. 본문을 더 주는 대신 판단 근거만 한 줄 준다.
         for (var k = 0; k < top.length; k++) {
-          out += '- ' + top[k].path + ' (' + top[k].title + ') [' + top[k].keywords + ']\n';
+          out += '- ' + docProduct(top[k].path) + ' ' + top[k].path + ' (' + top[k].title + ') [' + top[k].keywords + ']\n';
+          if (top[k].summary) out += '    → ' + top[k].summary + '\n';
         }
-        out += sectionHints(neoDir, top, tokens);
-        // 접전(top-1과 CLOSE_MARGIN 이내) 문서가 2개 이상이면 winner-take-all 폴백: 각 접전 문서의 관련 섹션을 인라인.
-        // 검색은 문서 1개만 읽는 구조라 1위가 틀리면 폴백이 없음 → 정답이 2·3위에 있어도 못 봄(예: DBMS machadmin vs machbase-neo restore).
+        if (top.some(function (r) { return isDbmsDoc(r.path); }) && top.some(function (r) { return !isDbmsDoc(r.path); })) {
+          out += PRODUCT_NOTE;
+        }
+        var docCache = {}; // 같은 문서를 힌트·발췌가 각각 읽고 파싱하지 않도록 한 번의 검색 안에서 공유
+        out += sectionHints(neoDir, top, tokens, docCache);
+        // 카탈로그 점수는 정답 문서를 1위로 올리기에 충분하지 않다 — 상위 문서 몇 건의 관련 섹션을
+        // 결과에 직접 인라인해, 정답이 2·3위에 있어도 모델이 보게 한다(검색은 문서 1개만 읽는 구조라 다른 폴백이 없다).
         var CLOSE_MARGIN = 4, CLOSE_MAX = 3;
         var b0 = baseScoreRow(scored[0].r, tokens); // 1위의 base 점수(보너스 제외) 기준
         var close = [];
         for (var c = 0; c < scored.length && close.length < CLOSE_MAX; c++) if (baseScoreRow(scored[c].r, tokens) >= b0 - CLOSE_MARGIN) close.push(scored[c].r);
+        // Neo/DBMS는 별개 제품이라 같은 주제(백업·롤업·태그테이블…)를 서로 다르게 설명한다. 접전 목록이 한쪽
+        // 제품으로만 채워지면 모델이 반대편 제품의 답을 아예 못 본다(DBMS RESTORE DATABASE만 읽고
+        // machbase-neo restore를 놓치는 식). 반대편 최상위 1건을 끼워 넣어 양쪽을 모두 보게 한다.
+        if (close.length) {
+          var hasDbms = close.some(function (r) { return isDbmsDoc(r.path); });
+          var other = null;
+          for (var o = 0; o < scored.length; o++) {
+            if (isDbmsDoc(scored[o].r.path) !== hasDbms) { other = scored[o].r; break; }
+          }
+          if (other && close.indexOf(other) < 0 && !close.some(function (r) { return isDbmsDoc(r.path) !== hasDbms; })) close.push(other);
+        }
         if (close.length >= 2) {
-          out += '\n⚠ 상위 ' + close.length + '개 문서 점수 접전 — 정답이 1위가 아닌 문서에 있을 수 있어, 각 문서의 관련 섹션을 아래 첨부합니다(질문에 맞는 것을 고르세요):\n';
+          out += '\n상위 ' + close.length + '개 문서의 관련 섹션 발췌 — 정답이 1위 문서에 없을 수 있으니 질문에 맞는 것을 고르세요:\n';
           for (var cc = 0; cc < close.length; cc++) {
-            var ex = topSectionExcerpt(neoDir, close[cc].path, tokens, 1200);
-            if (ex) out += '\n───── ' + close[cc].path + ' ─────\n' + ex + '\n';
+            var ex = topSectionExcerpt(neoDir, close[cc].path, tokens, 1200, docCache);
+            if (ex) out += '\n───── ' + docProduct(close[cc].path) + ' ' + close[cc].path + ' ─────\n' + ex + '\n';
           }
         }
         cb(null, out.trim());
@@ -97,6 +115,16 @@ function register(registry, mc) {
     fn: function (args, cb) {
       var filePath = cleanFilePath(argStr(args, 'file_identifier', ''));
       if (!filePath) return cb(null, 'Error: file_identifier is required');
+      // 검색을 건너뛰고 바로 읽는 경로에는 [Neo]/[DBMS] 표시가 없어, 모델이 DBMS 전용 기능을
+      // Neo 사용법인 것처럼 답한다(RESTORE DATABASE 등). DBMS 문서일 때만 배너를 붙인다
+      // — Neo가 기본 문맥이라 Neo 문서엔 붙일 필요가 없고, 매 조회 토큰만 늘어난다.
+      var _cb = cb;
+      cb = function (err, text) {
+        if (!err && typeof text === 'string' && text.indexOf('Error:') !== 0 && isDbmsDoc(filePath)) {
+          text = DBMS_DOC_BANNER + text;
+        }
+        return _cb(err, text);
+      };
       var kw = argStr(args, 'section', '').trim().toLowerCase();
       try {
         var neoDir = findNeoDir();
@@ -117,6 +145,13 @@ function register(registry, mc) {
           }
           return cb(null, content);
         }
+
+        // 통째로 들어가는 문서면 section= 을 무시하고 전문을 준다.
+        // 섹션 타겟팅은 한 번에 못 담는 문서를 위한 장치인데, 검색 결과가 섹션 제목을 함께 제안하다 보니
+        // 작은 문서에도 section= 이 붙어 조각만 읽고 답이 다른 절에 있으면 놓친다. 실측: 문서를 통째로
+        // 주면 같은 모델이 65→90(100문항)이고, 조각 읽기로 실패한 19건 중 17건이 section= 을 썼다.
+        // 363개 중 341개가 이 한도 안에 들어오므로 대부분은 전문을 받는다.
+        if (kw && content.length <= TOTAL_CAP) kw = '';
 
         // Section requested → 제목 랭킹(h1-3 + h4~h6 통합 풀) → 본문 매치 중심 발췌 → 섹션 인덱스.
         // 통합 이유: h1-3를 먼저 단락하면 약한 substring 매치(예: 'arrange()'가 'range()' 포함)가
@@ -200,7 +235,7 @@ function register(registry, mc) {
         var out = '', shown = 0;
         for (var i = 0; i < sections.length; i++) {
           var chunk = '## ' + sections[i].title + '\n' + sections[i].content.substring(0, 2000) + '\n\n';
-          // 총량 캡 — 캡 없던 시절 configuration-property.md가 39KB를 반환해 컨텍스트를 밀어냈음
+          // 총량 캡 — 대형 문서 하나가 컨텍스트를 통째로 밀어내는 것을 막는다
           if (out.length + chunk.length > TOTAL_CAP && shown > 0) {
             out += '... (' + (sections.length - shown) + '개 섹션 생략; section_filter로 좁혀 다시 호출하세요)\n';
             break;
@@ -287,6 +322,22 @@ function resolveDocPath(neoDir, filePath) {
 
 
 
+// 지식베이스는 두 제품 문서를 함께 담는다.
+//   dbms/**  = Machbase DBMS(엔진) 문서. 현재 8.7.0 기준으로 선행 작성되어 있어, 이 Neo 빌드에 아직
+//              없는 기능(CTE, RESTORE DATABASE 등)이 포함될 수 있다.
+//   그 외    = Machbase Neo(제품) 문서. 이 어시스턴트의 기본 문맥.
+// 같은 주제를 양쪽이 다르게 설명하므로(백업·롤업·태그테이블…) 출처를 표시하지 않으면 모델이 반대편
+// 제품의 답을 그대로 내놓는다.
+function isDbmsDoc(p) { return /^dbms[\/\\]/.test(String(p)); }
+function docProduct(p) { return isDbmsDoc(p) ? '[DBMS]' : '[Neo]'; }
+var DBMS_DOC_BANNER =
+  '[DBMS 문서] 이것은 Machbase DBMS(엔진) 문서입니다. 8.7.0 기준으로 앞서 작성되어 현재 Neo 빌드에 없는\n' +
+  '기능이 섞여 있을 수 있습니다. machbase-neo 사용법을 묻는 질문이면 이 내용을 Neo 방식인 것처럼 답하지 말고,\n' +
+  'Neo 제품 문서(dbms/ 아닌 경로)를 함께 확인하세요. 답변에는 어느 제품 이야기인지 밝히세요.\n\n';
+var PRODUCT_NOTE =
+  '\n※ [Neo]=Machbase Neo 제품 문서, [DBMS]=Machbase DBMS 엔진 문서(8.7.0 기준이라 현재 Neo 빌드에 없는 기능이 섞일 수 있음).\n' +
+  '  질문이 machbase-neo 사용법이면 [Neo] 문서를 우선하세요. 두 제품의 방식이 다르면 답변에서 어느 쪽인지 밝히세요.\n';
+
 function findNeoDir() {
   var cwd = process.cwd();
   var candidates = [path.join(cwd, 'neo'), path.join(cwd, '..', 'neo'), 'neo'];
@@ -328,7 +379,7 @@ function parseCatalogRows(text) {
     if (cols.length < 4) continue;
     var p = cols[1].trim();
     if (!p || p.indexOf('.md') < 0) continue;
-    rows.push({ path: p, title: cols[2].trim(), keywords: cols[3].trim() });
+    rows.push({ path: p, title: cols[2].trim(), keywords: cols[3].trim(), summary: (cols[4] || '').trim() });
   }
   return rows;
 }
@@ -341,11 +392,18 @@ var SEARCH_STOP = {
   '어떤': 1, '이거': 1, '이것': 1, '그거': 1, '좀': 1, '해': 1, '되는': 1, '위한': 1, '대한': 1,
   'how': 1, 'to': 1, 'the': 1, 'using': 1, 'use': 1, 'want': 1, 'please': 1, 'show': 1, 'method': 1,
   'way': 1, 'what': 1, 'is': 1, 'are': 1, 'of': 1, 'for': 1, 'with': 1, 'and': 1, 'do': 1, 'does': 1,
+  // 영어 전치사·be동사는 거의 모든 문서에 걸려 점수를 나눠준다 — 컷하지 않으면 순위가 우연에 가까워진다.
+  'on': 1, 'in': 1, 'as': 1, 'at': 1, 'by': 1, 'or': 1, 'if': 1, 'it': 1, 'be': 1, 'an': 1,
+  'from': 1, 'this': 1, 'that': 1, 'can': 1, 'when': 1, 'where': 1, 'which': 1, 'not': 1,
 };
+// 한글 한 글자 토큰은 조사가 아니어도 변별력이 없다(대부분의 문서에 걸린다).
+// 단, 의미가 분명한 몇 개는 살린다(축=BASETIME/BASEDISTANCE, 행·열=테이블 구조).
+var KEEP_1CHAR = { '축': 1, '행': 1, '열': 1, '키': 1, '값': 1 };
 // 조사만 정확히 매칭(사용→사용자 같은 내용어 오컷 방지 — 접미가 '자/량' 등이면 조사 아님)
 var JOSA = /^(을|를|은|는|이|가|도|의|에|와|과|로|으로|만|에서|에게|까지|부터)$/;
 function isStop(t) {
-  if (SEARCH_STOP[t]) return true;
+  // bare 조회는 constructor·__proto__ 같은 상속 키까지 불용어로 만들어 검색어를 통째로 없앤다.
+  if (SEARCH_STOP.hasOwnProperty(t)) return true;
   // 한글 불용어 + 조사(방법을/방법은/알려줘를) → 컷. 조사가 아닌 접미(사용자·사용량)는 유지.
   for (var s in SEARCH_STOP) {
     if (!SEARCH_STOP.hasOwnProperty(s)) continue;
@@ -360,16 +418,25 @@ function isStop(t) {
 // 하-기반 2글자+ 어미와 '해서'만(내용어가 이 어미로 끝나는 경우 거의 없어 안전). '해/한/는' 단독은 오컷 위험이라 제외.
 var VERB_END = /(하는지|하는데|하는|하기|하고|하여|하며|하면|해서)$/;
 
-// 검색어 토큰화: 공백/구분자 분리, 소문자. 1글자 라틴 제외(한글 1글자 유지), 어미 스테밍, 불용어 제외.
+// 조사 제거 — 질문은 "machbase-neo를/리눅스에서", 카탈로그는 "machbase-neo/리눅스"라 통째로 미스나던 문제.
+// '로'는 제외: 조사가 아니라 어미의 일부인 경우가 39%(있으므로→있으므, 그대로→그대, 순서대로→순서대)라
+// 정상 어휘를 깨뜨린다. '으로'는 별개로 안전(본문 257건 중 오작동 0).
+var JOSA_END = /(이라는|라는|이란|에서|으로|에게|한테|부터|까지|과|와|의|이|을|를|은|에)$/;
+
+// 검색어 토큰화: 공백/구분자 분리, 소문자. 1글자 라틴 제외(한글 1글자 유지), 어미·조사 스테밍, 불용어 제외.
 function tokenize(keyword) {
-  var parts = String(keyword).toLowerCase().split(/[\s,;|/·]+/);
+  // 괄호도 구분자 — "포트(5654)가" 같은 어절이 통째로 남아 아무것과도 안 맞던 문제.
+  var parts = String(keyword).toLowerCase().split(/[\s,;|/·()[\]]+/);
   var out = [];
   for (var i = 0; i < parts.length; i++) {
     var t = parts[i].trim();
     if (!t) continue;
     var stem = t.replace(VERB_END, '');
     if (stem.length >= 2) t = stem; // 어미 떼고도 2글자↑면 스테밍 적용(과도축약 방지)
+    stem = t.replace(JOSA_END, '');
+    if (stem.length >= 2) t = stem; // 같은 2글자 가드 — 경로→경, 결과→결, 정의→정 차단
     if (!(t.length >= 2 || /[가-힣]/.test(t))) continue;
+    if (t.length === 1 && !KEEP_1CHAR[t]) continue; // 1글자는 KEEP_1CHAR 외엔 전부 컷(조사만 막던 것을 확장)
     if (isStop(t)) continue;
     out.push(t);
   }
@@ -387,11 +454,13 @@ function baseScoreRow(row, tokens) {
 // 행 점수: 토큰별 최고 필드 점수(제목3/키워드2/경로2) 합 + 전 토큰 적중/구문 일치 보너스. 0 = 미적중.
 function scoreRow(row, phrase, tokens) {
   var title = row.title.toLowerCase(), kws = row.keywords.toLowerCase(), p = row.path.toLowerCase();
+  var sum = (row.summary || '').toLowerCase();
   var score = 0, hits = 0;
   for (var i = 0; i < tokens.length; i++) {
     var t = tokens[i], s = 0;
     if (title.indexOf(t) >= 0) s = 3;
     else if (kws.indexOf(t) >= 0) s = 2;
+    else if (sum.indexOf(t) >= 0) s = 2;
     else if (p.indexOf(t) >= 0) s = 2;
     if (s > 0) { score += s; hits++; }
   }
@@ -426,14 +495,22 @@ function nearestRows(rows, phrase) {
   return out;
 }
 
+// 한 번의 검색에서 같은 문서를 여러 번 읽고 파싱하는 것을 막는다(힌트와 발췌가 상위 문서를 공유한다).
+function loadDoc(neoDir, docPath, cache) {
+  if (cache && cache[docPath]) return cache[docPath];
+  var content = fs.readFileSync(path.join(neoDir, docPath), 'utf8');
+  var d = { content: content, sections: parseSections(content) };
+  if (cache) cache[docPath] = d;
+  return d;
+}
+
 // 상위 매치 문서(최대 2개)의 섹션/하위 제목 중 토큰과 맞는 것 → section= 재호출 힌트(왕복 절약)
-function sectionHints(neoDir, topRows, tokens) {
+function sectionHints(neoDir, topRows, tokens, cache) {
   var out = '';
   for (var i = 0; i < topRows.length && i < 2; i++) {
     var titles = [];
     try {
-      var content = fs.readFileSync(path.join(neoDir, topRows[i].path), 'utf8');
-      var secs = parseSections(content);
+      var secs = loadDoc(neoDir, topRows[i].path, cache).sections;
       var all = secs.concat(parseSubsections(secs));
       for (var j = 0; j < all.length && titles.length < 5; j++) {
         var tl = all[j].title.toLowerCase();
@@ -449,10 +526,10 @@ function sectionHints(neoDir, topRows, tokens) {
 
 // 접전(점수 근접) 문서에서 토큰과 가장 많이 겹치는 섹션(+하위)을 캡 길이로 발췌 — winner-take-all 폴백용.
 // 검색이 1개 문서만 읽는 구조라 1위가 틀리면 폴백이 없음 → 접전 문서의 정답 섹션을 결과에 직접 인라인해 모델이 보게 함.
-function topSectionExcerpt(neoDir, docPath, tokens, cap) {
+function topSectionExcerpt(neoDir, docPath, tokens, cap, cache) {
   try {
-    var content = fs.readFileSync(path.join(neoDir, docPath), 'utf8');
-    var sections = parseSections(content);
+    var d = loadDoc(neoDir, docPath, cache);
+    var content = d.content, sections = d.sections;
     if (sections.length <= 1) return content.substring(0, cap).trim();
     // 제목 매칭에 가중(×3) — 장황한 Introduction(본문에 토큰 많음)보다 명령/주제 섹션(제목이 토큰과 일치)을 우선.
     var bestIdx = -1, bestScore = -1;
@@ -475,7 +552,8 @@ function topSectionExcerpt(neoDir, docPath, tokens, cap) {
 }
 
 function parseSections(content) {
-  var lines = content.split('\n');
+  // CRLF 문서는 제목 끝에 CR이 남아 정확일치 티어(제목 === 검색어)가 불발된다.
+  var lines = String(content).replace(/\r\n/g, '\n').split('\n');
   var sections = [];
   var current = null;
   var inFence = false; // track ``` code blocks so '## ...' inside a SQL example isn't a fake section
@@ -644,20 +722,45 @@ function mainTopicsFooter(sections) {
 function sectionIndex(filePath, sections, prefix) {
   // Do NOT print the file path here — weak models echo it as a doc link. The model already holds
   // the file_identifier from its own call; tell it to reuse it and only change section=.
+  // h4~h6도 section=으로 정확 매칭되므로(parseSubsections가 랭킹 풀에 함께 넣는다) 목록에 들여쓰기로
+  // 함께 노출한다. 상위 제목만 보이면 모델이 그것만 부르고, 그 섹션이 SECTION_CAP을 넘으면 뒷부분이
+  // 잘린 채로 끝난다(재호출해도 같은 앞부분만 옴).
   var out = (prefix ? prefix + ' ' : '') +
-    '같은 문서를 section= 인자만 바꿔(영어 키워드) 다시 호출하세요. 사용 가능한 섹션:\n';
-  var n = Math.min(sections.length, INDEX_CAP);
-  for (var i = 0; i < n; i++) out += '- ' + sections[i].title + '\n';
-  if (sections.length > n) out += '…외 ' + (sections.length - n) + '개\n';
-  out += '(섹션 제목 외에 하위(####) 제목·본문 단어도 section=으로 검색됩니다)';
+    '같은 문서를 section= 인자만 바꿔 다시 호출하세요. 아래 제목을 그대로 복사해 넣으세요(번역 금지). 사용 가능한 섹션:\n';
+  // 제목이 아니라 인덱스로 묶는다 — 같은 제목의 섹션이 둘 이상인 문서(예: dashboard.md의 '화면 구성')에서
+  // 제목을 키로 쓰면 한쪽 자식이 양쪽에 모두 붙는다.
+  var kidsOf = [];
+  for (var s = 0; s < sections.length; s++) {
+    var lines = String(sections[s].content || '').split('\n');
+    var inFence = false, list = [];
+    for (var t = 0; t < lines.length; t++) {
+      if (/^```/.test(lines[t])) inFence = !inFence;
+      else if (!inFence && /^#{4,6}\s/.test(lines[t])) list.push(lines[t].replace(/^#+\s*/, '').trim());
+    }
+    kidsOf.push(list);
+  }
+  var shown = 0, omitted = 0;
+  for (var i = 0; i < sections.length; i++) {
+    var kids = kidsOf[i];
+    if (shown >= INDEX_CAP) { omitted += 1 + kids.length; continue; }
+    out += '- ' + sections[i].title + '\n'; shown++;
+    for (var k = 0; k < kids.length; k++) {
+      if (shown >= INDEX_CAP) { omitted++; continue; }
+      out += '  - ' + kids[k] + '\n'; shown++;
+    }
+  }
+  if (omitted) out += '…외 ' + omitted + '개\n';
+  out += '(들여쓴 하위 제목도 section=으로 바로 지정할 수 있습니다. 본문 단어도 검색됩니다)';
   return out.trim();
 }
 
 function extractBlocks(content, langFilter) {
   var blocks = [];
+  // 문서 줄바꿈은 LF/CRLF가 섞여 있다 — 정규화하지 않으면 CRLF 문서의 펜스가 매칭되지 않아 예제가 하나도 없는 것처럼 보인다.
+  var src = String(content).replace(/\r\n/g, '\n');
   var re = /```(\w*)\n([\s\S]*?)```/g;
   var match;
-  while ((match = re.exec(content)) !== null) {
+  while ((match = re.exec(src)) !== null) {
     var lang = match[1] || '';
     // 무태그 펜스는 필터를 통과시킨다 — 문서의 TQL 예제 다수가 무태그라
     // language="tql" 필터로 전멸시키면 "예제 없음" 거짓 결론을 유발한다.

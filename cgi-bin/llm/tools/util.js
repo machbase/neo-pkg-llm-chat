@@ -127,8 +127,8 @@ function register(registry, mc) {
               }
 
               // 5) Table count
-              var owner = (mc.user || 'SYS').toUpperCase();
-              mc.querySQL("SELECT COUNT(*) AS CNT FROM M$SYS_TABLES AS st JOIN M$SYS_USERS AS su ON st.USER_ID = su.USER_ID WHERE su.NAME = '" + owner + "' AND st.FLAG = 0", '', '', '', function (err5, raw5) {
+              // 소유가 아니라 접근 기준 — 세션 사용자 기준으로 DB 가 이미 걸러 준다.
+              mc.querySQL('SELECT COUNT(*) AS CNT FROM M$SYS_TABLES WHERE FLAG = 0', '', '', '', function (err5, raw5) {
                 if (!err5 && raw5) {
                   try {
                     var parsed = JSON.parse(raw5);

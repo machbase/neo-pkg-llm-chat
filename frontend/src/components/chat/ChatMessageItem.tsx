@@ -3,7 +3,10 @@ import type { Message, UserMessageAlign } from "../../types/chat";
 import { RenderMd } from "./RenderMd";
 import { ErrorBanner } from "./ErrorBanner";
 import Icon from "../common/Icon";
-import neoLogo from "../../assets/image/neowFavicon";
+
+/** 24-hour wall clock, e.g. "14:22". */
+const formatClock = (ts: number) =>
+    new Date(ts).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
 
 interface ChatMessageItemProps {
     message: Message;
@@ -11,13 +14,11 @@ interface ChatMessageItemProps {
     /**
      * Invoked when the user saves an edited user-message.
      * Receives the message id and the new (trimmed) content.
-     * Phase 1 wired the data path; Phase 2 surfaces the pencil + editor UI.
      */
     onEdit?: (messageId: string, newContent: string) => void;
     /**
      * Controls whether the pencil icon is rendered at all. The parent gates this
-     * on `!isProcessingAnswer && isConnected`. Phase 3 may strengthen DOM
-     * removal; for now we conditionally render.
+     * on `!isProcessingAnswer && isConnected`.
      */
     canEdit?: boolean;
 }
@@ -33,7 +34,8 @@ export const ChatMessageItem = ({ message, userMessageAlign = "left", onEdit, ca
 
     const isUser = message.role === "user";
     const isAssistant = message.role === "assistant";
-    const showAvatar = isAssistant && message.type !== "msg";
+    // Footer rides on the model stamp, so it appears on finished answers only.
+    const showMeta = isAssistant && !!message.model && !message.isProcess;
 
     // Local edit state — strictly per-item. Never reuse usePkgChat's shared
     // isComposingRef here: that ref tracks the main input's IME composition,
@@ -131,15 +133,6 @@ export const ChatMessageItem = ({ message, userMessageAlign = "left", onEdit, ca
 
     return (
         <div className={`chat-msg ${isUser ? "chat-msg--user" : "chat-msg--assistant"} ${isUser ? `chat-msg--${userMessageAlign}` : ""}`}>
-            {isAssistant && (
-                <div className="chat-msg-avatar chat-msg-avatar--assistant">
-                    {showAvatar ? (
-                        <img src={neoLogo} alt="Neo" className="chat-msg-avatar-img" />
-                    ) : (
-                        <span className={`chat-msg-dot ${message.isProcess ? "chat-msg-dot--active" : ""}`} />
-                    )}
-                </div>
-            )}
             <div ref={bubbleRef} className={bubbleClass}>
                 {isEditing ? (
                     <div className="chat-msg-edit">
@@ -199,6 +192,13 @@ export const ChatMessageItem = ({ message, userMessageAlign = "left", onEdit, ca
                             <button type="button" className="chat-msg-edit-btn" onClick={beginEdit} aria-label="Edit message" title="Edit message">
                                 <Icon name="edit" className="icon-sm" />
                             </button>
+                        )}
+                        {showMeta && (
+                            <div className="chat-msg-meta">
+                                {message.model}
+                                <span className="chat-msg-meta-sep">·</span>
+                                {formatClock(message.timestamp)}
+                            </div>
                         )}
                     </>
                 )}

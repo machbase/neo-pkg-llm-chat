@@ -1,7 +1,7 @@
 var { createMessage } = require('../llm/types');
 
 // 답변경로(filename 없는) compile_tql_from_spec는 **검증된 ```tql**을 도구 결과로 돌려준다.
-// (forecast_table은 v3.0부터 인라인 ```tql을 반환하지 않는다 — 결과 본문 전체를 collectForecastBodies가 정본화.)
+// (forecast_table은 인라인 ```tql을 반환하지 않는다 — 결과 본문 전체를 collectForecastBodies가 정본화.)
 // 그 차트가 화면에 그려지려면 그 ```tql이 모델의 **최종 답변 텍스트**에 들어가야 한다(프론트가 답변의 ```tql을 실행).
 // 그런데 모델은 긴 TQL을 답변에 옮기다 **누락/손상**(쉼표 빠뜨림·잘림)하거나, 재촉받으면 "죄송합니다…빠뜨렸습니다"
 // 같은 사과문만 뱉어 그게 답변으로 새어나온다.
@@ -14,13 +14,13 @@ var TqlInjectGuard = {
   check: function (agent, msg) {
     if (msg.toolCalls && msg.toolCalls.length > 0) return msg; // 최종 답변(도구 없음) 차례에만
 
-    // ⚠️ 수집 범위 = **현재 턴만**. 세션 전체(agent.messages)를 스캔했더니 이전 질문들의 forecast 결과까지
-    //    끌려와 답변에 SILVER+BEARING×2 세 덩어리가 붙은 실사례("이건 뭐지"). 정본은 이번 질문의 도구 결과뿐이다.
+    // ⚠️ 수집 범위 = **현재 턴만**. 세션 전체(agent.messages)를 스캔하면 이전 질문들의 forecast 결과까지
+    //    끌려와 답변에 여러 테이블의 결과가 겹쳐 붙는다. 정본은 이번 질문의 도구 결과뿐이다.
     var msgs = currentTurnMsgs(agent);
 
     // ── forecast_table: **도구 결과가 곧 답변 본문**. 모델에겐 리드 한 문장만 허용한다. ──
-    // 표 하나(리더보드)를 강제하면 다른 표(태그 요약)를 자기 말로 풀어쓰고, 그것도 막으면 또 다른 데서 샌다.
-    // 부분 강제는 두더지잡기가 된다 → 예측 답변은 **레이아웃 전체를 도구가 확정**하고 모델은 요약 문장만 얹는다.
+    // 표를 개별로 강제하면 강제하지 않은 표를 모델이 자기 말로 풀어쓴다 → 예측 답변은
+    // **레이아웃 전체를 도구가 확정**하고 모델은 요약 문장만 얹는다.
     var fcBodies = collectForecastBodies(msgs);
     if (fcBodies.length) {
       var lead = leadOf(msg.content || '');
@@ -51,7 +51,7 @@ var TqlInjectGuard = {
       if (normContent.indexOf(norm(tableOf(boards[i]))) < 0) missBoards.push(boards[i]);
     }
 
-    // 메타 문구(차트 블록 설명·사과·도구 지시문 복사)는 **누락이 없어도** 걷어낸다 — 프롬프트로는 안 지켜졌다.
+    // 메타 문구(차트 블록 설명·사과·도구 지시문 복사)는 **누락이 없어도** 걷어낸다 — 프롬프트 지시로는 막히지 않는다.
     var proseRaw = stripTqlBlocks(content);
     var prose = cleanProse(proseRaw);
     var hadMeta = norm(prose) !== norm(proseRaw);
@@ -174,7 +174,7 @@ function collectCanonicalBoards(msgs) {
 
 // forecast_table 도구 결과의 **본문 전체**(모델용 지시문만 제거). 이게 예측 답변의 정본이다.
 // ⚠️ **중복 제거 필수**: 약한 모델이 "데이터 부족"을 받고 rollup만 바꿔 같은 호출을 반복하면 동일 본문이 N개 쌓이고,
-//    전부 이어붙이면 답변에 같은 표가 N번 반복된다(BEARING에서 6회 반복 실사례).
+//    전부 이어붙이면 답변에 같은 표가 N번 반복된다.
 function collectForecastBodies(msgs) {
   var out = [], seen = {}, pending = [];
   for (var i = 0; i < msgs.length; i++) {

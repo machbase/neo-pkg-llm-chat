@@ -57,6 +57,7 @@ var { createLLM } = require('./llm/factory');
 var { createClient } = require('./machbase/client');
 var { createRegistry } = require('./tools/registry');
 var { createAgent } = require('./agent/agent');
+var followups = require('./agent/followups');
 var logger = require('./logger/logger');
 
 logger.init({ dir: 'logs', prefix: 'worker-' + sessionID.substring(0, 12), level: 'DEBUG' });
@@ -150,7 +151,14 @@ function runChat(query) {
     sendStreamMsg('stream_msg_start');
     sendStreamMsg('stream_msg_delta', result || '');
     sendStreamMsg('stream_msg_stop');
+    // answer_stop first: the answer is complete, so the UI unblocks before the
+    // follow-up call runs. Chips land afterwards or never — either is fine.
     sendStreamMsg('answer_stop');
+
+    followups.generate(llmClient, cfg.provider, query, result || '', function (items) {
+      if (agent.cancelled || !items.length) return;
+      sendJSON({ type: 'followups', session_id: sessionID, items: items });
+    });
   });
 }
 

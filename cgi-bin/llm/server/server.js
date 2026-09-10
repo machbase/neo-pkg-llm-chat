@@ -3,11 +3,13 @@ var http2 = require('@jsh/http');
 
 var { WebSocketServer } = require('ws');
 var { createGateway } = require('./ws_gateway');
+var { createAuth } = require('./auth');
 
 function runServer(cfg, port) {
   var gateway = createGateway(cfg, port);
   var neoBase = 'http://' + cfg.machbase.host + ':' + cfg.machbase.port;
   var _proxyClient = http2.NewClient();
+  var auth = createAuth(neoBase);
 
   setInterval(function () { gateway.reapSessions(); }, 5 * 60 * 1000);
 
@@ -18,31 +20,6 @@ function runServer(cfg, port) {
 
   // --- Relay helpers ---
 
-  var _jwtToken = '';
-  var _jwtExp = 0;
-
-  function authHeaders() {
-    if (!cfg.machbase.user) return {};
-    if (_jwtToken && Date.now() < _jwtExp) return { 'Authorization': 'Bearer ' + _jwtToken };
-    try {
-      var payload = JSON.stringify({ loginName: cfg.machbase.user, password: cfg.machbase.password });
-      var req = http2.NewRequest('POST', neoBase + '/web/api/login');
-      req.header.set('Content-Type', 'application/json');
-      req.writeString(payload);
-      var resp = _proxyClient.do(req);
-      var body = resp.string();
-      var result = JSON.parse(body);
-      if (result.success) {
-        _jwtToken = result.accessToken;
-        _jwtExp = Date.now() + 5 * 60 * 1000;
-        return { 'Authorization': 'Bearer ' + _jwtToken };
-      }
-    } catch (e) {
-      console.println('[Server] JWT login failed: ' + e.message);
-    }
-    return {};
-  }
-
   function copyResponse(ctx, resp) {
     setCORS(ctx);
     var headers = resp.headers || {};
@@ -52,7 +29,8 @@ function runServer(cfg, port) {
       if (k.toLowerCase() === 'transfer-encoding') continue;
       ctx.setHeader(k, headers[k]);
     }
-    ctx.response.status(resp.statusCode);
+    // ctx.response.status() 는 getter — 상태 설정은 ctx.status().
+    ctx.status(resp.statusCode);
     var text = '';
     try { text = resp.string(); } catch (e) {}
     ctx.response.write(text);
@@ -66,14 +44,21 @@ function runServer(cfg, port) {
 
   // --- Relay routes (proxy to machbase-neo) ---
 
+  // 브라우저의 TQL 실행 중계. 인증 경로(/web/api/tql)로 보내고 호출자의 토큰을 그대로 넘긴다.
+  // 서비스 계정 토큰으로 대신 채우지 않는다 — 그러면 누구나 이 경로로 무인증 실행이 된다.
   server.post('/db/tql', function (ctx) {
     var qs = ctx.request.queryString;
-    var targetURL = neoBase + '/db/tql' + (qs ? '?' + qs : '');
+    var targetURL = neoBase + '/web/api/tql' + (qs ? '?' + qs : '');
     try {
       var body = ctx.request.body;
       var reqBody = (typeof body === 'string') ? body : JSON.stringify(body);
       var req = http2.NewRequest('POST', targetURL);
       req.header.set('Content-Type', ctx.request.getHeader('Content-Type') || 'text/plain');
+      var tqlAuth = ctx.request.getHeader('Authorization');
+      if (tqlAuth) req.header.set('Authorization', tqlAuth);
+      // 이 헤더가 있어야 TQL 이 호출자의 계정으로 실행된다(없으면 SYS 권한으로 돈다).
+      req.header.set('X-Console-Id', 'neo-pkg-llm-chat, console-log-level=NONE');
+      req.header.set('X-Console-Log-Level', 'NONE');
       if (reqBody) req.writeString(reqBody);
       var resp = _proxyClient.do(req);
       setCORS(ctx);
@@ -91,7 +76,7 @@ function runServer(cfg, port) {
         if (hkl === 'transfer-encoding' || hkl === 'content-length') continue;
         ctx.setHeader(hk, headers[hk]);
       }
-      ctx.response.status(resp.statusCode);
+      ctx.status(resp.statusCode);
       ctx.response.write(text);
     } catch (e) {
       relayError(ctx, '/db/tql', e);
@@ -99,15 +84,20 @@ function runServer(cfg, port) {
   });
 
   server.get('/web/*path', function (ctx) {
-    var path = '/web/' + ctx.param('path');
+    // 라우터의 *path 캡처는 앞 슬래시를 포함한다. 그대로 이으면 '/web//api/...' 가 되어
+    // 정적 에셋 외의 경로가 전부 404 가 된다.
+    var sub = String(ctx.param('path') || '');
+    if (sub.charAt(0) === '/') sub = sub.slice(1);
+    var path = '/web/' + sub;
     var qs = ctx.request.queryString;
     var targetURL = neoBase + path + (qs ? '?' + qs : '');
     try {
       var req = http2.NewRequest('GET', targetURL);
+      // 호출자의 토큰만 넘긴다. 서비스 계정 토큰을 덧씌우면 브라우저가 그 계정 권한으로
+      // /web/api/* 를 호출할 수 있다. 차트 에셋(/web/echarts/*, /web/api/tql-assets/*)은
+      // 인증을 요구하지 않으므로 토큰 없이도 로드된다.
       var clientAuth = ctx.request.getHeader('Authorization');
       if (clientAuth) req.header.set('Authorization', clientAuth);
-      var auth = authHeaders();
-      if (auth['Authorization']) req.header.set('Authorization', auth['Authorization']);
       copyResponse(ctx, _proxyClient.do(req));
     } catch (e) {
       relayError(ctx, path, e);
@@ -115,7 +105,11 @@ function runServer(cfg, port) {
   });
 
   server.post('/web/*path', function (ctx) {
-    var path = '/web/' + ctx.param('path');
+    // 라우터의 *path 캡처는 앞 슬래시를 포함한다. 그대로 이으면 '/web//api/...' 가 되어
+    // 정적 에셋 외의 경로가 전부 404 가 된다.
+    var sub = String(ctx.param('path') || '');
+    if (sub.charAt(0) === '/') sub = sub.slice(1);
+    var path = '/web/' + sub;
     var qs = ctx.request.queryString;
     var targetURL = neoBase + path + (qs ? '?' + qs : '');
     try {
@@ -125,8 +119,6 @@ function runServer(cfg, port) {
       req.header.set('Content-Type', ctx.request.getHeader('Content-Type') || 'application/json');
       var clientAuth = ctx.request.getHeader('Authorization');
       if (clientAuth) req.header.set('Authorization', clientAuth);
-      var auth = authHeaders();
-      if (auth['Authorization']) req.header.set('Authorization', auth['Authorization']);
       if (reqBody) req.writeString(reqBody);
       copyResponse(ctx, _proxyClient.do(req));
     } catch (e) {
@@ -210,9 +202,9 @@ function runServer(cfg, port) {
 
   function jsonReply(ctx, status, data) {
     setCORS(ctx);
-    ctx.setHeader('Content-Type', 'application/json');
-    ctx.response.status(status);
-    ctx.response.write(JSON.stringify(data));
+    // 상태 설정은 ctx.json/ctx.status 로 한다. ctx.response.status() 는 현재 상태를 읽는
+    // getter 라 인자를 줘도 무시되고 응답이 전부 200 으로 나간다.
+    ctx.json(status, data);
   }
 
   function readMainConfig() {
@@ -232,6 +224,31 @@ function runServer(cfg, port) {
       if (files[i].endsWith('.json')) names.push(files[i].replace(/\.json$/, ''));
     }
     return names;
+  }
+
+  // -- config 접근 제어 --
+  // config 파일은 계정의 DB 자격증명과 LLM API 키를 담고, 파일명이 곧 워커의 실행 계정이다.
+  // 따라서 본인 것만 읽고 쓸 수 있어야 한다. 판정은 요청의 JWT 로 하며, 브라우저가 보내는
+  // 이름(경로·본문)은 신뢰하지 않는다.
+  function requestUser(ctx) {
+    return auth.verifyToken(auth.bearerOf(ctx.request.getHeader('Authorization')));
+  }
+  function denyUnauthenticated(ctx) {
+    jsonReply(ctx, 401, { success: false, reason: 'authentication required' });
+  }
+  function denyForbidden(ctx) {
+    jsonReply(ctx, 403, { success: false, reason: 'forbidden' });
+  }
+  function ownConfigNames(user) {
+    return listConfigNames().filter(function (n) { return n === user; });
+  }
+  // 저장되는 machbase.user 를 인증된 사용자로 고정 -- 본문에 다른 계정을 적어 보내
+  // 그 계정으로 실행시키는 것을 막는다.
+  function forceOwner(parsed, user) {
+    parsed = parsed || {};
+    parsed.machbase = parsed.machbase || {};
+    parsed.machbase.user = user;
+    return parsed;
   }
 
   // /api/config
@@ -262,11 +279,14 @@ function runServer(cfg, port) {
 
   // /api/configs
   server.get('/api/configs', function (ctx) {
+    var user = requestUser(ctx);
+    if (!user) return denyUnauthenticated(ctx);
     var name = ctx.query('name');
     if (!name) {
-      jsonReply(ctx, 200, { success: true, reason: 'success', data: { configs: listConfigNames() } });
+      jsonReply(ctx, 200, { success: true, reason: 'success', data: { configs: ownConfigNames(user) } });
       return;
     }
+    if (name !== user) return denyForbidden(ctx);
     try {
       var data = readConfigFile(name);
       if (!data) { jsonReply(ctx, 404, { success: false, reason: 'config not found: ' + name }); }
@@ -277,32 +297,41 @@ function runServer(cfg, port) {
     var override = (ctx.query('_method') || '').toUpperCase();
     if (override === 'PUT') { handleConfigsPutByQuery(ctx); return; }
     if (override === 'DELETE') { handleConfigsDeleteByQuery(ctx); return; }
+    var user = requestUser(ctx);
+    if (!user) return denyUnauthenticated(ctx);
     try {
-      var parsed = parseBody(ctx);
-      var saveName = (parsed.machbase && parsed.machbase.user) || 'sys';
-      writeConfigFile(saveName, parsed);
-      jsonReply(ctx, 201, { success: true, reason: 'success', data: { name: saveName } });
+      writeConfigFile(user, forceOwner(parseBody(ctx), user));
+      jsonReply(ctx, 201, { success: true, reason: 'success', data: { name: user } });
     } catch (e) { jsonReply(ctx, 500, { success: false, reason: e.message }); }
   });
   server.put('/api/configs', handleConfigsPutByQuery);
   server.delete('/api/configs', handleConfigsDeleteByQuery);
 
   function handleConfigsPutByQuery(ctx) {
+    var user = requestUser(ctx);
+    if (!user) return denyUnauthenticated(ctx);
     var name = ctx.query('name');
     if (!name) { jsonReply(ctx, 400, { success: false, reason: 'name parameter required' }); return; }
-    try { writeConfigFile(name, parseBody(ctx)); jsonReply(ctx, 200, { success: true, reason: 'success', data: { name: name } }); }
+    if (name !== user) return denyForbidden(ctx);
+    try { writeConfigFile(name, forceOwner(parseBody(ctx), user)); jsonReply(ctx, 200, { success: true, reason: 'success', data: { name: name } }); }
     catch (e) { jsonReply(ctx, 500, { success: false, reason: e.message }); }
   }
   function handleConfigsDeleteByQuery(ctx) {
+    var user = requestUser(ctx);
+    if (!user) return denyUnauthenticated(ctx);
     var name = ctx.query('name');
     if (!name) { jsonReply(ctx, 400, { success: false, reason: 'name parameter required' }); return; }
+    if (name !== user) return denyForbidden(ctx);
     try { removeConfigFile(name); jsonReply(ctx, 200, { success: true, reason: 'success', data: { name: name } }); }
     catch (e) { jsonReply(ctx, 500, { success: false, reason: e.message }); }
   }
 
   // /api/configs/:name
   server.get('/api/configs/:name', function (ctx) {
+    var user = requestUser(ctx);
+    if (!user) return denyUnauthenticated(ctx);
     var name = ctx.param('name');
+    if (name !== user) return denyForbidden(ctx);
     try {
       var data = readConfigFile(name);
       if (!data) { jsonReply(ctx, 404, { success: false, reason: 'config not found: ' + name }); }
@@ -318,23 +347,32 @@ function runServer(cfg, port) {
   });
 
   function handleConfigPutByName(ctx) {
+    var user = requestUser(ctx);
+    if (!user) return denyUnauthenticated(ctx);
     var name = ctx.param('name');
-    try { writeConfigFile(name, parseBody(ctx)); jsonReply(ctx, 200, { success: true, reason: 'success', data: { name: name } }); }
+    if (name !== user) return denyForbidden(ctx);
+    try { writeConfigFile(name, forceOwner(parseBody(ctx), user)); jsonReply(ctx, 200, { success: true, reason: 'success', data: { name: name } }); }
     catch (e) { jsonReply(ctx, 500, { success: false, reason: e.message }); }
   }
   function handleConfigDeleteByName(ctx) {
+    var user = requestUser(ctx);
+    if (!user) return denyUnauthenticated(ctx);
     var name = ctx.param('name');
+    if (name !== user) return denyForbidden(ctx);
     try { removeConfigFile(name); jsonReply(ctx, 200, { success: true, reason: 'success', data: { name: name } }); }
     catch (e) { jsonReply(ctx, 500, { success: false, reason: e.message }); }
   }
 
   // /api/prefs — per-user UI preferences (favorites)
-  // GET  /api/prefs?user={user}            → { favorites: [...] }
-  // POST /api/prefs?user={user}  (text/plain body { favorites: [...] }) → saves
+  // GET  /api/prefs   → { favorites: [...] }
+  // POST /api/prefs   (text/plain body { favorites: [...] }) → saves
+  // 대상 사용자는 요청의 JWT 에서 정한다 — 이름을 파라미터로 받으면 남의 즐겨찾기를
+  // 읽고 덮어쓸 수 있다.
   // POST is used for saves (Content-Type text/plain) to avoid a CORS preflight,
   // same convention as /api/configs.
   function handlePrefsSave(ctx) {
-    var user = ctx.query('user') || 'sys';
+    var user = requestUser(ctx);
+    if (!user) return denyUnauthenticated(ctx);
     try {
       var parsed = parseBody(ctx) || {};
       var favorites = sanitizeFavorites(parsed.favorites);
@@ -345,7 +383,8 @@ function runServer(cfg, port) {
     }
   }
   server.get('/api/prefs', function (ctx) {
-    var user = ctx.query('user') || 'sys';
+    var user = requestUser(ctx);
+    if (!user) return denyUnauthenticated(ctx);
     try {
       var data = readPrefsFile(user) || {};
       jsonReply(ctx, 200, { success: true, reason: 'success', data: { favorites: sanitizeFavorites(data.favorites) } });
@@ -358,6 +397,7 @@ function runServer(cfg, port) {
 
   // /api/debug
   server.get('/api/debug', function (ctx) {
+    if (!requestUser(ctx)) return denyUnauthenticated(ctx);
     var dirExists = fs.existsSync(CONFIGS_DIR);
     var fileExists = fs.existsSync(CONFIG_FILE);
     var files = [];
@@ -383,30 +423,27 @@ function runServer(cfg, port) {
   });
 
   // --- WebSocket: external (browser) ---
-  // 옛 컨벤션 두 라우트 복원 — JSH ws 의 path 매칭 동작이 path-template 의 끝 segment 가
-  // 정적일 때만 안정적이라(혹은 옛 환경에서만 동작 검증된 상태) 새 컨벤션(/ws/:user) 으로
-  // 통합한 변경을 되돌린다. service proxy 경유 WS 는 별도 fix 필요.
+  // 라우트를 둘로 나눠 등록한다 — JSH ws 의 path 매칭은 path-template 의 끝 segment 가
+  // 정적일 때만 동작하므로 /ws/:user 형태 하나로는 합칠 수 없다.
+  // service proxy 경유 WS 는 이 라우트들로 도달하지 않는다.
   var wss = new WebSocketServer({ server: server, path: '/ws' });
   var wss2 = new WebSocketServer({ server: server, path: '/:user/ws' });
 
-  function extractUserFromWsUrl(url) {
-    if (!url) return '';
-    var s = String(url);
-    var m = s.match(/\/([^\/\?]+)\/ws(?:[\/\?]|$)/);
-    if (!m) return '';
-    var seg = m[1];
-    if (seg === 'ws' || seg === 'internal') return '';
-    try { return decodeURIComponent(seg); } catch (e) { return seg; }
-  }
-
-  function onBrowserConnection(socket, request) {
-    var extracted = extractUserFromWsUrl(request && request.url);
-    var authUserID = extracted || '';
-    console.println('[Server] Browser WS connected, user=' + (authUserID || '(from msg)'));
+  // 사용자 식별은 메시지에 실려 오는 neo JWT 로만 한다. URL segment 나 본문 user_id 는
+  // 브라우저가 정하는 값이라 신뢰하지 않는다. 검증된 이름은 연결 단위로 유지한다.
+  function onBrowserConnection(socket) {
+    var verifiedUser = '';
+    console.println('[Server] Browser WS connected');
 
     socket.on('message', function (event) {
       var raw = (typeof event === 'string') ? event : (event && event.data) ? event.data : String(event);
-      gateway.handleBrowserMessage(socket, raw, authUserID);
+      if (!verifiedUser) {
+        var token = '';
+        try { token = (JSON.parse(raw) || {}).auth_token || ''; } catch (e) { /* 비 JSON 은 아래에서 무시됨 */ }
+        verifiedUser = auth.verifyToken(token) || '';
+        if (verifiedUser) console.println('[Server] WS authenticated: ' + verifiedUser);
+      }
+      gateway.handleBrowserMessage(socket, raw, verifiedUser);
     });
 
     socket.on('close', function () {

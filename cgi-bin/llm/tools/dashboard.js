@@ -1,4 +1,6 @@
 var { argStr } = require('./registry');
+var { parseTableRef } = require('./table_access');
+var { withUserRoot, ensureParentOf, readUserFile, deleteUserFile } = require('./paths');
 var { detectColumns, detectTags } = require('./tql_spec');
 var rangeCache = require('./range_cache');
 var path = require('path');
@@ -33,6 +35,15 @@ function getChartTypeDefaults(chartType) {
     case 'Video': return {};
     default: return getChartTypeDefaults('Line');
   }
+}
+
+// 소유자 접두가 붙은 table 을 Neo 대시보드 스키마(table + userName)로 나눈다.
+// 이 스키마에는 database 자리가 없어 세 부분 이름의 db 는 버려진다 — 패널은 현재
+// database 의 테이블만 가리킬 수 있다.
+function applyBlockOwner(block, fallbackUser) {
+  var ref = parseTableRef(block.table || '');
+  if (ref.owner) { block.table = ref.table; block.userName = ref.owner; }
+  else block.userName = fallbackUser;
 }
 
 function makeBlock(table, tag, column, color, userName, aggregator, nameCol, timeCol) {
@@ -246,7 +257,9 @@ function validateTqlPaths(mc, charts, cb) {
   for (var i = 0; i < charts.length; i++) {
     if (charts[i] && charts[i].tql_path) {
       anyTql = true;
-      charts[i].tql_path = String(charts[i].tql_path).replace(/^\/+/, ''); // 선행 슬래시 정규화
+      // 선행 슬래시 정규화 + 계정 폴더 부착 — save_tql_file 이 {user}/ 아래 저장하므로 패널 경로도
+      // 같아야 한다. 안 맞으면 보드에서 "not found '/SENSOR_TEST/x.tql'" 렌더 에러가 난다.
+      charts[i].tql_path = withUserRoot(mc, String(charts[i].tql_path).replace(/^\/+/, ''));
     }
   }
   if (!anyTql) return cb(charts, []);
@@ -268,7 +281,7 @@ function validateTqlPaths(mc, charts, cb) {
   var finished = false;
   for (var pj = 0; pj < pending.length; pj++) {
     (function (idx, p) {
-      mc.readFile(p, function (err, data) {
+      readUserFile(mc, p, function (err, data) {
         var body = String(data == null ? '' : data);
         // 존재 판정: 읽기 성공 + 본문이 not-found 에러 JSON이 아님(파일 API가 200+{success:false}로 줄 수 있음).
         // 정상 .tql 본문은 raw TQL 텍스트라 "success":false를 포함하지 않음.
@@ -406,6 +419,8 @@ function register(registry, mc) {
       if (!filename) return cb(null, 'Error: filename is required');
       if (!filename.toLowerCase().endsWith('.dsh')) filename += '.dsh';
       filename = withTimestamp(filename); // 작성시각 자동 부착(이력/구분). 이후 tableName추론/폴더/쓰기/URL 모두 이 이름 사용.
+      // 계정 폴더로 감싼다. 링크(/web/ui/board/...)도 이 이름에서 파생되므로 함께 따라간다.
+      filename = withUserRoot(mc, filename);
 
       var charts;
       try { charts = JSON.parse(chartsStr); } catch (e) { return cb(null, 'Error: Invalid charts JSON: ' + e.message); }
@@ -484,11 +499,12 @@ function register(registry, mc) {
           x += w;
         }
 
-        // Inject userName into all blocks (Neo UI requires 'SYS' etc. for V$_STAT queries)
+        // Neo UI 는 블록의 table 과 userName 을 따로 받는다. 모델이 'SYS.BITCOIN' 처럼
+        // 소유자를 붙여 주면 그대로 쪼개 넣어야 남의 소유 테이블 차트가 동작한다.
         var user = (mc.user || 'SYS').toUpperCase();
         for (var pi = 0; pi < panels.length; pi++) {
           var bl = panels[pi].blockList || [];
-          for (var bi = 0; bi < bl.length; bi++) bl[bi].userName = user;
+          for (var bi = 0; bi < bl.length; bi++) applyBlockOwner(bl[bi], user);
         }
 
         fillAllPanels(mc, panels, 0, function () {
@@ -504,10 +520,7 @@ function register(registry, mc) {
             });
           }
 
-          var slashIdx = filename.lastIndexOf('/');
-          if (slashIdx > 0) {
-            mc.createFolder(filename.substring(0, slashIdx), function () { doWrite(); });
-          } else { doWrite(); }
+          ensureParentOf(mc, filename, function () { doWrite(); });
         });
       }
 
@@ -602,30 +615,45 @@ function register(registry, mc) {
 
       // create_dashboard_with_charts가 _YYYYMMDD_HHMMSS를 자동 부착하므로, 모델이 베이스명을 넘기면
       // 정확 파일이 없을 수 있다 → 같은 폴더에서 최신 타임스탬프 파일로 자동 해소.
+      // 베이스명만 준 경우 같은 폴더의 최신 타임스탬프 파일로 해소한다.
+      // 계정 폴더를 먼저 뒤지고, 없으면 옛 경로(계정 폴더 도입 전 대시보드)로 한 번 더 본다.
       function resolveLatest() {
-        var slash = filename.lastIndexOf('/');
-        var dir = slash > 0 ? filename.substring(0, slash) : '';
-        var base = (slash > 0 ? filename.substring(slash + 1) : filename)
-          .replace(/\.dsh$/i, '').replace(/_\d{8}(_\d{6})?$/, '');
-        mc.listDir(dir || '/', function (e2, items) {
-          if (e2 || !items) return cb(null, 'Error: dashboard not found: ' + filename);
-          var best = '', bestTs = '';
-          for (var i = 0; i < items.length; i++) {
-            var m = String(items[i].name || '').match(/^(.*)_(\d{8}_\d{6})\.dsh$/i);
-            if (m && m[1].toUpperCase() === base.toUpperCase() && m[2] > bestTs) { bestTs = m[2]; best = items[i].name; }
-          }
-          if (!best) return cb(null, 'Error: dashboard not found: ' + filename);
-          var full = (dir ? dir + '/' : '') + best;
-          mc.readFile(full, function (e3, data) {
-            if (e3) return cb(null, 'Error: ' + e3.message);
-            done(full, data);
+        var scoped = withUserRoot(mc, filename);
+        var raw = String(filename).replace(/^\/+/, '');
+        tryDir(scoped, function (ok) {
+          if (ok) return;
+          if (raw === scoped) return cb(null, 'Error: dashboard not found: ' + filename);
+          tryDir(raw, function (ok2) {
+            if (!ok2) cb(null, 'Error: dashboard not found: ' + filename);
           });
         });
+
+        function tryDir(candidate, next) {
+          var slash = candidate.lastIndexOf('/');
+          var dir = slash > 0 ? candidate.substring(0, slash) : '';
+          var base = (slash > 0 ? candidate.substring(slash + 1) : candidate)
+            .replace(/\.dsh$/i, '').replace(/_\d{8}(_\d{6})?$/, '');
+          mc.listDir(dir || '/', function (e2, items) {
+            if (e2 || !items) return next(false);
+            var best = '', bestTs = '';
+            for (var i = 0; i < items.length; i++) {
+              var m = String(items[i].name || '').match(/^(.*)_(\d{8}_\d{6})\.dsh$/i);
+              if (m && m[1].toUpperCase() === base.toUpperCase() && m[2] > bestTs) { bestTs = m[2]; best = items[i].name; }
+            }
+            if (!best) return next(false);
+            var full = (dir ? dir + '/' : '') + best;
+            mc.readFile(full, function (e3, data) {
+              if (e3) return next(false);
+              done(full, data);
+              next(true);
+            });
+          });
+        }
       }
 
-      mc.readFile(filename, function (err, data) {
+      readUserFile(mc, filename, function (err, data, actualPath) {
         if (err) return resolveLatest();
-        done(filename, data);
+        done(actualPath, data);
       });
     },
   });
@@ -637,7 +665,7 @@ function register(registry, mc) {
     fn: function (args, cb) {
       var filename = argStr(args, 'filename', '');
       if (!filename) return cb(null, 'Error: filename is required');
-      mc.deleteFile(filename, function (err) { cb(null, err ? 'Error: ' + err.message : 'Dashboard deleted: ' + filename); });
+      deleteUserFile(mc, filename, function (err) { cb(null, err ? 'Error: ' + err.message : 'Dashboard deleted: ' + filename); });
     },
   });
 
@@ -648,7 +676,7 @@ function register(registry, mc) {
     fn: function (args, cb) {
       var filename = argStr(args, 'filename', '');
       if (!filename) return cb(null, 'Error: filename is required');
-      mc.readFile(filename, function (err, data) { cb(null, err ? 'Error: ' + err.message : data); });
+      readUserFile(mc, filename, function (err, data) { cb(null, err ? 'Error: ' + err.message : data); });
     },
   });
 
@@ -659,8 +687,9 @@ function register(registry, mc) {
     fn: function (args, cb) {
       var filename = argStr(args, 'filename', '');
       if (!filename) return cb(null, 'Error: filename is required');
-      mc.readFile(filename, function (err, data) {
+      readUserFile(mc, filename, function (err, data, actualPath) {
         if (err) return cb(null, 'Error: ' + err.message);
+        filename = actualPath;
         try {
           var dsh = JSON.parse(data);
           var d = dsh.dashboard || dsh;
@@ -681,17 +710,18 @@ function register(registry, mc) {
     fn: function (args, cb) {
       var filename = argStr(args, 'filename', '');
       if (!filename) return cb(null, 'Error: filename is required');
-      mc.readFile(filename, function (err, data) {
+      readUserFile(mc, filename, function (err, data, actualPath) {
         if (err) return cb(null, 'Error: ' + err.message);
+        filename = actualPath;
         try {
           var dsh = JSON.parse(data);
           var d = dsh.dashboard || dsh;
           if (!d.panels) d.panels = [];
           var maxY = 0;
           for (var i = 0; i < d.panels.length; i++) { var py = (d.panels[i].y || 0) + (d.panels[i].h || CHART_H_DEFAULT); if (py > maxY) maxY = py; }
-          var panel = makeChartPanel(argStr(args, 'chart_title', 'New chart'), argStr(args, 'chart_type', 'Line'), argStr(args, 'table', ''), argStr(args, 'tag', ''), argStr(args, 'column', 'VALUE'), '', argStr(args, 'tql_path', ''), 0, maxY, 0, 0);
+          var panel = makeChartPanel(argStr(args, 'chart_title', 'New chart'), argStr(args, 'chart_type', 'Line'), argStr(args, 'table', ''), argStr(args, 'tag', ''), argStr(args, 'column', 'VALUE'), '', withUserRoot(mc, argStr(args, 'tql_path', '')), 0, maxY, 0, 0);
           var addUser = (mc.user || 'SYS').toUpperCase();
-          for (var bi = 0; bi < (panel.blockList || []).length; bi++) panel.blockList[bi].userName = addUser;
+          for (var bi = 0; bi < (panel.blockList || []).length; bi++) applyBlockOwner(panel.blockList[bi], addUser);
           d.panels.push(panel);
           mc.writeFile(filename, JSON.stringify(dsh, null, 2), function (err2) { cb(null, err2 ? 'Error: ' + err2.message : 'Chart added: ' + argStr(args, 'chart_title', 'New chart')); });
         } catch (e) { cb(null, 'Error: ' + e.message); }
@@ -707,8 +737,9 @@ function register(registry, mc) {
       var filename = argStr(args, 'filename', '');
       var pid = argStr(args, 'panel_id', ''), ptitle = argStr(args, 'panel_title', '');
       if (!filename) return cb(null, 'Error: filename is required');
-      mc.readFile(filename, function (err, data) {
+      readUserFile(mc, filename, function (err, data, actualPath) {
         if (err) return cb(null, 'Error: ' + err.message);
+        filename = actualPath;
         try {
           var dsh = JSON.parse(data);
           var d = dsh.dashboard || dsh;
@@ -727,8 +758,9 @@ function register(registry, mc) {
     fn: function (args, cb) {
       var filename = argStr(args, 'filename', '');
       if (!filename) return cb(null, 'Error: filename is required');
-      mc.readFile(filename, function (err, data) {
+      readUserFile(mc, filename, function (err, data, actualPath) {
         if (err) return cb(null, 'Error: ' + err.message);
+        filename = actualPath;
         try {
           var dsh = JSON.parse(data);
           var d = dsh.dashboard || dsh;

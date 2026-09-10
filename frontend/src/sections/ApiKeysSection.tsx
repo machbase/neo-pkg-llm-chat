@@ -35,10 +35,10 @@ export function ApiKeysSection({ claude, chatgpt, gemini, ollama, onKeyChange, o
     }
 
     return (
-        <div className="card">
-            <div className="card-title">
+        <div className="settings-section">
+            <div className="settings-section-header">
                 <div>
-                    <h3>API Keys & Endpoints</h3>
+                    <h3>API keys &amp; endpoints</h3>
                     <p className="text-sm text-on-surface-secondary mt-1">LLM provider authentication keys and endpoints</p>
                 </div>
             </div>

@@ -8,6 +8,8 @@ cgi-bin/api/.llm-download.zip
 ARCHITECTURE.md
 cgi-bin/llm/workers/
 cgi-bin/llm/logs/
+cgi-bin/llm/configs/
+cgi-bin/llm/prefs/
 cgi-bin/llm/gateway-beacon.log
 cgi-bin/llm/worker-beacon.log
 cgi-bin/launcher-beacon.log

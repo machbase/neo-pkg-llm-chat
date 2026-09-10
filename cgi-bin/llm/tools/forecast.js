@@ -14,6 +14,7 @@
 //    .tql SCRIPT는 시각 문자열을 Date.UTC로 파싱(compile.js). 워커는 timeformat='ms'라 무관.
 
 var { compileSafe, buildSource, forecastUnit } = require('./tir/compile');
+var { resolveTableRef } = require('./table_access');
 var { argStr } = require('./registry');
 var tqlSpec = require('./tql_spec');
 var { fcRun } = require('./forecast_algo');
@@ -64,7 +65,7 @@ var METRIC_LEGEND =
 // (R²가 낮은 건 그 자체로 경고가 아니다: 보합 데이터는 R² 0이어도 예측이 정확하다.)
 function r2label(r2) { return r2 >= R2_STRONG ? '강함' : (r2 >= R2_WEAK ? '보통' : '약함'); }
 // 이 모델들은 엔진이 R²를 계산하지 않고 0을 반환(fcSES/fcHolt/fcAR) → "0.00 (약함)"으로 표시하면
-// 과거 적합이 나쁘다는 오독을 유발(holt 선택된 라이브 스크린샷에서 확인) → 표시는 '—'.
+// 과거 적합이 나쁘다는 오독을 유발한다 → 표시는 '—'.
 var NO_R2 = { ses: 1, holt: 1, ar: 1 };
 // 모델 한 줄 설명(리포트 리더보드용). 모델명은 **영어 그대로** — 그대로 복사해 오버라이드에 쓸 수 있게.
 function methodDesc(m) {
@@ -91,9 +92,9 @@ function REPORT_BLOCK(rep, nTags) {
 }
 
 // 태그가 CAP 초과 + 미지정 → **되묻지 않고** 데이터 많은 순 상위 CAP개를 도구가 직접 골라 진행한다.
-// 되묻기는 답할 수 없는 질문이었다(태그 500개면 사용자도 뭐가 있는지 모른다 — 앞 20개 나열은 선택 근거가 못 됨).
+// 되묻기는 사용자가 답할 수 없는 질문이다(태그 500개면 사용자도 뭐가 있는지 모른다 — 앞 20개 나열은 선택 근거가 못 됨).
 // 모델 선택과 같은 철학: 합리적 기본값으로 즉시 결과 + 무엇을 골랐는지 명시 + 한마디로 정정("X, Y 예측해줘").
-// 데이터 많은 순 = 배울 재료가 많은 태그 = 예측 가치 있는 태그. SQL은 라이브 검증됨(ORDER BY COUNT(*) DESC LIMIT).
+// 데이터 많은 순 = 배울 재료가 많은 태그 = 예측 가치 있는 태그.
 function pickTopTags(mc, spec, cb) {
   var sql = 'SELECT ' + spec.nameCol + ', COUNT(*) FROM ' + String(spec.table).toUpperCase() +
     ' GROUP BY ' + spec.nameCol + ' ORDER BY COUNT(*) DESC LIMIT ' + CAP;
@@ -188,6 +189,10 @@ function register(registry, mc) {
         else if (parts.length === 1) { spec.tag = parts[0]; }
       }
 
+      // 이름을 소유자·database 까지 해석해 둔다 — 태그 목록·시간범위 조회가 이 값을 쓴다.
+      // 접두 없이 두면 남의 소유 테이블에서 태그가 조용히 비어 예측이 통째로 건너뛰어진다.
+      resolveTableRef(mc, spec.table, function (refErr, ref) {
+      if (!refErr && ref) spec.table = ref.qualified;
       tqlSpec.detectColumns(mc, spec.table, function (c) {
         spec.nameCol = c.n; spec.timeCol = c.t; spec.valueCol = c.v;
         tqlSpec.resolveTimeRange(mc, spec, function () {
@@ -214,6 +219,7 @@ function register(registry, mc) {
           });
         });
       });
+      }); // resolveTableRef
 
       // forecast_algo 엔진을 워커에서 실행(리더보드 + 모델 선택). method는 별칭/순위 문자열 그대로 넘김(엔진이 정규화).
       function runForecast(parsed, s, allModels) {

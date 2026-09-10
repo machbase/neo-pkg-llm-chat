@@ -60,7 +60,7 @@ function createAgent(llmClient, registry) {
     reportMode: false,
     cancelled: false,
     // 대시보드 완성(create_dashboard_with_charts 성공) 후 같은 쿼리 내 추가 차트 생성을 결정론적으로 차단하는 플래그.
-    // redundant_finalize 가드(권고형 rePrompt)는 약한 모델이 무시하면 뚫리므로, 도구 실행 레벨에서 못 박는다.
+    // redundant_finalize 가드는 권고형 rePrompt라 강제력이 없다 — 차단은 도구 실행 레벨에서 한다.
     // 쿼리마다 리셋 → 후속 "차트 추가해줘"는 정상 동작.
     dashboardFinalized: false,
     // compile/save 연속 실패 횟수. COMPILE_FAIL_CAP 도달 시 결정론적으로 추가 compile 차단(무한 거부루프 하드캡).
@@ -96,6 +96,7 @@ function agentRun(agent, query, cb) {
   agent.currentQuery = query;       // 리포트 커스텀 쿼리-라우팅용(executeToolCalls에서 사용)
   agent._finalizeNudged = false;    // 완성 가드: 이번 턴 "보고서 작성" 지시 주입 여부(1회용)
   agent._finalizeResult = '';       // 완성 가드: 마무리 도구 결과(URL 포함) — 빈 보고서 폴백용
+  agent._lastTableList = '';        // list_tables 표 원본 — 답변에 다시 붙은 표를 지우는 기준
   agent._finalizeRounds = 0;        // 완성 후 강제답변 LLM 라운드 수(FINALIZE_ROUND_CAP 공회전 하드캡용)
   agent.reportSavePending = false;  // save_html_report 1차 호출(데이터조회)만 되고 실제 파일 저장(2차 호출)이 아직 안 된 상태
   agent._reportSaveNudges = 0;      // 저장 재호출 강제 유도 누적 횟수(REPORT_SAVE_NUDGE_CAP 상한)
@@ -162,7 +163,7 @@ function buildSystemPrompt(agent, activeSkill) {
   if (activeSkill.toolGroups && activeSkill.toolGroups.length > 0) builder.addToolPrompts.apply(builder, activeSkill.toolGroups);
   // Ollama 카탈로그 다이어트: 카탈로그(~10k토큰 문서 인덱스)는 search_documents를 쓸 수 있는 스킬(DocLookup/General)에만 필요.
   // 나머지 스킬(Basic/Advanced/Report/Timer/DataQuery/SystemInfo)은 search_documents 미노출 → 카탈로그가 죽은 짐이라
-  // ollama일 때만 빼서 프리필↓·희석↓(40k창의 ~25% 절약). 강한 3모델(gpt/claude/gemini)은 큰 창+캐싱이라 항상 포함.
+  // ollama일 때만 빼서 프리필·희석을 줄인다. 강한 3모델(gpt/claude/gemini)은 큰 창+캐싱이라 항상 포함.
   var skillUsesCatalog = !activeSkill.allowTools || activeSkill.allowTools.indexOf('search_documents') >= 0;
   if (agent.docCatalog && (!isOllama || skillUsesCatalog)) {
     // ollama엔 경량본(path+제목만) 주입 — 키워드 열(덩치의 절반)은 search_documents가 디스크에서 읽으므로
@@ -204,9 +205,8 @@ function applySkill(agent, activeSkill) {
   }
 }
 
-// Ollama 스킬 강등 훅(현재 no-op): compile_tql_from_spec(IR)이 TQL 문법/함정을 보장하므로 약한 모델도
-// AdvancedAnalysis를 그대로 쓴다. 강등이 다시 필요하면 ollama + AdvancedAnalysis일 때
-// skillRegistry.get('BasicAnalysis')를 반환하도록 구현.
+// 스킬 강등 훅 — activeSkill을 그대로 통과시킨다.
+// compile_tql_from_spec(IR)이 TQL 문법/함정을 보장하므로 약한 모델도 AdvancedAnalysis를 그대로 쓴다.
 function rerouteForOllama(agent, activeSkill, skillRegistry) {
   return activeSkill;
 }
@@ -380,7 +380,7 @@ function runLoop(agent, step, cb) {
   // 도구 없이 답변 강제: (a) 대시보드/리포트 완성 후, 또는 (b) 동일 호출 반복 차단이 누적돼 교착일 때(_repeatForceAnswer).
   var _forceAnswer = (agent.llm.type === 'ollama' && (agent.dashboardFinalized || agent._repeatForceAnswer));
   // 완성 후 강제답변이 수렴하지 않는 공회전 하드캡: 모델이 넛지를 무시하고 tool_call 흉내/가드 재프롬프트로
-  // 계속 돌면(라이브에서 ~10초 호출 60회+ 관측, 차단 경로는 step을 안 태워 maxSteps 백스톱도 못 닿음)
+  // 계속 돌면(차단 경로는 step을 안 태워 maxSteps 백스톱에 닿지 않음)
   // 상한 초과 시 완성 도구 결과(URL 포함)로 결정론 종료 — 빈응답 폴백과 같은 출구.
   if (_forceAnswer && agent.dashboardFinalized) {
     agent._finalizeRounds = (agent._finalizeRounds || 0) + 1;
@@ -471,7 +471,7 @@ function runLoop(agent, step, cb) {
       // Ollama 예측 되묻기 가드: 예측 의도 질문(skill 4.5 → CodeExec)에서 forecast_table을 한 번도 안 부르고
       // 최종 답변(대개 describe_table의 태그 목록을 보고 "어떤 태그를 예측할까요?" 되묻기)을 내면 호출을 강제 재유도.
       // 태그 판단은 도구 소관(1개=자동/2~5=전부/5초과=도구가 되묻음)인데 약한 모델이 도구 설명의 "되묻기"를 보고
-      // 자기가 선점하는 패턴 — 프롬프트 금지("즉시 호출·되묻지 마세요")로는 안 지켜져 결정론으로 차단.
+      // 자기가 선점한다 — 프롬프트 금지("즉시 호출·되묻지 마세요")로는 막히지 않으므로 결정론적으로 차단한다.
       // forecast_table을 한 번이라도 시도했으면(성공·도구 되묻기·에러 무관) 미발동 — 도구 자신의 되묻기는 정당하다.
       if (agent.llm.type === 'ollama' && agent.skillName === 'CodeExec' && !agent._forecastCalled &&
           FORECAST_INTENT_RE.test(String(agent.currentQuery || '')) &&
@@ -537,11 +537,33 @@ function runLoop(agent, step, cb) {
       var finalContent = collapseRepeatedBlocks(msg.content);
       finalContent = normalizeProductName(finalContent);                             // 제품명 오표기 정정(마하베이스→마크베이스) — 전 프로바이더
       finalContent = fixDuplicateSummarized(finalContent);                           // TAG 테이블 CREATE에 SUMMARIZED 값컬럼 2개+ → 첫 개만 유지(ERR-2251 항상 무효) — 전 프로바이더
+      finalContent = csvDumpsToTables(finalContent, agent);                          // 도구가 준 조회 결과 CSV를 그대로 붙여넣은 블록 → 마크다운 표 — 전 프로바이더
+      finalContent = stripDuplicateListTable(finalContent, agent);                  // 모델이 옮겨 적은 표 제거(행 합침·건수 오류의 자리) — 전 프로바이더
+      finalContent = injectListTable(finalContent, agent);                          // 표는 도구 원본을 코드가 끼워 넣는다(설명과 한 답변에) — 전 프로바이더
       if (agent.llm.type === 'ollama') finalContent = normalizeHan(finalContent);   // 약한 모델 한자/중국어 누출 보정
       if (agent.llm.type === 'ollama') finalContent = balanceFences(finalContent);  // 안 닫힌 ```tql 펜스 복구(블록 병합→실행오류 방지)
       if (agent.llm.type === 'ollama') finalContent = dedupeTqlBlocks(finalContent); // 같은 SQL의 ```tql 블록 재탕 제거
       if (agent.llm.type === 'ollama') finalContent = reflowMarkdown(finalContent); // 깨진 목록 골격 복원(번호 뒤 공백·인라인 불릿 줄바꿈)
       if (agent.llm.type === 'ollama') finalContent = stripToolInternals(finalContent); // 도구 안내문(section= 등) 사용자 조언으로 에코된 줄 제거
+      // 약한 모델이 도구를 부르는 대신 도구호출 XML을 답변 본문으로 뱉는 경우가 있다.
+      // 화면은 이걸 HTML 태그로 파싱해 통째로 삼키므로 사용자에겐 조각 한 단어만 보인다(원인 추적이 어려움).
+      // stripToolInternals는 자연어 안내문만 지우므로 마크업은 여기서 따로 걷어낸다.
+      if (agent.llm.type === 'ollama') {
+        var beforeTC = finalContent;
+        finalContent = stripToolCallMarkup(finalContent);
+        if (beforeTC !== finalContent && !finalContent.replace(/\s/g, '')) {
+          if (!agent._toolCallLeakRetried) {
+            agent._toolCallLeakRetried = true;
+            console.println('[Agent] Answer was tool-call markup only → stripped to empty → one strong retry.');
+            agent.messages.push(createMessage('user',
+              '방금 응답에 도구 호출 형식이 그대로 들어갔습니다. 도구를 더 부르지 말고, 지금까지 확인한 내용만으로 사용자 질문에 대한 답변을 한국어 문장으로 지금 작성하세요.'));
+            return runLoop(agent, step + 1, cb);
+          }
+          console.println('[Agent] Still tool-call markup after retry → honest fallback.');
+          console.println('============================================================');
+          return cb(null, '답변 생성에 실패했습니다. 질문을 조금 더 구체적으로 다시 시도해 주세요.');
+        }
+      }
       // 저장 재유도(캡)까지 실패해 최종 폴백에 도달: 실제 파일 저장이 안 됐으므로 모델이 지어낸 URL/링크 제거 + 정직 고지.
       if (agent.llm.type === 'ollama' && agent.reportSavePending) finalContent = stripFabricatedReportSave(finalContent);
       // DocLookup 답변에서 내부 문서 경로(.md) 노출 줄만 제거(약한 모델 누출 보정).
@@ -614,7 +636,10 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
   // 순수 문서 질문까지 compile_tql_from_spec으로 샌다. 판정은 doc_intent(실재 테이블 목록 대조).
   var _docGuarded = toolName === 'compile_tql_from_spec' || toolName === 'describe_table' || toolName === 'list_tables' ||
     toolName === 'search_documents' || toolName === 'get_full_document_content' || toolName === 'get_document_sections';
-  if (agent.llm.type === 'ollama' && agent.skillName === 'DocLookup' && _docGuarded) {
+  // 전 프로바이더 적용: 강한 모델도 개념 질문("TQL이 무엇인가요")에서 문서를 읽고도 테이블 탐색·
+  // 차트 생성으로 새는 것이 관측됐다(list_tables→describe_table→compile_tql_from_spec 8회).
+  // 프롬프트 가드는 두 번 뚫렸으므로 판정을 코드에 둔다.
+  if (agent.skillName === 'DocLookup' && _docGuarded) {
     var _dq = String(agent.currentQuery || '');
     var _wantsEx = docIntent.wantsExample(_dq);
     var _structQ = docIntent.asksTableStructure(_dq);
@@ -705,8 +730,8 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
     return executeToolCalls(agent, toolCalls, idx + 1, step, doneCb);
   }
 
-  // forecast_table "데이터 부족" 반복 차단: 부족 응답을 받고도 rollup만 바꿔 재호출하는 루프(BEARING 3.4분 데이터에서
-  // 7연속 호출 실사례). 버킷 단위는 도구가 이미 구간 기준 최소로 잡으므로 인자를 바꿔도 결과가 달라지지 않는다.
+  // forecast_table "데이터 부족" 반복 차단: 부족 응답을 받고도 rollup만 바꿔 재호출하는 루프를 끊는다.
+  // 버킷 단위는 도구가 이미 구간 기준 최소로 잡으므로 인자를 바꿔도 결과가 달라지지 않는다.
   if (toolName === 'forecast_table' && agent._forecastShortages >= FORECAST_SHORTAGE_CAP) {
     console.println('  \\- BLOCKED: forecast_table 데이터 부족 ' + agent._forecastShortages + '회 → 추가 호출 차단');
     console.println('------------------------------------------------------------');
@@ -717,7 +742,7 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
   }
 
   // 무한 거부루프 하드캡: compile/save가 COMPILE_FAIL_CAP회 연속 실패하면 더 실행하지 않고 건너뜀 유도(결정론적).
-  // 약한 모델이 같은 잘못된 spec을 끝없이 재시도하는 것을 코드가 끊는다(consecutive_failure 가드는 권고라 무시당함).
+  // 약한 모델이 같은 잘못된 spec을 끝없이 재시도하는 것을 끊는다 — consecutive_failure 가드는 권고형이라 강제력이 없다.
   if ((toolName === 'compile_tql_from_spec' || toolName === 'save_tql_file' || toolName === 'forecast_table') && agent.compileFailStreak >= COMPILE_FAIL_CAP) {
     console.println('  \\- BLOCKED: ' + agent.compileFailStreak + ' consecutive compile failures, forcing skip (cap ' + COMPILE_FAIL_CAP + ')');
     console.println('------------------------------------------------------------');
@@ -732,8 +757,8 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
   if (agent.llm.type === 'ollama') reflowMarkdownInArgs(args); // 리포트 본문(analysis/recommendations)의 깨진 목록 골격 복원
 
   // forecast_table 태그 임의축소 교정(전 프로바이더, 결정론): 사용자가 질문에서 언급하지 않은 태그를 모델이
-  // tag/tags에 넣으면 제거 — 태그 결정은 도구 소관(1개=자동/2~5=전부/5초과=되묻기). 하이쿠가 "실버 데이터
-  // 예측해줘"에 tag:"close"를 넣어 5태그 중 1개만 예측된 라이브 사례(ollama 되묻기와 같은 병의 변종: 선점).
+  // tag/tags에 넣으면 제거 — 태그 결정은 도구 소관(1개=자동/2~5=전부/5초과=되묻기). 모델이 태그를 선점하면
+  // 대상 태그 중 하나만 예측되고 나머지가 조용히 빠진다.
   if (toolName === 'forecast_table') normalizeForecastTags(agent, args);
 
   // 동일 호출 반복 차단(결정론적 degeneration 하드캡, 전 프로바이더): 같은 도구를 같은 인자로 REPEAT_CALL_CAP회
@@ -913,8 +938,12 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
     } else {
       if (result === null || result === undefined) result = '';
       result = String(result);
-      console.println('  \\- OK: ' + truncate(result, 500));
+      // 모델에 넘어가는 것은 아래 messages.push의 원본이고 여기 절단은 로그 표시에만 걸린다.
+      // 500자면 검색 결과 12건 중 앞 4~5건에서 잘려, 로그로 실패를 진단할 때
+      // 실제로 반환된 문서를 "검색 결과에 없었다"고 잘못 읽게 된다.
+      console.println('  \\- OK: ' + truncate(result, 3000));
       // 대시보드 생성 성공 → 이후 같은 쿼리 내 추가 차트 생성 차단 + (ollama) 도구 없이 답변 강제 플래그 ON
+      if (toolName === 'list_tables') agent._lastTableList = result;
       if (toolName === 'create_dashboard_with_charts') { agent.dashboardFinalized = true; agent._finalizeResult = result; }
       // 리포트 저장 완료(2차 호출에서 파일 저장 = "리포트 열기" URL 반환)도 완성 신호 → 완성 후 도구 없이 답변 강제.
       // 1차 호출(데이터 조회, 결과에 "다시 호출" 안내)만 되면 reportSavePending=true로 표시 → 모델이 2차 저장을
@@ -991,8 +1020,12 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
 
     // Report result to UI
     if (agent.onProgress) {
-      var preview = truncate(result, 300);
-      agent.onProgress('```\n' + preview + '\n```');
+      // 결과가 마크다운 표로 시작하면 펜스 없이·자르지 않고 보낸다 — UI 가 표로 그리므로
+      // 모델이 표를 답변에 옮겨 적을 필요가 없다(옮기다 행을 합치거나 건수를 틀린다).
+      // 표 뒤의 모델용 지시문·전체 이름 목록은 화면에서 뺀다.
+      var uiTable = leadingMarkdownTable(result);
+      if (uiTable) agent.onProgress(uiTable);
+      else agent.onProgress('```\n' + truncate(result, 300) + '\n```');
     }
 
     captureResults(tc, result, execErr, agent.fixerCtx);
@@ -1000,6 +1033,21 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
 
     executeToolCalls(agent, toolCalls, idx + 1, step, doneCb);
   });
+}
+
+// 결과 맨 앞의 마크다운 표 블록만 돌려준다(표 행 + 빈 줄 + "(N ...)" 꼬리까지).
+// 표가 아니면 null — 호출부가 기존 펜스 방식으로 폴백한다.
+function leadingMarkdownTable(s) {
+  var lines = String(s || '').split('\n');
+  if (!/^\s*\|.*\|\s*$/.test(lines[0] || '')) return null;
+  if (!/^\s*\|[-\s|:]+\|\s*$/.test(lines[1] || '')) return null;
+  var out = [];
+  for (var i = 0; i < lines.length; i++) {
+    var ln = lines[i];
+    if (/^\s*\|.*\|\s*$/.test(ln) || /^\s*$/.test(ln) || /^\s*\(\d+\s/.test(ln)) { out.push(ln); continue; }
+    break;
+  }
+  return out.join('\n').trim();
 }
 
 function truncate(s, max) {
@@ -1090,6 +1138,11 @@ function safeArgSig(args) {
 // Ollama 약한 모델이 가끔 답변에 한자/중국어를 누출(Role의 "한자 금지" 위반) → 흔한 도메인 용어를 결정론적 치환.
 // 삭제는 문장을 깨뜨리므로 치환만 함. 맵에 없는 한자는 남되 경고 로그로 남겨 맵을 키운다. (긴 키 먼저 = 부분치환 방지)
 var HAN_MAP = [
+  // 문서 QA·기술 설명 답변에서 새는 상용 표현. 긴 것을 먼저 두어 부분치환을 막는다.
+  ['进行', '진행'], ['处理', '처리'], ['支持', '지원'], ['执行', '실행'],
+  ['生成', '생성'], ['定义', '정의'], ['结果', '결과'], ['格式', '형식'], ['文件', '파일'], ['读取', '읽기'],
+  ['写入', '쓰기'], ['返回', '반환'], ['类型', '타입'], ['参数', '파라미터'], ['配置', '설정'], ['默认', '기본값'],
+  ['语法', '문법'], ['名称', '이름'], ['需要', '필요'], ['可以', '가능'], ['通过', '통해'], ['或者', '또는'], ['以及', '및'],
   ['成交量', '거래량'], ['波动性', '변동성'], ['传感器', '센서'], ['开盘', '시가'], ['收盘', '종가'],
   ['最高', '최고'], ['最低', '최저'], ['最大', '최대'], ['最小', '최소'], ['平均', '평균'],
   ['价格', '가격'], ['时间戳', '타임스탬프'], ['时间', '시간'], ['分析', '분석'], ['数据源', '데이터소스'], ['数据', '데이터'], ['趋势', '추세'],
@@ -1101,9 +1154,10 @@ var HAN_MAP = [
   ['可适当', '적절히'], ['适当', '적절히'], ['交易日', '거래일'], ['交易', '거래'], ['成交', '거래'], ['指标', '지표'], ['风险', '리스크'], ['投资', '투자'],
   ['资产', '자산'], ['市场', '시장'], ['建议', '권고'], ['收益', '수익'], ['波幅', '변동폭'], ['支撑', '지지'], ['阻力', '저항'],
   // 모니터링/대시보드 답변·차트 제목에서 새는 표현
-  ['使用率', '사용률'], ['日均', '일평균'], ['内存', '메모리'], ['状态', '상태'], ['错误', '오류'],
+  ['使用率', '사용률'], ['使用', '사용'], ['日均', '일평균'], ['内存', '메모리'], ['状态', '상태'], ['错误', '오류'],
   ['请求', '요청'], ['响应', '응답'], ['连接', '연결'], ['服务', '서비스'], ['数量', '개수'],
-  // 누출 경고 로그·라이브 답변에서 수집된 표현. '的'는 조사라 어떤 단어 뒤에도 붙을 수 있어 맨 뒤 단독 폴백.
+  ['也不行', '역시 불가'], ['不行', '불가'], ['识别', '식별'], ['也', '또한'], ['是', '는'], ['子', '자'],
+  // '的'는 조사라 어떤 단어 뒤에도 붙을 수 있어 맨 뒤 단독 폴백.
   ['从现在起', '지금부터'], ['毫秒', '밀리초'], ['的差异', '의 차이'], ['差异', '차이'],
   ['육眼', '육안'], ['眼前', '눈앞'], ['眼', '안'], ['前', '전'], ['的', '의']
 ];
@@ -1112,6 +1166,28 @@ var HAN_MAP = [
 // 먹으므로 ① 괄호 꼬리만 외과적으로 제거 → ② 그래도 토큰이 남는 줄만 삭제. 코드펜스 안은 보존.
 var TOOL_INTERNALS_RE = /section\s*=|file_identifier|search_documents|get_full_document_content|get_document_sections|extract_code_blocks|list_available_documents|이 문서의 주요 섹션|이 문서의 다른 섹션/;
 var TOOL_INTERNALS_PAREN_RE = /\s*[(（][^()（）]*(?:section\s*=|file_identifier|search_documents|get_full_document_content|get_document_sections|extract_code_blocks|list_available_documents)[^()（）]*[)）]/g;
+// 도구호출 마크업 제거. `<tool_call>…</tool_call>` 블록은 통째로, 짝이 깨져 흩어진
+// `<parameter=…>`·`</parameter>`·`<function…>` 조각은 줄 단위로 걷어낸다.
+// 코드펜스 안은 건드리지 않는다 — 문서가 XML 예제를 담을 수 있다.
+function stripToolCallMarkup(text) {
+  if (!text || String(text).indexOf('<') < 0) return text;
+  var removed = 0;
+  function clean(s) {
+    // 블록 먼저 — 줄 단위로 태그만 지우면 인자 값("평균값")이 본문처럼 남는다. 실제 누출이 이 모양이었다.
+    s = s.replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, function () { removed++; return ''; });
+    s = s.replace(/<tool_call>[\s\S]*$/i, function () { removed++; return ''; });        // 닫히지 않은 채 끝난 경우
+    s = s.replace(/<parameter\s*=[^>]*>[\s\S]*?<\/parameter>/gi, function () { removed++; return ''; });
+    var TAG = /^\s*<\/?(?:tool_call|function|parameter)\b[^>]*>\s*$/i;                    // 흩어진 조각
+    return s.split('\n').filter(function (l) { if (TAG.test(l)) { removed++; return false; } return true; }).join('\n');
+  }
+  // 코드펜스 안은 건드리지 않는다 — 문서가 XML 예제를 담을 수 있다.
+  var parts = String(text).split(/(```[\s\S]*?```)/g);
+  for (var i = 0; i < parts.length; i++) if (i % 2 === 0) parts[i] = clean(parts[i]);
+  var out = parts.join('');
+  if (removed) console.println('[Agent] 도구호출 마크업 ' + removed + '조각 제거(stripToolCallMarkup)');
+  return out.replace(/\n{3,}/g, '\n\n');
+}
+
 function stripToolInternals(text) {
   if (!text) return text;
   var lines = String(text).split('\n');
@@ -1127,6 +1203,78 @@ function stripToolInternals(text) {
   }
   if (removed) console.println('[Agent] 도구 내부 노출 ' + removed + '줄 제거(stripToolInternals)');
   return out.join('\n');
+}
+
+// 조회 결과를 요약하지 않고 도구가 준 CSV 원문을 그대로 코드블록에 붙여넣는 패턴 대응 —
+// 언어 태그 없는 펜스 중 도구 결과와 실제로 겹치는 CSV만 마크다운 표로 바꾼다.
+// 언어 태그가 있는 블록(```tql/```sql 등)과 도구 결과에 없는 CSV(사용자가 요청한 예시)는 그대로 둔다.
+var CSV_FENCE_LANGS = { '': 1, csv: 1, txt: 1, text: 1, plain: 1, plaintext: 1 }; // 실행 코드가 아닌 펜스만 대상
+function csvDumpsToTables(text, agent) {
+  if (!text || String(text).indexOf('```') < 0) return text;
+  var msgs = (agent && agent.messages) || [];
+  var toolOutputs = [];
+  for (var m = 0; m < msgs.length; m++) {
+    if (msgs[m] && msgs[m].role === 'tool') toolOutputs.push(String(msgs[m].content || ''));
+  }
+  if (!toolOutputs.length) return text;
+
+  // 펜스는 줄 단위로 짝을 맞춰 훑는다 — 정규식 한 방이면 앞 블록의 닫는 펜스를 뒤 블록의 여는 펜스로
+  // 오인해 짝이 어긋난다.
+  var lines = String(text).split('\n');
+  var out = [], i = 0, converted = 0;
+  while (i < lines.length) {
+    var open = /^[ \t]*```[ \t]*([A-Za-z0-9_+-]*)[ \t]*\r?$/.exec(lines[i]);
+    if (!open) { out.push(lines[i++]); continue; }
+    var body = [], j = i + 1, closed = false;
+    for (; j < lines.length; j++) {
+      if (/^[ \t]*```[ \t]*\r?$/.test(lines[j])) { closed = true; break; }
+      body.push(lines[j]);
+    }
+    if (!closed) { out.push(lines[i++]); continue; }   // 안 닫힌 펜스 → 원문 그대로
+    var table = CSV_FENCE_LANGS[open[1].toLowerCase()] ? csvBodyToTable(body.join('\n'), toolOutputs) : null;
+    if (table) {
+      out.push(table);
+      converted++;
+    } else {
+      out.push(lines[i]);
+      for (var k = 0; k < body.length; k++) out.push(body[k]);
+      out.push(lines[j]);
+    }
+    i = j + 1;
+  }
+  if (converted) console.println('[Agent] 답변 속 원본 CSV ' + converted + '블록 → 마크다운 표 변환(csvDumpsToTables)');
+  return out.join('\n');
+}
+
+// CSV 본문 → 마크다운 표. 표로 바꿀 조건이 아니면 null(호출부가 원본 블록 유지).
+function csvBodyToTable(body, toolOutputs) {
+  var lines = String(body).split('\n');
+  var rows = [];
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].replace(/\r$/, '').trim();
+    if (!line) continue;
+    if (/^\(\d+ rows?\)/.test(line)) continue;   // 도구 결과의 행 수 꼬리 — 표에는 불필요
+    rows.push(line);
+  }
+  if (rows.length < 2) return null;              // 헤더 + 최소 1행
+  var cols = rows[0].split(',').length;
+  if (cols < 2) return null;
+  var matched = 0;
+  for (var r = 0; r < rows.length; r++) {
+    if (rows[r].split(',').length !== cols) return null;   // 열 수가 들쭉날쭉 → CSV가 아님
+    for (var t = 0; t < toolOutputs.length; t++) {
+      if (toolOutputs[t].indexOf(rows[r]) >= 0) { matched++; break; }
+    }
+  }
+  // 도구 결과와 실제로 겹칠 때만 — 절반 이상, 최소 2줄.
+  if (matched < 2 || matched < rows.length * 0.5) return null;
+
+  var cells = function (line) {
+    return line.split(',').map(function (c) { return c.trim().split('|').join('\\|'); });
+  };
+  var md = ['| ' + cells(rows[0]).join(' | ') + ' |', '|' + new Array(cols + 1).join(' --- |')];
+  for (var k = 1; k < rows.length; k++) md.push('| ' + cells(rows[k]).join(' | ') + ' |');
+  return md.join('\n');
 }
 
 // DocLookup 답변에서 내부 문서 경로(.md) 노출 줄 제거 — "이 예제는 tql/tql-guide.md에 실제로 존재합니다"류
@@ -1190,6 +1338,89 @@ function fixDuplicateSummarized(s) {
 // ② "…있습니다. - 실행방안: …"처럼 하위 불릿이 줄바꿈 없이 문장 뒤에 이어짐 → 줄 분리
 // ③ 문단에 바로 붙은 번호 목록 앞 빈 줄 삽입(1. 외 시작번호는 문단을 목록으로 못 끊는 GFM 규칙)
 // 코드펜스 안·표 행(| 포함, 셀에 '- '류가 흔함)·인라인코드는 건드리지 않는다. 소수점(3.14)·절 번호(3.5)는 뒤가 숫자라 제외.
+// 도구가 만든 표를 최종 답변에 끼워 넣는다 — 설명과 표가 한 답변에 같이 오도록.
+// 모델이 옮겨 적게 하면 행을 합치거나 건수를 틀리므로(모델마다 다름), 옮겨 적은 건 위에서
+// 지우고 원본을 여기서 넣는다. 첫 문단 뒤가 자연스러운 자리다.
+function injectListTable(content, agent) {
+  var src = String((agent && agent._lastTableList) || '');
+  if (!src) return content;
+  var m = /^(\|[^\n]*\|\n\|[-\s|:]+\|\n(?:\|[^\n]*\|\n?)*)/.exec(src);
+  if (!m) return content;
+  var table = m[1].trim();
+  var body = String(content || '').trim();
+  if (!body) return table;
+  if (/^[ \t]*\|[^\n]*\|[ \t]*\n[ \t]*\|[-\s|:]+\|/m.test(body)) return body;  // 이미 표가 있으면 그대로
+  var parts = body.split(/\n\s*\n/);
+  if (parts.length <= 1) return body + '\n\n' + table;
+  return parts[0] + '\n\n' + table + '\n\n' + parts.slice(1).join('\n\n');
+}
+
+// list_tables 표를 모델이 답변에 옮겨 적은 흔적을 지운다 — 표는 injectListTable 이 원본으로 넣는다.
+// 열 구성으로 판정하지 않는다: 모델마다 1열로 쓰거나, 2열로 쓰거나, 여러 테이블을 한 칸에 합치거나,
+// 데이터베이스별로 쪼갠 작은 표를 여러 개 만든다. 그래서
+//   · 조회(execute_sql_query)가 없던 턴이면 → 표를 전부 걷어낸다(그 턴의 표는 전부 목록의 변형이다)
+//   · 조회가 있었으면 → 조회 결과 표를 지우지 않도록, 도구가 준 테이블 이름이 2개 이상 등장하는 블록만
+// 표를 지우면 "### FACTORY_A" 같은 빈 제목만 남으므로 내용 없는 제목도 함께 정리한다.
+function stripDuplicateListTable(content, agent) {
+  var src = String((agent && agent._lastTableList) || '');
+  if (!src || !content) return content;
+  var listOnly = !(agent && agent._ranQuery);
+
+  var names = [], labels = [], srcLines = src.split('\n'), i, sm;
+  for (i = 0; i < srcLines.length; i++) {
+    sm = /^\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*$/.exec(srcLines[i]);
+    if (!sm || /^[-:\s]+$/.test(sm[1])) continue;
+    var nm = sm[2].toUpperCase(), db = sm[1].toUpperCase();
+    if (nm && nm !== '테이블' && names.indexOf(nm) < 0) names.push(nm);
+    if (db && db !== '데이터베이스' && labels.indexOf(db) < 0) labels.push(db);
+  }
+  var sectionLabels = labels.concat(names);   // 지운 표의 구역 제목 후보(DB명·테이블명)
+  if (!listOnly && names.length === 0) return content;
+
+  function knownHits(block) {
+    var up = block.toUpperCase(), hits = 0;
+    for (var k = 0; k < names.length; k++) if (up.indexOf(names[k]) >= 0) hits++;
+    return hits;
+  }
+
+  var lines = String(content).split('\n'), out = [];
+  i = 0;
+  while (i < lines.length) {
+    if (!/^\s*\|.*\|\s*$/.test(lines[i])) { out.push(lines[i++]); continue; }
+    var start = i;
+    while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) i++;
+    if (listOnly || knownHits(lines.slice(start, i).join('\n')) >= 2) continue;
+    for (var k2 = start; k2 < i; k2++) out.push(lines[k2]);
+  }
+  return dropEmptyHeadings(out.join('\n'), sectionLabels).replace(/\n{3,}/g, '\n\n').trim();
+}
+
+// 내용 없는 제목 줄 제거(표를 걷어내면 "### FACTORY_A" 만 남는다). 상위 제목도 자식이 사라지면
+// 비므로 더 지울 게 없을 때까지 반복한다.
+function dropEmptyHeadings(text, sectionLabels) {
+  var labels = sectionLabels || [];
+  // "### FACTORY_A (1개)" 처럼 지운 표의 구역 라벨이던 제목 — 뒤에 문장이 남아 있어도 지운다.
+  function isSectionLabel(line) {
+    var t = String(line).replace(/^\s*#{1,6}\s*/, '').replace(/\s*\([^)]*\)\s*$/, '').trim().toUpperCase();
+    return !!t && labels.indexOf(t) >= 0;
+  }
+  var lines = String(text || '').split('\n');
+  for (var pass = 0; pass < 4; pass++) {
+    var out = [], changed = false;
+    for (var i = 0; i < lines.length; i++) {
+      if (/^\s*#{1,6}\s/.test(lines[i])) {
+        if (isSectionLabel(lines[i])) { changed = true; continue; }
+        var j = i + 1;
+        while (j < lines.length && /^\s*$/.test(lines[j])) j++;
+        if (j >= lines.length || /^\s*#{1,6}\s/.test(lines[j])) { changed = true; continue; }
+      }
+      out.push(lines[i]);
+    }
+    lines = out;
+    if (!changed) break;
+  }
+  return lines.join('\n');
+}
 function reflowMarkdown(s) {
   if (!s) return s;
   var lines = String(s).split('\n');
@@ -1279,8 +1510,8 @@ var FC_TAG_ALIASES = { '종가': 'close', '시가': 'open', '고가': 'high', '�
 
 // forecast_table 인자 교정: 질문에 없는 tag/tags 제거(전부 없으면 도구 자동결정, 일부만 언급이면 그것만 유지).
 // spec(객체/JSON 문자열)과 최상위 인자 둘 다 본다 — forecast.js assemble()이 둘 다 읽기 때문.
-// 한계(수용): "그 태그로 예측해줘" 같은 대명사 지칭은 질문에 태그명이 없어 전체 예측으로 넘어간다 —
-// 임의 축소(엉뚱한 태그 1개)보다 과잉 제공(요청 태그 포함 전체)이 낫다는 판단.
+// 한계: "그 태그로 예측해줘" 같은 대명사 지칭은 질문에 태그명이 없어 전체 예측으로 넘어간다
+// (임의 축소로 엉뚱한 태그 1개만 남기는 것보다, 요청 태그를 포함한 전체 예측이 안전하다).
 function normalizeForecastTags(agent, args) {
   var q = String(agent.currentQuery || '').toLowerCase();
   if (!q) return;
@@ -1319,8 +1550,8 @@ function normalizeForecastTags(agent, args) {
 // 이번 쿼리에서 모델이 마지막으로 describe_table/list_table_tags 한 테이블명 — 예측 호출 강제 유도 문구에 사용.
 // (질문이 "실버"처럼 한글이면 질문 파싱은 불가 — 모델이 이미 해석해 도구 인자로 넘긴 영문 테이블명이 정답이다.)
 // ⚠️ 앵커는 **포함 매치**여야 한다: 실제 user 메시지엔 스킬 힌트가 덧붙어 `content === currentQuery`가 절대 성립 안 함.
-//    등호 매치 시절엔 앵커 실패 → start=0 → 세션 전체 스캔 → **이전 질문의 테이블**(SILVER)을 집어 엉뚱한 예측을
-//    강제한 실사례("진동 예측해줘"에 실버 재예측). 앵커를 못 찾으면 통째로 포기('')하고 일반 문구로 유도한다.
+//    등호 매치는 앵커를 놓쳐 start=0 → 세션 전체 스캔 → **이전 질문의 테이블**을 집어 엉뚱한 예측을 강제한다.
+//    앵커를 못 찾으면 통째로 포기('')하고 일반 문구로 유도한다.
 function lastDescribedTable(agent) {
   var msgs = agent.messages, start = -1, i, j;
   var q = String(agent.currentQuery || '');
@@ -1410,16 +1641,37 @@ function normalizeSqlKey(q) {
   var cols = splitTopLevelCommas(m[1]); cols.sort();
   return 'SELECT ' + cols.join(', ') + ' FROM ' + m[2];
 }
-// Ollama 약한 모델이 답변에 "사실상 같은 차트"의 ```tql 블록을 여러 번 중복 생성(차트 꾸밈·컬럼순서만 바꿔 재탕) → 제거.
-// SQL 쿼리를 컬럼순서까지 정규화해 비교 → 같으면 첫 블록만 남김. SQL이 진짜 다르거나 없으면 유지. 결정론적.
+// 문자열 리터럴 안의 괄호가 깊이 계산을 흔들지 않도록 먼저 비운다 — SQL(`... AVG(VALUE) ...`) 대응.
+function stripTqlLiterals(s) {
+  return String(s)
+    .replace(/`[^`]*`/g, '``')
+    .replace(/'[^'\r\n]*'/g, "''")
+    .replace(/"[^"\r\n]*"/g, '""');
+}
+// 블록의 SINK = 파이프라인의 마지막 최상위 함수. 이름만 취하고 인자는 버린다 —
+// 인자까지 키에 넣으면 "꾸밈만 바꾼 재탕"이 서로 다른 키가 돼 중복 제거가 무력해진다.
+function sinkName(body) {
+  var s = stripTqlLiterals(body), depth = 0, name = '', last = '';
+  for (var i = 0; i < s.length; i++) {
+    var c = s[i];
+    if (/[A-Za-z0-9_]/.test(c)) { if (depth === 0) name += c; continue; }
+    if (c === '(') { if (depth === 0 && name) last = name.toUpperCase(); depth++; name = ''; continue; }
+    if (c === ')') { if (depth > 0) depth--; name = ''; continue; }
+    if (depth === 0) name = '';
+  }
+  return last;
+}
+// Ollama 약한 모델이 답변에 "사실상 같은 차트"의 tql 블록을 여러 번 중복 생성(꾸밈·컬럼순서만 바꿔 재탕) → 제거.
+// 키는 SQL + SINK 이름 조합이다. SQL만으로 잡으면 같은 SQL에 CSV()/JSON()/CHART()/HTML()만
+// 바꾼 출력 형식 비교 예제가 첫 블록만 남고 지워져, 문서가 보여주려는 바로 그 차이가 사라진다.
 function dedupeTqlBlocks(text) {
   if (!text) return text;
   var seen = {};
   var out = text.replace(/```([\w-]*)\r?\n([\s\S]*?)```/g, function (full, lang, body) {
     var m = body.match(/SQL\(\s*`([\s\S]*?)`\s*\)/i);
     if (!m) return full;                                  // SQL 없는 블록은 유지
-    var key = normalizeSqlKey(m[1]);
-    if (seen[key]) return '';                             // 사실상 같은 차트 재탕 → 제거
+    var key = normalizeSqlKey(m[1]) + ' >> ' + sinkName(body);
+    if (seen[key]) return '';                             // SQL·SINK 모두 같은 재탕 → 제거
     seen[key] = true;
     return full;
   });
@@ -1427,7 +1679,7 @@ function dedupeTqlBlocks(text) {
 }
 
 // 약한 모델(특히 ollama)이 최종 답변에서 같은 블록을 N번 반복 생성하는 degeneration을 결정론적으로 제거.
-// 생성엔 손대지 않고 반환 직전 텍스트만 보정. 주기적 블록이 본문의 60%+를 차지하는 "진짜 반복"일 때만 1개로 축약 — 일반 답변은 그대로 통과.
+// 생성엔 손대지 않고 반환 직전 텍스트만 보정. 주기적 블록이 본문의 40%+를 차지하는 "진짜 반복"일 때만 1개로 축약 — 일반 답변은 그대로 통과.
 function collapseRepeatedBlocks(content) {
   if (!content) return content;
   var s = String(content).replace(/\s+$/, '');

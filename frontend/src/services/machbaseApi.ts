@@ -1,5 +1,6 @@
 import type { TqlChartPayload, TablePayload, ExecResult, ExecErrorKind } from "../types/exec";
 import { getApiBaseOrigin } from "./baseUrl";
+import { authHeaders } from "../utils/auth";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -13,7 +14,7 @@ async function buildUrl(suffix: string): Promise<string> {
 }
 
 /**
- * fetch 응답을 ExecResult로 정규화. Authorization 헤더 안 보냄 (LLM 중계 서버가 inject).
+ * fetch 응답을 ExecResult로 정규화. 중계 서버는 이 토큰을 그대로 neo 로 넘긴다.
  * AbortController 시그널 throw / TypeError → kind 분류는 useTqlExec에서.
  */
 export async function executeTql(
@@ -23,7 +24,7 @@ export async function executeTql(
   const url = await buildUrl("/db/tql");
   const res = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "text/plain" },
+    headers: { "Content-Type": "text/plain", ...authHeaders() },
     body: code,
     signal: opts.signal,
   });

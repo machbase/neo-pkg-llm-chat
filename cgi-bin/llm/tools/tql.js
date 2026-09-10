@@ -1,5 +1,6 @@
 var { argStr } = require('./registry');
-var { extractUserTables, checkTableOwnership } = require('./ownership');
+var { prepareSql } = require('./table_access');
+var { withUserRoot, ensureParentOf } = require('./paths');
 
 // 쿼리 결과에 행이 있는지 (Machbase는 200+{"success":false}로도 에러를 줄 수 있어 success/rows 확인)
 function rowsPresent(qres) {
@@ -25,9 +26,9 @@ function register(registry, mc) {
     fn: function (args, cb) {
       var tql = argStr(args, 'tql_content', '');
       if (!tql) return cb(null, 'Error: tql_content is required');
-      var tables = extractUserTables(tql);
-      checkTableOwnership(mc, tables, function (ownerErr) {
-        if (ownerErr) return cb(null, 'Error: ' + ownerErr.message);
+      prepareSql(mc, tql, function (accessErr, preparedTql) {
+        if (accessErr) return cb(null, 'Error: ' + accessErr.message);
+        tql = preparedTql;
         mc.executeTQL(tql, function (err, result) {
           if (err) return cb(null, 'Error: TQL execution failed: ' + err.message);
           if (!result || result.trim() === '') return cb(null, 'TQL executed successfully (no output).');
@@ -62,9 +63,9 @@ function register(registry, mc) {
       return;
 
       function processTql() {
-        var tables = extractUserTables(tqlContent);
-        checkTableOwnership(mc, tables, function (ownerErr) {
-          if (ownerErr) return cb(null, 'Error: ' + ownerErr.message);
+        prepareSql(mc, tqlContent, function (accessErr, preparedTql) {
+          if (accessErr) return cb(null, 'Error: ' + accessErr.message);
+          tqlContent = preparedTql;
           processTqlAfterOwnerCheck();
         });
       }
@@ -99,6 +100,8 @@ function register(registry, mc) {
         }
 
         if (!filename.toLowerCase().endsWith('.tql')) filename += '.tql';
+        // 산출물은 계정 폴더 아래로 — 같은 이름의 차트를 서로 덮어쓰지 않게 한다.
+        filename = withUserRoot(mc, filename);
 
         var slashIdx = filename.lastIndexOf('/');
         var shiftedMsg = '';
@@ -137,7 +140,7 @@ function register(registry, mc) {
                 if (rowsPresent(qres)) return writeIt();
 
                 // 0건 → 테이블 실제 MIN/MAX(TIME)으로 TO_DATE 범위 스냅 후 재검
-                var tmF = /FROM\s+([A-Za-z_][A-Za-z0-9_]*)/i.exec(tqlContent);
+                var tmF = /FROM\s+([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*){0,2})/i.exec(tqlContent);
                 var tdAll = tqlContent.match(/TO_DATE\s*\(\s*'([^']+)'\s*\)/g);
                 if (!tmF || !tdAll || tdAll.length < 2) return cb(null, ZERO_ROW_MSG);
                 mc.querySQL('SELECT MIN(TIME), MAX(TIME) FROM ' + tmF[1].toUpperCase(), 'ms', '', '', function (me, mr) {
@@ -171,7 +174,7 @@ function register(registry, mc) {
           }
 
           if (slashIdx > 0) {
-            mc.createFolder(filename.substring(0, slashIdx), function () { afterFolder(); });
+            ensureParentOf(mc, filename, function () { afterFolder(); });
           } else {
             afterFolder();
           }
@@ -193,7 +196,8 @@ function register(registry, mc) {
 
         // Time shift: if TQL contains TO_DATE with future times, shift to data range
         var toDateRe = /TO_DATE\s*\(\s*'([^']+)'\s*\)/g;
-        var fromRe = /FROM\s+([A-Za-z_][A-Za-z0-9_]*)/i;
+        // 소유자 접두(SYS.BITCOIN)까지 한 토큰으로 — 안 그러면 SYS 만 잘려 엉뚱한 테이블을 조회한다.
+        var fromRe = /FROM\s+([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*){0,2})/i;
         var dates = [];
         var m;
         while ((m = toDateRe.exec(tqlContent)) !== null) dates.push(m[1]);

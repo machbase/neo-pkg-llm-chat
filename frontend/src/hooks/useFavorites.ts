@@ -60,7 +60,7 @@ export function useFavorites() {
     (async () => {
       if (user) {
         try {
-          const server = sanitize(await fetchFavorites(user));
+          const server = sanitize(await fetchFavorites());
           if (cancelled) return;
           if (server.length === 0) {
             // Migrate favorites from the previous localStorage-only version.
@@ -69,7 +69,7 @@ export function useFavorites() {
               setBoth(local);
               loadedRef.current = true;
               try {
-                await saveFavorites(user, local);
+                await saveFavorites(local);
                 localStorage.removeItem(STORAGE_KEY);
               } catch (e) {
                 console.warn("[favorites] migration save failed:", e);
@@ -110,7 +110,7 @@ export function useFavorites() {
     saveTimerRef.current = setTimeout(() => {
       saveTimerRef.current = null;
       dirtyRef.current = false;
-      saveFavorites(user, favoritesRef.current).catch((e) => console.warn("[favorites] save failed:", e));
+      saveFavorites(favoritesRef.current).catch((e) => console.warn("[favorites] save failed:", e));
     }, SAVE_DEBOUNCE_MS);
   }, []);
 
@@ -124,7 +124,7 @@ export function useFavorites() {
       const user = userRef.current;
       if (dirtyRef.current && user) {
         dirtyRef.current = false;
-        saveFavorites(user, favoritesRef.current).catch(() => {});
+        saveFavorites(favoritesRef.current).catch(() => {});
       }
     };
   }, []);

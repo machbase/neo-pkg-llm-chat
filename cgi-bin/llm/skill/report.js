@@ -10,11 +10,10 @@ module.exports = function () {
     // execute_sql_query/list_* 제외: 모델이 리포트 전에 직접 조회(잘못된 컬럼명 추측 등)하다 헛스텝 나는 것 차단.
     // save_html_report가 시간범위·컬럼·태그·통계를 전부 내부 처리하므로 사전 조회 불필요.
     //
-    // ※ forecast_table은 **일부러 넣지 않는다**. "예측 리포트 만들어줘"는 여기로 분류되지만(skill.js 2단계),
-    //   현재 정책상 그때 나오는 건 **일반 분석 리포트**가 맞다. 예측 리포트는 **"예측해줘"(순수 예측 요청)로만** 만든다.
-    //   나중에 Report에서도 예측 리포트를 내려면: 여기 forecast_table + forecast_tools를 추가하고,
-    //   guard/report_omission.js가 **save_html_report만 인정**하므로 그 목록에도 forecast_table을 넣어야 한다
-    //   (안 넣으면 예측 리포트를 제대로 만들어도 가드가 재촉해 일반 리포트를 하나 더 만든다).
+    // ※ forecast_table은 넣지 않는다. "예측 리포트 만들어줘"는 여기로 분류되며(skill.js 2단계)
+    //   그 결과는 **일반 분석 리포트**다. 예측 리포트는 **"예측해줘"(순수 예측 요청)** 경로에서만 만든다.
+    //   이 목록은 guard/report_omission.js의 REPORT_TOOLS와 짝을 이룬다 — 한쪽만 늘리면 가드가
+    //   완성된 리포트를 미완성으로 보고 재촉한다.
     allowTools: [
       'save_html_report',
     ],

@@ -8,6 +8,8 @@ import { useFavorites } from '../../hooks/useFavorites';
 import Icon from '../common/Icon';
 import ThemeToggle from '../common/ThemeToggle';
 import neoLogo from '../../assets/image/neowFavicon';
+import { pickGreeting } from '../../constants/greetings';
+import { TypedGreeting } from './TypedGreeting';
 
 interface SuggestionChip {
     icon: string;
@@ -45,6 +47,7 @@ interface ChatViewProps {
     inputValue: string;
     isConnected: boolean;
     isDisconnected: boolean;
+    followups: string[];
     reconnect: () => void;
     selectedModel: PkgSelectedModel;
     isComposingRef: React.MutableRefObject<boolean>;
@@ -67,6 +70,7 @@ export const ChatView = ({
     inputValue,
     isConnected,
     isDisconnected,
+    followups,
     reconnect,
     selectedModel,
     isComposingRef,
@@ -108,6 +112,19 @@ export const ChatView = ({
     const [dropdownPos, setDropdownPos] = useState<{ left: number; bottom: number } | null>(null);
 
     const { favorites, addFavorite, removeFavorite, reorderFavorites } = useFavorites();
+
+    // Re-rolled whenever the welcome screen comes back, so a cleared session
+    // gets a fresh line without the greeting flickering on mount.
+    const [greeting, setGreeting] = useState(pickGreeting);
+    const rerollGreeting = useCallback(() => {
+        setGreeting((current) => pickGreeting(new Date(), current));
+    }, []);
+    const hadMessagesRef = useRef(messages.length > 0);
+    useEffect(() => {
+        const hasMessages = messages.length > 0;
+        if (hadMessagesRef.current && !hasMessages) rerollGreeting();
+        hadMessagesRef.current = hasMessages;
+    }, [messages.length]);
 
     useEffect(() => {
         wasEmptyRef.current = messages.length === 0;
@@ -371,10 +388,10 @@ export const ChatView = ({
                         <div className="chat-welcome-icon-wrap">
                             <img src={neoLogo} alt="Neo" className="chat-welcome-logo" />
                         </div>
-                        <h2 className="chat-welcome-title">How can I help you?</h2>
-                        {!isModelSelected && (
-                            <p className="chat-welcome-hint">Select a model below to start chatting.</p>
-                        )}
+                        {/* No "pick a model" line — the model chip pulses until one is chosen. */}
+                        <h2 className="chat-welcome-title">
+                            <TypedGreeting text={greeting} onCycle={rerollGreeting} onClick={rerollGreeting} />
+                        </h2>
                     </div>
                     </>
                 )}
@@ -388,6 +405,8 @@ export const ChatView = ({
                             scrollRef={scrollRef}
                             onEdit={handleEditUserMessage}
                             canEdit={!isProcessingAnswer && isConnected}
+                            followups={followups}
+                            onPickFollowup={fillInputWithPrompt}
                         />
                     </div>
                 )}
@@ -456,8 +475,8 @@ export const ChatView = ({
                                     !isConnected
                                         ? 'Not connected to server.'
                                         : isModelSelected
-                                          ? `Message ${selectedModel.name}...`
-                                          : 'Select a model first...'
+                                          ? `Message ${selectedModel.name}`
+                                          : 'Select a model first'
                                 }
                                 disabled={!isConnected}
                                 className="chat-input"
@@ -476,7 +495,7 @@ export const ChatView = ({
                                         <span className="chat-model-label">
                                             {isModelSelected ? `${selectedModel.provider} / ${selectedModel.name}` : 'Select model'}
                                         </span>
-                                        <Icon name="unfold_more" className="icon-xs" />
+                                        <Icon name="keyboard_arrow_down" className="icon-xs" />
                                     </button>
                                     {isModelMenuOpen && dropdownPos && createPortal(
                                         <div
@@ -529,7 +548,7 @@ export const ChatView = ({
                                     title="즐겨찾기"
                                     aria-expanded={isFavPanelOpen}
                                 >
-                                    <Icon name="star" className="icon-sm chat-fav-star" />
+                                    <Icon name="bookmark" className="icon-sm chat-fav-star" />
                                     <span>즐겨찾기</span>
                                 </button>
 
@@ -549,7 +568,7 @@ export const ChatView = ({
                                 {/* Connection status */}
                                 <div className={`chat-conn-badge ${isConnected ? 'chat-conn-badge--on' : 'chat-conn-badge--off'}`}>
                                     <span className="chat-conn-dot" />
-                                    <span>{isConnected ? 'Connected' : 'Disconnected'}</span>
+                                    <span className="chat-toolbar-mono">{isConnected ? 'Connected' : 'Disconnected'}</span>
                                 </div>
                                 {!isConnected && (
                                     <button
@@ -564,6 +583,12 @@ export const ChatView = ({
 
                             </div>
                             <div className="chat-toolbar-right">
+                                <ThemeToggle className="chat-toolbar-action" />
+                                {onOpenSettings && (
+                                    <button className="chat-toolbar-action" onClick={onOpenSettings} title="Settings">
+                                        <Icon name="settings" className="icon-sm" />
+                                    </button>
+                                )}
                                 {isProcessingAnswer ? (
                                     <button className="chat-send-btn chat-send-btn--stop" onClick={handleInterruptMessage} title="Stop generating">
                                         <Icon name="stop" className="icon-sm" />
@@ -597,15 +622,6 @@ export const ChatView = ({
                             )}
                         </div>
                     )}
-                    {/* Theme + settings stay beside the input, anchored to its bottom. */}
-                    <div className="chat-side-actions">
-                        <ThemeToggle className="chat-scroll-btn" />
-                        {onOpenSettings && (
-                            <button className="chat-scroll-btn" onClick={onOpenSettings} title="Settings">
-                                <Icon name="settings" className="icon-sm" />
-                            </button>
-                        )}
-                    </div>
                 </div>
 
                 {/* Suggestion chips */}

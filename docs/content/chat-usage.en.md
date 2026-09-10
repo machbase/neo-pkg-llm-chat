@@ -3,7 +3,7 @@ title: How to Use Chat
 weight: 30
 ---
 
-#
+# How to Use Chat
 
 ## Select a Model
 

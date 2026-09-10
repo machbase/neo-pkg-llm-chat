@@ -64,8 +64,8 @@ export function ModelsSection({ claude, chatgpt, gemini, ollama, onChange, error
     };
 
     return (
-        <div className="card">
-            <div className="card-title">
+        <div className="settings-section">
+            <div className="settings-section-header">
                 <div>
                     <h3>Models</h3>
                     <p className="text-sm text-on-surface-secondary mt-1">Configure available models per provider</p>

@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useMemo, useCallback } from "react";
-import { getCurrentUser } from "../utils/auth";
+import { getCurrentUser, getAuthToken } from "../utils/auth";
 import { getWsBase } from "../services/baseUrl";
 import type { Message, PkgProvider, PkgSelectedModel } from "../types/chat";
 
@@ -8,6 +8,8 @@ interface ExtMsgIncoming {
     session?: string;
     providers?: PkgProvider[];
     msg?: string;
+    /** Follow-up chips, sent after answer_stop. Absent on ollama and on failure. */
+    items?: string[];
     message?: {
         ver: string;
         id: number;
@@ -38,7 +40,7 @@ const getExtWsUrl = async (): Promise<string> => {
 
 const generateSessionId = (): string => `sess-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
-const DEFAULT_DELTA_SET = (target: "msg" | "block"): Message => {
+const DEFAULT_DELTA_SET = (target: "msg" | "block", model?: string): Message => {
     const ts = Date.now();
     return {
         id: `${target}-${ts}-${Math.random()}`,
@@ -48,6 +50,8 @@ const DEFAULT_DELTA_SET = (target: "msg" | "block"): Message => {
         type: target,
         isProcess: true,
         isInterrupt: false,
+        // Answers only — tool blocks are folded away and never show a footer.
+        model: target === "msg" ? model : undefined,
     };
 };
 
@@ -62,11 +66,18 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
     const [sProcessingAnswer, setProcessingAnswer] = useState(false);
     const [sSelectedModel, setSelectedModel] = useState<PkgSelectedModel>({ provider: "", model: "", name: "" });
     const [sProviderList, setProviderList] = useState<PkgProvider[]>([]);
+    const [sFollowups, setFollowups] = useState<string[]>([]);
     const [sModelsMessage, setModelsMessage] = useState("");
     const callbackRef = useRef<any>(undefined);
 
     const isComposingRef = useRef(false);
     const processingAnswerRef = useRef(false);
+    // Read from the socket handler, which closes over stale state — the label is
+    // stamped per answer so switching models mid-session labels each one right.
+    const modelLabelRef = useRef("");
+    modelLabelRef.current = sSelectedModel.name
+        ? `${sSelectedModel.provider} / ${sSelectedModel.name}`
+        : "";
     // Monotonic token for sendChatWhenReady's polling loop. Each new call
     // increments the token and captures it locally; if the captured token
     // no longer matches the ref by the time a poll tick fires, that older
@@ -100,6 +111,11 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
     }, []);
 
     // Handle error response
+    // Arrives after the answer is already on screen, so it only ever adds chips.
+    const handleFollowups = useCallback((raw: ExtMsgIncoming) => {
+        setFollowups(Array.isArray(raw.items) ? raw.items : []);
+    }, []);
+
     const handleErrorResponse = useCallback((raw: ExtMsgIncoming) => {
         setProcessingAnswer(false);
         processingAnswerRef.current = false;
@@ -156,7 +172,7 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
                         }
                     }
                     // No existing processing message — create one with first delta
-                    return [...prev, { ...DEFAULT_DELTA_SET(targetType), content: text }];
+                    return [...prev, { ...DEFAULT_DELTA_SET(targetType, modelLabelRef.current), content: text }];
                 });
                 break;
             }
@@ -185,10 +201,10 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
     }, []);
 
     // Keep handlers in refs so connect() doesn't depend on them
-    const handlersRef = useRef({ handleModelsResponse, handleMsgResponse, handleStopResponse, handleErrorResponse });
+    const handlersRef = useRef({ handleModelsResponse, handleMsgResponse, handleStopResponse, handleErrorResponse, handleFollowups });
     useEffect(() => {
-        handlersRef.current = { handleModelsResponse, handleMsgResponse, handleStopResponse, handleErrorResponse };
-    }, [handleModelsResponse, handleMsgResponse, handleStopResponse, handleErrorResponse]);
+        handlersRef.current = { handleModelsResponse, handleMsgResponse, handleStopResponse, handleErrorResponse, handleFollowups };
+    }, [handleModelsResponse, handleMsgResponse, handleStopResponse, handleErrorResponse, handleFollowups]);
 
     // WebSocket connect
     const connect = useCallback(async () => {
@@ -231,6 +247,9 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
                         case "error":
                             h.handleErrorResponse(raw);
                             break;
+                        case "followups":
+                            h.handleFollowups(raw);
+                            break;
                     }
                 } catch (e) {
                     console.error("[WS] Parse error:", e);
@@ -268,9 +287,13 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
     }, [connect]);
 
     // Send to WS
+    // 백엔드는 이 토큰만으로 사용자를 판별한다(user_id 필드는 신뢰하지 않음).
+    // 수명이 5분이라 보낼 때마다 저장소에서 새로 읽는다.
+    const wireMessage = (payload: ExtWsOutgoing) => JSON.stringify({ ...payload, auth_token: getAuthToken() });
+
     const sendExt = useCallback((payload: ExtWsOutgoing) => {
         if (socketRef.current?.readyState === WebSocket.OPEN) {
-            socketRef.current.send(JSON.stringify(payload));
+            socketRef.current.send(wireMessage(payload));
         }
     }, []);
 
@@ -301,7 +324,7 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
         // Fast path: already OPEN.
         if (socketRef.current?.readyState === WebSocket.OPEN) {
             if (!isStillCurrent()) return;
-            socketRef.current.send(JSON.stringify(payload));
+            socketRef.current.send(wireMessage(payload));
             return;
         }
 
@@ -321,7 +344,7 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
             // send semantics from here on.
             if (!isStillCurrent()) return;
             if (socketRef.current?.readyState === WebSocket.OPEN) {
-                socketRef.current.send(JSON.stringify(payload));
+                socketRef.current.send(wireMessage(payload));
                 return;
             }
             // If the socket was closed/errored entirely, abort.
@@ -358,6 +381,7 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
     const handleSendMessage = () => {
         const text = sInputValue.trim();
         if (!text || !sSelectedModel.provider || !sSelectedModel.model) return;
+        setFollowups([]);
 
         const userMessage: Message = {
             id: `msg-${Date.now()}`,
@@ -410,6 +434,7 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
     const handleEditUserMessage = useCallback((messageId: string, newContent: string) => {
         const trimmed = newContent.trim();
         if (!trimmed) return;
+        setFollowups([]);
 
         const index = messages.findIndex((m) => m.id === messageId);
         if (index < 0) return;
@@ -462,6 +487,7 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
         setWsReady(false);
         sessionIdRef.current = generateSessionId();
         setMessages([]);
+        setFollowups([]);
         setProcessingAnswer(false);
         processingAnswerRef.current = false;
         setTimeout(() => { connect(); }, 500);
@@ -479,6 +505,7 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
         selectedModel: sSelectedModel,
         setSelectedModel,
         providerList: sProviderList,
+        followups: sFollowups,
         modelsMessage: sModelsMessage,
         isComposingRef,
         isConnected,

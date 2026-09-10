@@ -196,26 +196,32 @@ export default function App() {
                         <div className="flex-1 flex flex-col overflow-hidden" style={{ display: activeTab === "settings" ? undefined : "none" }}>
                             <div className="page-header">
                                 <div className="page-header-inner">
+                                    <div className="page-header-lead">
+                                        {/* Back sits left of the title where a back control is looked
+                                            for. Icon only — grouped with the title it needs no word,
+                                            and beside Save the word read as a section label.
+                                            Gate chat entry: a user must have a SAVED, usable config.
+                                            selectedConfig === null means nothing is saved/loaded yet
+                                            (filling the form without saving doesn't count) — matches the
+                                            backend gate that checks the config FILE exists. */}
+                                        <button
+                                            className="btn btn-icon btn-ghost page-header-back"
+                                            onClick={() => setActiveTab("chat")}
+                                            disabled={selectedConfig === null || !isConfigUsable(config)}
+                                            aria-label="채팅으로 돌아가기"
+                                            title={selectedConfig === null || !isConfigUsable(config) ? "사용 가능한 설정(제공자·API 키·모델)을 저장한 뒤 채팅할 수 있습니다." : "채팅으로 돌아가기"}
+                                        >
+                                            <Icon name="arrow_back" className="icon-sm" />
+                                        </button>
                                     <div>
                                         {/* Do not echo the account name in the title (it is the
                                             logged-in user; showing it leaks the admin id on screen). */}
                                         <h1 className="page-title">{selectedConfig === null ? "New Configuration" : "Configuration"}</h1>
                                         <p className="page-desc">Manage LLM providers, API keys, models, and connection settings.</p>
                                     </div>
+                                    </div>
                                     <div className="flex items-center gap-8">
                                         <ThemeToggle className="btn btn-icon btn-ghost" />
-                                        {/* Gate chat entry: a user must have a SAVED, usable config.
-                                            selectedConfig === null means nothing is saved/loaded yet
-                                            (filling the form without saving doesn't count) — matches the
-                                            backend gate that checks the config FILE exists. */}
-                                        <button
-                                            className="btn btn-content btn-ghost"
-                                            onClick={() => setActiveTab("chat")}
-                                            disabled={selectedConfig === null || !isConfigUsable(config)}
-                                            title={selectedConfig === null || !isConfigUsable(config) ? "사용 가능한 설정(제공자·API 키·모델)을 저장한 뒤 채팅할 수 있습니다." : undefined}
-                                        >
-                                            <Icon name="chat" className="icon-sm" /> Chat
-                                        </button>
                                         <button className="btn btn-content btn-primary" onClick={handleSave} disabled={saving}>
                                             {saving ? <span className="spinner" /> : <Icon name="save" className="icon-sm" />}
                                             Save
@@ -225,7 +231,7 @@ export default function App() {
                             </div>
                             <div className="page-body">
                                 <div className="page-body-inner">
-                                    <div className="flex flex-col gap-24">
+                                    <div className="flex flex-col gap-32">
                                         <MachbaseSection config={config.machbase} onChange={handleMachbaseChange} errors={validationErrors} />
                                         <ApiKeysSection
                                             claude={config.claude}

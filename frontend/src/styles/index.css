@@ -241,6 +241,12 @@ textarea {
     transition: border-color 0.2s ease, background-color 0.2s ease;
 }
 
+/* The native dropdown arrow is painted inside the control, so the shared
+   left/right padding leaves the option text running under it. */
+select {
+    padding-right: var(--spacing-24);
+}
+
 input:hover,
 select:hover,
 textarea:hover {
@@ -442,7 +448,7 @@ pre {
     font-weight: 500;
     line-height: 1;
     border: none;
-    border-radius: var(--radius-base);
+    border-radius: var(--radius-md);
     cursor: pointer;
     white-space: nowrap;
     user-select: none;
@@ -569,8 +575,8 @@ pre {
     display: inline-flex;
     align-items: center;
     gap: var(--spacing-6);
-    padding: var(--spacing-4) var(--spacing-8);
-    border-radius: var(--radius-base);
+    padding: var(--spacing-4) var(--spacing-10);
+    border-radius: var(--radius-round);
     border: 1px solid var(--color-border);
     background-color: var(--color-surface-elevated);
     font-size: var(--font-size-sm);
@@ -609,15 +615,17 @@ pre {
 
 /* Titles */
 .page-title {
-    font-size: var(--font-size-lg);
-    font-weight: 600;
+    font-size: 20px;
+    font-weight: var(--font-weight-medium);
+    letter-spacing: -0.01em;
     color: var(--color-on-surface);
-    line-height: 1;
+    line-height: 1.2;
 }
 
 .card-title {
     font-size: var(--font-size-md);
-    font-weight: 600;
+    font-weight: var(--font-weight-semibold);
+    letter-spacing: -0.01em;
     color: var(--color-on-surface);
     margin-bottom: var(--spacing-12);
     display: flex;
@@ -635,11 +643,13 @@ pre {
 }
 
 /* Card */
+/* Keeps its fill: on the light theme the page is grey and the card is white, so
+   the surface is what separates the groups. Only the geometry relaxes. */
 .card {
     background-color: var(--color-surface-elevated);
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    padding: var(--spacing-20);
+    border-radius: var(--radius-xl);
+    padding: var(--spacing-24);
     transition: border-color 0.2s ease;
 }
 
@@ -697,16 +707,16 @@ details.card[open] > summary {
     line-height: 1;
 }
 
+/* Sentence case, no tracking: the uppercase+letterspaced label shouted over the
+   value it names, which is the opposite of the tone everywhere else. */
 .form-label {
     display: flex;
     flex-direction: column;
-    gap: var(--spacing-6);
+    gap: var(--spacing-8);
     font-size: var(--font-size-sm);
-    font-weight: 600;
-    color: var(--color-on-surface-tertiary);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    line-height: 1;
+    font-weight: var(--font-weight-medium);
+    color: var(--color-on-surface-secondary);
+    line-height: 1.3;
 }
 
 details.card > :not(summary) {
@@ -876,6 +886,44 @@ details.card > :not(summary) {
     align-items: center;
     justify-content: space-between;
     width: 100%;
+    /* Right only. The page actions land on the same right edge as the section
+       rules below them, while the left keeps the back control out in the gutter
+       so the title still starts on the content's left edge. */
+    padding-right: calc(var(--size-control-height) + var(--spacing-8));
+}
+
+/* Back control and the title read as one unit, so they sit together on the
+   left rather than the button living with the page actions on the right. */
+.page-header-lead {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--spacing-8);
+    min-width: 0;
+}
+
+/* Nudged down to sit on the title's line, not between title and description.
+   Accent on the glyph, not a fill: `Save` is the one solid primary here, and an
+   outlined control beside a filled one still reads as the lesser of the two.
+   The fill alone was not enough — on the light theme `surface-elevated` is white
+   against an #eff1f5 page, so the button was a white square on near-white with a
+   12%-ink border. The border steps up to `medium` for the same reason. */
+.page-header-back {
+    flex-shrink: 0;
+    margin-top: -2px;
+    background-color: var(--color-surface-elevated);
+    border: 1px solid var(--color-border-medium);
+    color: var(--color-primary-light);
+}
+
+.page-header-back:hover:not(:disabled) {
+    background-color: rgba(0, 95, 184, 0.10);
+    border-color: var(--color-primary);
+    color: var(--color-primary);
+}
+
+.page-header-back:disabled {
+    opacity: 0.4;
+    cursor: default;
 }
 
 /*
@@ -894,6 +942,61 @@ details.card > :not(summary) {
     flex-direction: column;
     min-height: 100%;
     width: 100%;
+    /* The back control opens a lane left of the page title; the body takes the
+       same indent so section titles sit on the page title's line, not left of it,
+       and the same on the right so the content block is not lopsided. The header
+       buttons stay out in the gutters on both sides. */
+    padding-left: calc(var(--size-control-height) + var(--spacing-8));
+    padding-right: calc(var(--size-control-height) + var(--spacing-8));
+}
+
+/* ─── Settings sections ─── */
+/* No box. Like the chat thread, the content is the page and a hairline under
+   the header is all the separation a group needs — the card's fill and border
+   were drawing three nested rectangles around every field. */
+.settings-section {
+    display: flex;
+    flex-direction: column;
+}
+
+.settings-section-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--spacing-16);
+    padding-bottom: var(--spacing-12);
+    margin-bottom: var(--spacing-20);
+    border-bottom: 1px solid var(--color-border);
+}
+
+.settings-section-header h3 {
+    font-size: var(--font-size-md);
+    font-weight: var(--font-weight-semibold);
+    letter-spacing: -0.01em;
+    color: var(--color-on-surface);
+    line-height: 1.3;
+}
+
+/* ─── Settings form fields ─── */
+/* Scoped to the settings page: the chat composer is a textarea outside
+   `.page-body` and must stay on Pretendard for Hangul. */
+.page-body input,
+.page-body select {
+    height: 36px;
+    border-radius: var(--radius-md);
+}
+
+/* Hosts, ports, keys, endpoints and model ids are all Latin identifiers — the
+   same case the model chip and the tool chips use mono for. Values only, never
+   the labels, which stay Pretendard for Korean. */
+.page-body input {
+    font-family: var(--font-family-mono);
+    font-variant-ligatures: none;
+}
+
+.page-body input::placeholder {
+    font-family: var(--font-family-mono);
+    color: var(--color-on-surface-disabled);
 }
 
 /*
@@ -1951,21 +2054,39 @@ details.card > :not(summary) {
 }
 
 /* ─── Welcome ─── */
+/* Mark and headline read as one line, so the block costs roughly the height of
+   the text instead of stacking a 48px logo above it. */
 .chat-welcome {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     align-items: center;
-    gap: var(--spacing-16);
+    justify-content: center;
+    gap: var(--spacing-10);
     margin-bottom: var(--spacing-24);
+    padding: 0 var(--spacing-16);
+    /* Wider than the 720px composer on purpose: at 32px every current greeting
+       fits one line here, and a headline reaching past the box below it reads
+       fine while a mid-sentence wrap does not. */
+    max-width: 840px;
+    /* The column's spacers are flex-basis 0 and absorb no squeeze, so without
+       this a two-line greeting gets compressed and spills over the composer. */
+    flex-shrink: 0;
     animation: chatFadeUp 0.5s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+/* No glow: the mark is already a blue rounded square, so a blue halo behind it
+   just smears the edge.
+   No optical nudge. Pretendard's own metrics put the line box centre within a
+   pixel of where Hangul ink centres (hhea 0.9521 / -0.2412 em at 32px puts the
+   box centre at baseline+11.38, the ink centre at +11.2~12.2), so `align-items:
+   center` already lands it — an added offset only introduces the error it was
+   meant to remove. */
 .chat-welcome-icon-wrap {
-    width: 56px;
-    height: 56px;
-    border-radius: var(--radius-xl);
+    width: 40px;
+    height: 40px;
+    border-radius: var(--radius-lg);
     overflow: hidden;
-    box-shadow: 0 4px 20px rgba(0, 95, 184, 0.3);
+    flex-shrink: 0;
 }
 
 .chat-welcome-logo {
@@ -1974,17 +2095,69 @@ details.card > :not(summary) {
     object-fit: cover;
 }
 
+/* Stays on Pretendard: Neo's own console ships Pretendard + D2Coding and no
+   serif, so the package reads as part of it. Regular, not medium — Hangul
+   carries more stroke mass than Latin at the same weight.
+   The headline rotates, so its length varies — wrap and centre rather than
+   letting a long line run into the clipped edge of `.chat-body`. */
 .chat-welcome-title {
-    font-size: var(--font-size-xl);
-    font-weight: var(--font-weight-medium);
+    font-size: 32px;
+    font-weight: var(--font-weight-normal);
+    letter-spacing: -0.02em;
+    line-height: 1.3;
     color: var(--color-on-surface);
     margin: 0;
+    text-align: center;
+    text-wrap: balance;
 }
 
-.chat-welcome-hint {
-    font-size: var(--font-size-base);
-    color: var(--color-on-surface-disabled);
-    animation: chatFadeUp 0.5s cubic-bezier(0.4, 0, 0.2, 1) 0.1s both;
+/* Click to re-roll. Inherits the heading's type so the button is invisible
+   until hover — the `*` font rule would otherwise reset the face here. */
+/* `display: block` is load-bearing: as an inline-block the button sat on the
+   parent's baseline, which added descender space under it and pushed the mark
+   beside it off the text's optical centre. */
+.chat-welcome-title-btn {
+    display: block;
+    font: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    text-align: inherit;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    transition: opacity 0.15s ease;
+}
+
+/* The tail not yet typed. It stays in the layout so the full line is always what
+   decides the width and the line breaks — only its ink is missing. */
+.chat-welcome-rest {
+    opacity: 0;
+}
+
+.chat-welcome-caret {
+    display: inline-block;
+    width: 2px;
+    height: 0.95em;
+    margin-left: 3px;
+    vertical-align: -0.13em;
+    background: currentColor;
+    opacity: 0.7;
+    animation: chatCaretBlink 1s step-end infinite;
+}
+
+@keyframes chatCaretBlink {
+    0%,
+    100% {
+        opacity: 0.7;
+    }
+    50% {
+        opacity: 0;
+    }
+}
+
+.chat-welcome-title-btn:hover {
+    opacity: 0.65;
 }
 
 .chat-prompt-panel {
@@ -2149,55 +2322,58 @@ details.card > :not(summary) {
 .chat-prompt-toggle-btn {
     display: inline-flex;
     align-items: center;
-    gap: var(--spacing-4);
-    padding: var(--spacing-4) var(--spacing-8);
+    gap: var(--spacing-6);
+    padding: var(--spacing-6) var(--spacing-8);
     background: transparent;
-    border: 1px solid var(--color-border-medium);
+    border: none;
     border-radius: var(--radius-md);
-    color: var(--color-on-surface);
-    font-size: var(--font-size-sm);
+    color: var(--color-on-surface-secondary);
+    font-size: var(--font-size-base);
     cursor: pointer;
     transition: all 0.15s ease;
 }
 
 .chat-prompt-toggle-btn:hover {
-    border-color: var(--color-primary);
+    color: var(--color-on-surface);
     background: var(--color-surface-hover);
 }
 
 .chat-prompt-toggle-btn--active {
-    border-color: var(--color-primary);
     color: var(--color-on-surface);
-    background: rgba(0, 95, 184, 0.08);
+    background: var(--color-surface-hover-block);
 }
 
 /* ─── Favorites toggle button (chat toolbar) ─── */
 .chat-fav-toggle-btn {
     display: inline-flex;
     align-items: center;
-    gap: var(--spacing-4);
-    padding: var(--spacing-4) var(--spacing-8);
+    gap: var(--spacing-6);
+    padding: var(--spacing-6) var(--spacing-8);
     background: transparent;
-    border: 1px solid var(--color-border-medium);
+    border: none;
     border-radius: var(--radius-md);
-    color: var(--color-on-surface);
-    font-size: var(--font-size-sm);
+    color: var(--color-on-surface-secondary);
+    font-size: var(--font-size-base);
     cursor: pointer;
     transition: all 0.15s ease;
 }
 
 .chat-fav-toggle-btn:hover {
-    border-color: var(--color-fav-accent);
-    background: var(--color-surface-hover);
-}
-
-.chat-fav-toggle-btn--active {
-    border-color: var(--color-fav-accent);
     color: var(--color-on-surface);
     background: var(--color-surface-hover);
 }
 
+/* Open panel is the only state that spends the gold accent. */
+.chat-fav-toggle-btn--active {
+    color: var(--color-on-surface);
+    background: var(--color-surface-hover-block);
+}
+
 .chat-fav-star {
+    color: inherit;
+}
+
+.chat-fav-toggle-btn--active .chat-fav-star {
     color: var(--color-fav-accent);
     font-variation-settings: 'FILL' 1;
 }
@@ -2401,7 +2577,10 @@ details.card > :not(summary) {
     gap: var(--spacing-12);
     width: 100%;
     max-width: 720px;
-    padding-right: 40px;
+    /* The welcome column is `overflow: hidden` and the spacers around it are
+       flex-basis 0, so they absorb none of a squeeze — without this the chips
+       are the first thing the flex algorithm shrinks away. */
+    flex-shrink: 0;
     position: relative;
     animation: chatFadeUp 0.5s cubic-bezier(0.4, 0, 0.2, 1) 0.15s both;
 }
@@ -2414,7 +2593,7 @@ details.card > :not(summary) {
     border: 1px solid var(--color-border);
     border-radius: var(--radius-round);
     background: var(--color-surface);
-    color: var(--color-on-surface-variant);
+    color: var(--color-on-surface-secondary);
     font-size: var(--font-size-sm);
     cursor: pointer;
     transition: all 0.2s ease;
@@ -2479,7 +2658,10 @@ details.card > :not(summary) {
 .chat-floating-top {
     position: absolute;
     top: 12px;
-    right: max(12px, calc(50% - 368px));
+    /* Out in the gutter, well clear of the 720px message column: the column ends
+       at centre+348 and this 32px button runs centre+400..432. Falls back inside
+       once the window is too narrow for a gutter at all. */
+    right: max(12px, calc(50% - 432px));
     display: flex;
     flex-direction: column;
     gap: var(--spacing-4);
@@ -2514,23 +2696,23 @@ details.card > :not(summary) {
     max-width: 760px;
     display: flex;
     align-items: flex-end;
+    /* The wrap is wider than the 720px box it holds; without this the slack
+       pools on one side and the box no longer shares the welcome block's axis. */
+    justify-content: center;
     gap: var(--spacing-8);
-    padding: var(--spacing-8) 52px var(--spacing-12) var(--spacing-12);
+    padding: var(--spacing-8) var(--spacing-12) var(--spacing-12);
     box-sizing: border-box;
     flex-shrink: 0;
     background: transparent;
     position: relative;
 }
 
-/* Two button groups sharing the lane right of the input. Both absolute, so
-   neither resizes the input row; the wrap reserves the width via padding-right
-   and the input keeps the same 696px.
-
-   Anchoring is the whole point: the scroll pair hangs off the TOP of the wrap
-   and the theme/settings pair off the BOTTOM, so they open away from each other
-   and cannot collide however tall the input grows. */
+/* Absolute so it never resizes the input row, and anchored to the wrap's TOP
+   edge so it rides clear of the input however tall that grows. */
 .chat-scroll-actions {
     position: absolute;
+    /* Inside the input wrap, so it can only reach the gutter by going negative;
+       the media query below does that once the window is wide enough. */
     right: var(--spacing-12);
     bottom: calc(100% + var(--spacing-4));
     display: flex;
@@ -2540,16 +2722,15 @@ details.card > :not(summary) {
     pointer-events: none;
 }
 
-.chat-side-actions {
-    position: absolute;
-    right: var(--spacing-12);
-    bottom: var(--spacing-12);
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-6);
-    z-index: var(--z-index-floating);
-    pointer-events: none;
+/* Wide enough for a gutter: push the scroll pair out past the input wrap so it
+   lands on the same vertical line as the clear button. The wrap's padding box
+   ends at centre+380, so -52px puts this group's right edge at centre+432 too. */
+@media (min-width: 940px) {
+    .chat-scroll-actions {
+        right: -52px;
+    }
 }
+
 .chat-input-wrap::before {
     content: "";
     position: absolute;
@@ -2582,7 +2763,7 @@ details.card > :not(summary) {
     max-width: 720px;
     flex-direction: column;
     border: 1px solid var(--color-border);
-    border-radius: var(--radius-xl);
+    border-radius: var(--radius-round);
     background-color: var(--color-surface-alt);
     box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
     transition: border-color 0.2s ease, box-shadow 0.2s ease;
@@ -2607,10 +2788,13 @@ details.card > :not(summary) {
 .chat-input {
     flex: 1;
     height: auto !important;
+    /* Floor for the empty box; the autoresize sets `height`, which min-height
+       still wins over, so growth past this is unaffected. */
+    min-height: 76px;
     max-height: 200px;
     border: none !important;
-    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
-    padding: var(--spacing-12) var(--spacing-16);
+    border-radius: var(--radius-round) var(--radius-round) 0 0;
+    padding: var(--spacing-16);
     font-size: var(--font-size-base);
     resize: none;
     overflow-y: hidden;
@@ -2628,28 +2812,43 @@ details.card > :not(summary) {
 .chat-toolbar {
     display: flex;
     flex-direction: row;
-    padding: var(--spacing-6) var(--spacing-8);
+    padding: var(--spacing-8) var(--spacing-12) var(--spacing-10);
     justify-content: space-between;
     align-items: center;
-    border-top: 1px solid var(--color-border);
+    gap: var(--spacing-8);
+}
+
+/* The row runs one size up from the 14px default so it reads at a glance. */
+.chat-toolbar .material-symbols-outlined.icon-sm {
+    font-size: 16px;
 }
 
 .chat-toolbar-left {
     display: flex;
     flex-direction: row;
     align-items: center;
-    gap: var(--spacing-6);
+    gap: var(--spacing-8);
+    min-width: 0;
 }
 
 .chat-toolbar-right {
     display: flex;
     align-items: center;
+    gap: var(--spacing-6);
+    flex-shrink: 0;
+}
+
+/* Mono is for Latin toolbar text only — D2Coding sets Hangul full-width, so
+   Korean labels stay on Pretendard. The global `*` font rule lands on these
+   spans directly, so inheriting from the button is not enough. */
+.chat-toolbar-mono {
+    font-family: var(--font-family-mono);
 }
 
 /* ─── Toolbar actions ─── */
 .chat-toolbar-action {
-    width: 28px;
-    height: 28px;
+    width: 32px;
+    height: 32px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -2670,16 +2869,16 @@ details.card > :not(summary) {
 .chat-conn-badge {
     display: flex;
     align-items: center;
-    gap: 5px;
-    font-size: var(--font-size-xs);
-    padding: 2px var(--spacing-8) 2px var(--spacing-6);
+    gap: var(--spacing-6);
+    font-size: var(--font-size-sm);
+    padding: var(--spacing-4) var(--spacing-10) var(--spacing-4) var(--spacing-8);
     border-radius: var(--radius-round);
     user-select: none;
 }
 
 .chat-conn-dot {
-    width: 6px;
-    height: 6px;
+    width: 7px;
+    height: 7px;
     border-radius: var(--radius-circle);
     flex-shrink: 0;
 }
@@ -2702,8 +2901,8 @@ details.card > :not(summary) {
 
 /* ─── Send button ─── */
 .chat-send-btn {
-    width: 32px;
-    height: 32px;
+    width: 36px;
+    height: 36px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -2719,9 +2918,11 @@ details.card > :not(summary) {
     background: var(--color-primary-hover);
 }
 
+/* Stays visibly recessed — a bright puck here reads as "press me" while the
+   click is inert (empty input, no model, or no connection). */
 .chat-send-btn:disabled {
-    background: var(--color-surface-hover-light);
-    color: var(--color-on-surface-disabled);
+    background: var(--color-surface-hover);
+    color: var(--color-on-surface-muted);
     cursor: default;
 }
 
@@ -2742,26 +2943,26 @@ details.card > :not(summary) {
     display: flex;
     align-items: center;
     gap: var(--spacing-4);
-    padding: var(--spacing-4) var(--spacing-8);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-md);
+    padding: var(--spacing-6) var(--spacing-8) var(--spacing-6) var(--spacing-12);
+    border: 1px solid var(--color-border-medium);
+    border-radius: var(--radius-round);
     background: transparent;
-    color: var(--color-on-surface-muted);
-    font-size: var(--font-size-sm);
+    color: var(--color-on-surface-secondary);
+    font-family: var(--font-family-mono);
+    font-size: var(--font-size-base);
     cursor: pointer;
     transition: all 0.15s ease;
     max-width: 240px;
 }
 
 .chat-model-btn:hover {
-    border-color: var(--color-border-medium);
+    border-color: var(--color-on-surface-tertiary);
     color: var(--color-on-surface);
+    background: var(--color-surface-hover);
 }
 
 .chat-model-btn--active {
-    border-color: var(--color-primary);
     color: var(--color-on-surface);
-    background: rgba(0, 95, 184, 0.08);
 }
 
 .chat-model-btn--pulse {
@@ -2778,8 +2979,11 @@ details.card > :not(summary) {
     }
 }
 
+/* The global `*` font rule lands on this span directly, so inheriting the
+   button's mono face is not enough — restate it here. */
 .chat-model-label {
-    max-width: 160px;
+    font-family: var(--font-family-mono);
+    max-width: 200px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -2960,7 +3164,6 @@ details.card > :not(summary) {
 
 .chat-msg--user {
     justify-content: flex-end;
-    margin-right: 40px;
 }
 
 .chat-msg--right {
@@ -3026,8 +3229,8 @@ details.card > :not(summary) {
 
 /* ─── Message bubble ─── */
 .chat-msg-bubble {
-    border-radius: var(--radius-lg);
-    padding: var(--spacing-8) var(--spacing-12);
+    border-radius: var(--radius-xl);
+    padding: var(--spacing-10) var(--spacing-16);
     max-width: 85%;
     min-width: 0;
 }
@@ -3035,23 +3238,43 @@ details.card > :not(summary) {
 .chat-msg-bubble--user {
     background: var(--color-primary);
     color: var(--color-on-primary);
-    border-bottom-right-radius: var(--radius-sm);
 }
 
+/* The answer is the page, not a card in it — no chrome, so the table and code
+   blocks inside it are the only things that carry a border. */
 .chat-msg-bubble--assistant {
-    background: var(--color-surface-elevated);
+    background: none;
     color: var(--color-on-surface);
-    border: 1px solid var(--color-border);
-    border-bottom-left-radius: var(--radius-sm);
+    border: none;
+    border-radius: 0;
+    padding: 0;
     flex: 1;
     min-width: 0;
+    max-width: 100%;
+}
+
+/* Provenance line under a finished answer. Mono because it is all Latin and
+   digits — the same reason the model chip in the composer is mono. */
+.chat-msg-meta {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-6);
+    margin-top: var(--spacing-12);
+    font-family: var(--font-family-mono);
+    font-size: var(--font-size-xs);
+    color: var(--color-on-surface-muted);
+    user-select: none;
+}
+
+.chat-msg-meta-sep {
+    opacity: 0.6;
 }
 
 .chat-msg-text {
     white-space: pre-wrap;
     word-break: break-word;
-    font-size: var(--font-size-base);
-    line-height: 1.5;
+    font-size: var(--font-size-md);
+    line-height: 1.6;
 }
 
 /* ─── Inline message editor (user bubble) ─── */
@@ -3208,40 +3431,104 @@ details.card > :not(summary) {
 }
 
 /* ─── Tool call dropdown ─── */
+/* Column so the pill keeps its own width instead of stretching to the row. */
 .chat-tool-bubble {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
     padding: 0 !important;
-    overflow: hidden;
-    max-width: 85%;
+    max-width: 100%;
 }
 
+/* A chip, not a bar: the tool run is a footnote to the answer above it.
+   Height is pinned rather than derived: the chip mixes an emoji, mono text and
+   an icon glyph, and the tallest of those three fonts' metrics would otherwise
+   set the box — so it drifts with the content. Width still follows the name. */
 .chat-tool-toggle {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: var(--spacing-4);
-    width: 100%;
-    padding: var(--spacing-8) var(--spacing-12);
-    background: none;
-    border: none;
-    color: var(--color-on-surface);
-    font-size: var(--font-size-base);
-    line-height: 1.5;
+    gap: var(--spacing-6);
+    max-width: 100%;
+    height: 28px;
+    padding: 0 var(--spacing-10);
+    box-sizing: border-box;
+    background: transparent;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-round);
+    color: var(--color-on-surface-secondary);
+    font-size: var(--font-size-sm);
+    line-height: 1;
     cursor: pointer;
-    transition: background 0.15s ease;
+    transition: all 0.15s ease;
 }
 
 .chat-tool-toggle:hover {
+    border-color: var(--color-border-medium);
     background: var(--color-surface-hover);
+    color: var(--color-on-surface);
 }
 
+/* One line-height and one size, stated rather than inherited, so nothing in the
+   chip can grow the box or read a size apart from its neighbours. Ligatures off
+   because the loaded D2Coding build is the ligature variant, which would let
+   one tool name substitute glyphs and set its own rhythm. */
+.chat-tool-emoji,
+.chat-tool-name,
+.chat-tool-count,
+.chat-tool-sep,
+.chat-tool-dur {
+    font-size: var(--font-size-sm);
+    line-height: 1;
+    flex-shrink: 0;
+    font-variant-ligatures: none;
+    font-feature-settings: normal;
+}
+
+/* The only item allowed to give way — a long tool name ellipsizes instead of
+   wrapping, which would break the fixed height. */
 .chat-tool-name {
-    font-weight: 500;
-    flex: 1;
-    text-align: left;
+    font-family: var(--font-family-mono);
+    flex-shrink: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
+.chat-tool-count {
+    font-family: var(--font-family-mono);
+    color: var(--color-on-surface-muted);
+}
+
+.chat-tool-sep {
+    opacity: 0.5;
+}
+
+.chat-tool-dur {
+    font-family: var(--font-family-mono);
+    color: var(--color-on-surface-tertiary);
+    white-space: nowrap;
+}
+
+/* Points right when collapsed, down when open — one glyph, rotated. */
+.chat-tool-chevron {
+    transition: transform 0.15s ease;
+    opacity: 0.7;
+    flex-shrink: 0;
+}
+
+.chat-tool-toggle--open .chat-tool-chevron {
+    transform: rotate(90deg);
+}
+
+/* The bubble has no chrome any more, so the expanded detail supplies its own. */
 .chat-tool-detail {
-    padding: var(--spacing-8) var(--spacing-12) var(--spacing-8);
-    border-top: 1px solid var(--color-border);
+    align-self: stretch;
+    margin-top: var(--spacing-8);
+    padding: var(--spacing-10) var(--spacing-12);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-elevated);
     font-size: var(--font-size-sm);
     max-height: 400px;
     overflow-y: auto;
@@ -3251,48 +3538,98 @@ details.card > :not(summary) {
     font-size: var(--font-size-sm);
 }
 
+/* Runs stack inside one expanded chip; the rule keeps them from reading as
+   one continuous dump. */
+.chat-tool-run + .chat-tool-run {
+    margin-top: var(--spacing-10);
+    padding-top: var(--spacing-10);
+    border-top: 1px solid var(--color-border);
+}
+
+.chat-tool-run-label {
+    font-family: var(--font-family-mono);
+    font-size: var(--font-size-xs);
+    color: var(--color-on-surface-muted);
+    margin-bottom: var(--spacing-4);
+}
+
+/* ─── Follow-up chips (under the last answer) ─── */
+/* Same chip language as the welcome suggestions, one size down — these sit in
+   the thread rather than on an empty page. */
+.chat-followups {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--spacing-6);
+    margin-top: var(--spacing-4);
+    animation: chatFadeUp 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.chat-followup-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: var(--spacing-6) var(--spacing-12);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-round);
+    background: transparent;
+    color: var(--color-on-surface-secondary);
+    font-size: var(--font-size-base);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.chat-followup-chip:hover {
+    border-color: var(--color-border-medium);
+    background: var(--color-surface-hover);
+    color: var(--color-on-surface);
+}
+
 /* ─── Loading dots ─── */
+/* No bubble and no avatar — the answer it precedes has none either, so the
+   wait reads as a status line rather than a message. */
 .chat-loading {
     display: flex;
     flex-direction: row;
-    align-items: flex-start;
-    gap: var(--spacing-8);
+    align-items: center;
+    gap: var(--spacing-10);
 }
 
-.chat-loading-dots {
+.chat-loading-spinner {
+    font-size: 20px !important;
+    color: var(--color-on-surface-secondary);
+    flex-shrink: 0;
+}
+
+.chat-loading-text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-2);
+    min-width: 0;
+}
+
+.chat-loading-label {
+    font-size: var(--font-size-base);
+    color: var(--color-on-surface);
+    line-height: 1.3;
+}
+
+/* Mono, like every other Latin status text in the thread. */
+.chat-loading-tool {
     display: flex;
     align-items: center;
-    gap: 5px;
-    padding: var(--spacing-12) var(--spacing-16);
-    background: var(--color-surface-elevated);
-    border: 1px solid var(--color-border);
-    border-radius: var(--radius-lg);
-    border-bottom-left-radius: var(--radius-sm);
+    gap: var(--spacing-6);
+    font-family: var(--font-family-mono);
+    font-size: var(--font-size-sm);
+    color: var(--color-on-surface-tertiary);
+    line-height: 1.3;
+    font-variant-ligatures: none;
 }
 
-.chat-loading-dot {
-    width: 6px;
-    height: 6px;
-    background-color: var(--color-on-surface-muted);
-    border-radius: var(--radius-circle);
-    animation: chatBounce 1.4s infinite ease-in-out both;
-}
-.chat-loading-dot:nth-child(1) {
-    animation-delay: -0.32s;
-}
-.chat-loading-dot:nth-child(2) {
-    animation-delay: -0.16s;
-}
-
-@keyframes chatBounce {
-    0%,
-    80%,
-    100% {
-        transform: translateY(0);
-    }
-    40% {
-        transform: translateY(-6px);
-    }
+.chat-loading-sep {
+    opacity: 0.5;
 }
 
 /* ─── Error banner ─── */
@@ -3608,9 +3945,9 @@ details.card > :not(summary) {
 
 /* ─── Markdown body ─── */
 .chat-markdown {
-    line-height: 1.65;
+    line-height: 1.7;
     word-wrap: break-word;
-    font-size: var(--font-size-base);
+    font-size: var(--font-size-md);
     color: var(--color-on-surface);
 }
 

@@ -34,8 +34,8 @@ var SegQueryClassification = '## 질문 유형 판별 (먼저 판별하고 해�
   '→ **당신의 사전 지식으로 답하지 마세요!** 반드시 문서를 검색한 후 답변하세요.\n' +
   '1. 아래 **문서 카탈로그**에서 사용자 질문의 키워드와 일치하는 문서를 찾으세요.\n' +
   '   - **카탈로그가 이미 아래에 있으므로 list_available_documents를 호출하지 마세요!**\n' +
-  '2. get_full_document_content(file_identifier=찾은 경로, section=영어 키워드) → 해당 섹션 전문 확인\n' +
-  '   (section은 영어로! 문서 제목이 영어임 — 한국어는 매칭 안 됨. 안 맞거나 큰 문서는 섹션 목록이 반환되니 거기서 골라 재호출)\n' +
+  '2. get_full_document_content(file_identifier=찾은 경로, section=섹션 제목) → 해당 섹션 전문 확인\n' +
+  '   (검색 결과·섹션 목록에 나온 제목을 그대로 복사해 넣으세요. 목록이 없으면 문서가 쓰는 용어 그대로 — 제목이 영어인 문서면 영어로. 안 맞거나 큰 문서는 섹션 목록이 반환되니 거기서 골라 재호출)\n' +
   '3. 문서 내용을 기반으로 답변\n' +
   '4. 문서 링크 및 문서 탐색 제안 금지\n' +
   '**※ 예외 — 특정 테이블로 실행 가능한 TQL/쿼리 예제 요청(예: "SENSOR_TEST 데이터 TQL 예제 알려줘"):** 문서 베끼기·사전지식·문법 추측 **금지**. describe_table로 태그/컬럼/기간 확인 → **compile_tql_from_spec(filename 없이)** 로 검증된 TQL을 만들어 그대로 제시하세요(여러 예제면 여러 번 호출). `CHART_LINE(...)`·`SRC=`·`SINK=`·`MAP={...}` 같은 문법을 손으로 쓰지 마세요 — **레거시이거나 추측 문법이라 검증 없이 깨집니다**(검증된 현행 TQL은 컴파일러만 생성). 실제 TQL은 `SQL(`...`)` → `SCRIPT(...)` → `CHART(...)` 파이프라인입니다.\n' +
@@ -45,6 +45,8 @@ var SegQueryClassification = '## 질문 유형 판별 (먼저 판별하고 해�
   '→ **문서 조회는 최후 수단**: 실행이 1회 실패했을 때만 문서를 1회 참조하세요.\n';
 
 var SegTableSchema = '## Machbase 테이블 구조\n' +
+  '- list_tables 결과 표는 **화면에 이미 표시됩니다**. 답변에서 표를 다시 쓰지 마세요 — 무엇이 있는지 한두 줄로 짚고 다음 행동을 안내하면 됩니다. 건수는 도구가 알려준 값을 쓰고 직접 세지 마세요. 도구가 준 전체 이름은 SQL·TQL 작성에만 씁니다.\n' +
+  '- **테이블 이름은 list_tables/describe_table이 준 형태 그대로** 쓰세요(예: MACHBASEDB.SYS.BITCOIN). 소유자 접두를 떼면 접속 계정의 스키마에서 찾으므로, 남이 소유한 테이블은 권한이 있어도 does not exist 가 납니다.\n' +
   '- 테이블 컬럼은 고정이 아닙니다! 반드시 describe_table로 먼저 확인하세요.\n' +
   '- describe_table 결과에서 테이블 타입(TAG/LOG)과 실제 컬럼명을 확인한 후 SQL/TQL을 작성하세요.\n' +
   '- TAG 테이블: ROLLUP 사용 가능, PRIMARY KEY 컬럼이 태그 식별자\n' +
@@ -56,7 +58,8 @@ var SegTableSchema = '## Machbase 테이블 구조\n' +
   '  - 시간버킷 집계는 **ROLLUP 우선**: `ROLLUP(\'hour\',1,TIME)` + GROUP BY (빠름). ROLLUP이 없거나(LOG 테이블) ROLLUP 미지원 집계(**STDDEV/VARIANCE** 등)면 `DATE_TRUNC(\'hour\', TIME)` (**단위 먼저**) 사용. 예: 시간별 평균=ROLLUP, 시간별 표준편차=GROUP BY DATE_TRUNC(\'hour\',TIME) + STDDEV(VALUE).\n' +
   '  - `EXTRACT(EPOCH...)`·서수 `GROUP BY 1` 같은 PostgreSQL 문법 미지원(ERR-2129). 컬럼 별칭은 영어만(한글 별칭=ERR-2010).\n' +
   '  - 쿼리 오류 시 "이 데이터론 계산 불가" 같은 기능제한 핑계 금지 → 문법 고쳐 재시도. 원시행에서 손으로 집계 계산 금지.\n' +
-  '  - 통계 표현 매핑: **변동폭**=`MAX(VALUE)-MIN(VALUE)`, **주 단위**=`ROLLUP(\'week\',1,TIME)`(기준일 있으면 `ROLLUP(\'week\',1,TIME,\'2024-01-01\')`), 일별=`day`, 시간별=`hour`, **표준편차**=`STDDEV(VALUE)`(ROLLUP 불가 → `GROUP BY DATE_TRUNC(\'hour\',TIME)`). "주 단위"를 일별로 쪼개지 마세요.\n' +
+  '  - 통계 표현 매핑: **변동폭**=`MAX(VALUE)-MIN(VALUE)`, **주 단위**=`ROLLUP(\'week\',1,TIME)`, 일별=`day`, 시간별=`hour`, **표준편차**=`STDDEV(VALUE)`(ROLLUP 불가 → `GROUP BY DATE_TRUNC(\'hour\',TIME)`). "주 단위"를 일별로 쪼개지 마세요.\n' +
+  '  - **기준일이 질문에 있으면 반드시 ROLLUP 4번째 인자로 넘기세요.** "2024-01-01 기준으로 주 단위" → `ROLLUP(\'week\',1,TIME,\'2024-01-01\')`. `DATE_TRUNC`는 기준일을 못 받고 항상 월요일로 맞추므로, 그걸 쓰면 사용자가 요청하지 않은 경계로 조용히 집계됩니다. "요청과 경계가 다르다"고 설명만 덧붙이지 말고 기준일 인자를 써서 맞추세요.\n' +
   '  - **질문에 기간이 없으면 전체 기간을 조회**하세요 — 오늘/최근 날짜로 `WHERE TIME >= ...`를 임의로 붙이지 마세요(과거 데이터가 조용히 빠집니다). 기간 필터는 사용자가 명시했을 때만 씁니다.\n\n' +
   '## 분석 유형 판별 (먼저 확인!)\n' +
   '- "리포트", "보고서" 포함 → **HTML 분석 리포트**\n' +

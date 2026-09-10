@@ -19,7 +19,9 @@ function httpDo(method, url, headers, body, cb) {
     var text = '';
     try { text = resp.string(); } catch (e) { /* empty */ }
     if (!resp.ok) {
-      cb(new Error('HTTP ' + resp.statusCode + ': ' + text.substring(0, 200)));
+      var httpErr = new Error('HTTP ' + resp.statusCode + ': ' + text.substring(0, 200));
+      httpErr.status = resp.statusCode;
+      cb(httpErr);
       return;
     }
     cb(null, text);
@@ -32,17 +34,29 @@ function createClient(cfg) {
   var baseURL = 'http://' + cfg.host + ':' + cfg.port;
   var jwtToken = '';
   var jwtExp = 0;
+  var TOKEN_TTL_MS = 4 * 60 * 1000;
 
   function querySQL(sql, timeformat, tz, format, cb) {
     var params = ['q=' + encodeURIComponent(sql)];
     if (timeformat) params.push('timeformat=' + encodeURIComponent(timeformat));
     if (tz) params.push('tz=' + encodeURIComponent(tz));
     if (format) params.push('format=' + encodeURIComponent(format));
-    httpDo('GET', baseURL + '/db/query?' + params.join('&'), null, null, cb);
+    // /web/machbase 는 /db/query 와 동작·응답이 같고 JWT 로 사용자를 검증한다. 이 호출은
+    // config 계정의 권한으로 실행되므로 권한 밖 테이블은 DB 가 거부한다.
+    authRequest('GET', '/web/machbase?' + params.join('&'), null, null, cb);
   }
 
+  // X-Console-Id 가 있어야 TQL 이 토큰의 사용자로 실행된다. 없으면 서버 자체 커넥션(SYS)으로
+  // 돌아 권한 밖 테이블까지 읽힌다. 값 자체는 식별용이라 고정 문자열로 충분하고,
+  // 로그 레벨을 NONE 으로 두어 콘솔 스트림을 만들지 않는다.
+  var TQL_CONSOLE_HEADERS = {
+    'Content-Type': 'text/plain',
+    'X-Console-Id': 'neo-pkg-llm-chat, console-log-level=NONE',
+    'X-Console-Log-Level': 'NONE',
+  };
+
   function executeTQL(tqlContent, cb) {
-    httpDo('POST', baseURL + '/db/tql', { 'Content-Type': 'text/plain' }, tqlContent, cb);
+    authRequest('POST', '/web/api/tql', TQL_CONSOLE_HEADERS, tqlContent, cb);
   }
 
   function login(cb) {
@@ -53,7 +67,9 @@ function createClient(cfg) {
         var result = JSON.parse(body);
         if (!result.success) return cb(new Error('Login failed: ' + result.reason));
         jwtToken = result.accessToken;
-        jwtExp = Date.now() + 5 * 60 * 1000;
+        // 서버의 accessToken 수명은 300초. 전송 지연·시계 오차로 경계에서 401 이 나지
+        // 않도록 로컬 만료를 60초 앞당겨 둔다.
+        jwtExp = Date.now() + TOKEN_TTL_MS;
         cb(null, jwtToken);
       } catch (e) { cb(new Error('Login parse error: ' + e.message)); }
     });
@@ -64,41 +80,51 @@ function createClient(cfg) {
     login(cb);
   }
 
+  // 인증 요청 공통. 401(만료·폐기)이면 캐시된 토큰을 버리고 재로그인해 한 번만 재시도한다.
+  // 재시도를 1회로 묶는 이유: 계정 잠금·비밀번호 변경처럼 재로그인해도 계속 401 인 상황에서
+  // 무한 재시도로 도는 것을 막기 위해서다.
+  function authRequest(method, path, extraHeaders, body, cb) {
+    var retried = false;
+    function attempt() {
+      getToken(function (err, token) {
+        if (err) return cb(err);
+        var headers = { 'Authorization': 'Bearer ' + token };
+        if (extraHeaders) {
+          var keys = Object.keys(extraHeaders);
+          for (var i = 0; i < keys.length; i++) headers[keys[i]] = extraHeaders[keys[i]];
+        }
+        httpDo(method, baseURL + path, headers, body, function (reqErr, text) {
+          if (reqErr && reqErr.status === 401 && !retried) {
+            retried = true;
+            jwtToken = '';
+            jwtExp = 0;
+            return attempt();
+          }
+          cb(reqErr, text);
+        });
+      });
+    }
+    attempt();
+  }
+
   function webGet(path, cb) {
-    getToken(function (err, token) {
-      if (err) return cb(err);
-      httpDo('GET', baseURL + path, { 'Authorization': 'Bearer ' + token }, null, cb);
-    });
+    authRequest('GET', path, null, null, cb);
   }
 
   function webPost(path, payload, cb) {
-    getToken(function (err, token) {
-      if (err) return cb(err);
-      var body = payload ? JSON.stringify(payload) : undefined;
-      httpDo('POST', baseURL + path, { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body, cb);
-    });
+    authRequest('POST', path, { 'Content-Type': 'application/json' }, payload ? JSON.stringify(payload) : undefined, cb);
   }
 
   function webPostRaw(path, contentType, data, cb) {
-    getToken(function (err, token) {
-      if (err) return cb(err);
-      httpDo('POST', baseURL + path, { 'Authorization': 'Bearer ' + token, 'Content-Type': contentType }, data, cb);
-    });
+    authRequest('POST', path, { 'Content-Type': contentType }, data, cb);
   }
 
   function webDelete(path, cb) {
-    getToken(function (err, token) {
-      if (err) return cb(err);
-      httpDo('DELETE', baseURL + path, { 'Authorization': 'Bearer ' + token }, null, cb);
-    });
+    authRequest('DELETE', path, null, null, cb);
   }
 
   function webPut(path, payload, cb) {
-    getToken(function (err, token) {
-      if (err) return cb(err);
-      var body = payload ? JSON.stringify(payload) : undefined;
-      httpDo('PUT', baseURL + path, { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' }, body, cb);
-    });
+    authRequest('PUT', path, { 'Content-Type': 'application/json' }, payload ? JSON.stringify(payload) : undefined, cb);
   }
 
   function escapePath(p) {

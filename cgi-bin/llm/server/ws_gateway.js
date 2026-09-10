@@ -69,7 +69,17 @@ function createGateway(cfg, serverPort) {
   function handleBrowserMessage(conn, raw, authUserID) {
     var msg;
     try { msg = JSON.parse(raw); } catch (e) { return; }
-    var userID = authUserID || (msg && msg.user_id) || cfg.machbase.user || 'sys';
+
+    // 검증된 신원이 없으면 처리하지 않는다. 본문 user_id 나 sys 로 폴백하면 아무나 남의
+    // 계정 설정(DB 자격증명·LLM API 키)으로 워커를 띄울 수 있다.
+    var userID = authUserID;
+    if (!userID) {
+      sendJSON(conn, {
+        type: 'error', session_id: msg && msg.session_id, code: 'auth_required',
+        msg: '로그인 정보가 확인되지 않았습니다. 페이지를 새로고침한 뒤 다시 시도하세요.',
+      });
+      return;
+    }
 
     switch (msg.type) {
       case 'chat':
