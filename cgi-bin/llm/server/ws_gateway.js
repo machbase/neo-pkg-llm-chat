@@ -176,6 +176,8 @@ function createGateway(cfg, serverPort) {
       var reason = (result && result.reason) || 'unknown error';
       console.println('[Gateway] Worker start failed: ' + reason);
       sendJSON(route.browserConn, { type: 'error', session_id: sessionID, msg: 'Worker start failed: ' + reason });
+      // 기동에 실패했으면 방금 쓴 설정 파일도 치운다 — 안 그러면 쓸모없는 파일만 남는다.
+      try { fs.unlinkSync(workerCfgPath); } catch (e2) {}
       delete routes[sessionID];
     }
   }
@@ -191,6 +193,10 @@ function createGateway(cfg, serverPort) {
     }
 
     cgiPost('/stop', 'name=' + encodeURIComponent(route.serviceName));
+
+    // 세션 설정 파일도 함께 지운다
+    // 실패는 무시한다(이미 없거나 잠긴 경우)
+    try { fs.unlinkSync(pathMod.join(WORKERS_DIR, sessionID + '.json')); } catch (e) {}
 
     delete routes[sessionID];
   }
@@ -316,6 +322,23 @@ function createGateway(cfg, serverPort) {
       console.println('[Gateway] Send error: ' + e.message);
     }
   }
+
+  // 강제 종료로 게이트웨이가 죽으면 워커 서비스 등록(etc/services/)과 설정 파일이
+  // 함께 남는다. 등록이 남아 있으면 Neo가 종료할 때마다 그 이름으로 STOP을 찍고,
+  // 등록은 설정 파일보다 오래 살아남는다 — 그래서 파일이 아니라 등록부를 기준으로
+  // 훑는다. service API 콜백은 serve() 안에서 안 불리므로 CGI에 위임한다.
+  function sweepOrphanWorkers() {
+    var res = cgiPost('/sweep', 'keep=');
+    if (!res || !res.ok) {
+      console.println('[Gateway] Orphan sweep skipped: ' + ((res && res.reason) || 'no response'));
+      return;
+    }
+    console.println('[Gateway] Orphan sweep: services=' + res.removed + ', files=' + res.files
+      + (res.failed && res.failed.length ? ', failed=' + res.failed.join(',') : '')
+      + (res.diag ? ' [' + res.diag + ']' : ''));
+  }
+
+  sweepOrphanWorkers();
 
   return {
     handleBrowserMessage: handleBrowserMessage,

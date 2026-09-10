@@ -36,7 +36,7 @@ if (method !== 'POST') {
       service.uninstall(svcName, function () {
         if (err) {
           var msg = err.message || String(err);
-          if (/not\s*found|not\s*running/i.test(msg)) {
+          if (/not\s*found|does not exist|not\s*installed|not\s*running|already/i.test(msg)) {
             reply({ ok: true, name: svcName, alreadyStopped: true });
           } else {
             reply({ ok: false, reason: msg });
