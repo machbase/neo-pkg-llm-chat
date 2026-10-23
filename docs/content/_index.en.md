@@ -45,25 +45,6 @@ Provider and connection settings are configured from the web-based Settings scre
 
 The agentic loop is the core execution engine of this package. It classifies the question to choose an execution flow, then repeats a cycle in which the LLM runs that flow's tools and decides the next step from the results until an answer is ready (tool calls are automatically corrected and checked before they run).
 
-### Query Type Detection
-
-Each question is classified in the order below to choose an execution flow. Each flow has a fixed set of tools the model can use (see Common Rules in [Technical Reference]({{< relref "technical-reference" >}})).
-
-| Question | Flow |
-| :--- | :--- |
-| Pasted code (`SQL(`, `CHART(`, etc.) | Data query |
-| Contains `report` / `summary report` (Korean `리포트`, `보고서`) | Report — generates an HTML analysis report |
-| Contains `timer`, `cron`, `scheduler` (Korean `타이머`, `스케줄러`) | Document search — answered from the manual (timer registration is not supported) |
-| A short question about the server version or status | System info |
-| `forecast` (Korean `예측`) without mentioning a report or dashboard | Data query — generates a forecast report |
-| Execution requests, queries naming a table or tag, measurement questions such as `온도 몇 도야` ("what is the temperature") | Data query |
-| Concept or usage questions (`what is`, `how to`, `example`; Korean `뭐야`, `어떻게`, `예제`) | Document search |
-| `advanced`, `FFT`, `RMS`, `spectrum`, `anomaly`, etc. (Korean `심층`, `고급`, `스펙트럼`, `이상 탐지`) | Advanced analysis — in-depth charts compiled from analysis intent (IR) |
-| Chart, dashboard, analysis, or trend requests | Basic analysis — table-based charts |
-| Lookup expressions such as `average`, `latest`, `how many`, `list` (Korean `평균`, `최근`, `몇 건`, `목록`) | Data query |
-| Greetings | General conversation |
-| Anything else | Document search |
-
 ## What This Documentation Covers
 
 - Package installation

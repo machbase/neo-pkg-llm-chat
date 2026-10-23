@@ -66,8 +66,6 @@ The internal execution flow is chosen automatically from the question text.
 - Concept or usage questions such as `what is`, `how to`, `example` (Korean `뭐야`, `어떻게`, `예제`)
   - Answers from the manual documents.
 
-The full classification order is in "Query Type Detection" on the first page of the technical documentation.
-
 ## Time Display
 
 Times in query results, charts, and reports are shown in **the browser's time zone**. To see another time zone, say so in the question, for example "in UTC".
