@@ -3,7 +3,7 @@ title: LLM Chat Technical Documentation
 weight: 10
 ---
 
-[한국어]({{< relref path="/" lang="kr" >}}) | **English** | [日本語]({{< relref path="/" lang="ja" >}})
+<p align="center" style="margin-top:1.25rem"><a href="{{< relref path="/" lang="kr" >}}">한국어</a> | <strong>English</strong> | <a href="{{< relref path="/" lang="ja" >}}">日本語</a></p>
 
 The Machbase Neo LLM Chat package is an LLM-based chat interface for interacting with the Machbase Neo time-series database in natural language.
 Through conversation, you can query data, generate dashboards, create analysis reports, and explore manual documents.
@@ -43,7 +43,7 @@ Provider and connection settings are configured from the web-based Settings scre
 
 ## Agentic Loop
 
-The agentic loop is the core execution engine of this package. When a user sends a question, the system first detects the query type, then enters an autonomous loop where the LLM selects tools and executes them.
+The agentic loop is the core execution engine of this package. It classifies the question to choose an execution flow, then repeats a cycle in which the LLM runs that flow's tools and decides the next step from the results until an answer is ready (tool calls are automatically corrected and checked before they run).
 
 ### Query Type Detection
 
@@ -63,60 +63,6 @@ Each question is classified in the order below to choose an execution flow. Each
 | Lookup expressions such as `average`, `latest`, `how many`, `list` (Korean `평균`, `최근`, `몇 건`, `목록`) | Data query |
 | Greetings | General conversation |
 | Anything else | Document search |
-
-### Correction (Fixer) Layer
-
-Before a tool runs, the fixer layer auto-corrects common LLM mistakes so the call can succeed.
-
-| Fixer | Description |
-| :--- | :--- |
-| Argument normalization | Corrects wrong or misspelled parameter names in tool calls |
-| Exploration assist | Infers the table name for `list_table_tags` and adds `profile` to `describe_table` in basic analysis |
-| Question context injection | Passes the period, unit, and original text read from the question to the report and chart compile tools (takes precedence over the model's values) |
-| Time range correction | Adjusts `time_start` / `time_end` to match actual data boundaries |
-| Time value cleanup | Normalizes `time_start` / `time_end` to epoch ms strings |
-| Chart definition cleanup | Normalizes the dashboard `charts` array |
-| Newline cleanup | Turns literal `\n` into real newlines |
-
-### Guard Pipeline
-
-The guard pipeline runs behavioral guards around the agentic loop. Pre-tool guards run before a tool executes; post-loop guards run when the model tries to finish.
-
-Pre-tool guards:
-
-| Guard | Description |
-| :--- | :--- |
-| `consecutive_failure` | When the same tool keeps failing, re-prompts the model to reread the error and fix it; after 4 consecutive compile failures, has it skip that chart |
-| `dashboard_early` | Prevents dashboard creation before all TQL templates are saved (advanced mode) |
-| `redundant_finalize` | Blocks extra finalize calls after the dashboard URL was already issued (avoids orphan files) |
-
-Post-loop guards:
-
-| Guard | Description |
-| :--- | :--- |
-| `dashboard_omission` | Catches a false "dashboard created" claim when no tool was actually called |
-| `chart_omission` | Re-prompts when advanced analysis finished but charts are missing from the dashboard |
-| `report_omission` | Re-prompts when report mode is active but `save_html_report` was never called |
-| `forecast_label` | Corrects the label when a plain analysis report is finished but the answer calls it a "forecast report" (passing off unvalidated past analysis, with no backtest or confidence interval, as a forecast) |
-| `doc_index_answer` | Forces a body fetch when the document tool result is only a section list / navigation hint but the model tries to answer without re-querying |
-| `dashboard_answer` | Recovers a successfully created dashboard URL that the final answer left out |
-| `tql_inject` (tql_omission) | Ensures the validated ```tql chart is present and intact in the final answer |
-| `raw_tql` | Detects hand-written ```tql that came from no tool result and redirects to the compiler |
-| `fake_tql_answer` | Blocks fabricated / hallucinated TQL syntax in the final answer |
-| `applied_basis` | If a tool changed the unit, period, or tag and the answer does not mention the applied value, appends one `※ 적용 기준:` ("applied basis") line to the answer (local models) |
-
-### Execution-Stage Limits
-
-Right before a tool runs, the following checks apply.
-
-| Limit | Applies to | Behavior |
-| :--- | :--- | :--- |
-| Allowed tools | All models | A tool that is not in the current flow's allowed list does not run, even if the model calls it by name |
-| Repeated identical call | All models | After the same tool has run twice with the same arguments, further identical calls are blocked |
-| SQL run count | Local models (Ollama) | `execute_sql_query` runs at most 8 times per question; after that the model is told to answer from the results so far |
-| Time unit | Local models (Ollama) | For hourly/daily/weekly/monthly questions (Korean `시간별`, `일별`, `주별`, `월별`), SQL with no bucket or a different bucket is sent back for rewriting before it runs. The example bucket uses `ROLLUP` if the table has a ROLLUP table, otherwise `DATE_TRUNC` |
-
-As blocks accumulate, local models stop using tools and answer from what they have confirmed so far.
 
 ## What This Documentation Covers
 
