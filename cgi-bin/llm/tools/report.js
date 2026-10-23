@@ -2,6 +2,8 @@ var { argStr } = require('./registry');
 var { expandReportTemplate, loadReportTemplates, getTemplateMeta, listReportTemplates } = require('./report_templates');
 var { detectColumns } = require('./tql_spec');
 var { withUserRoot, ensureParentOf, shortTableName } = require('./paths');
+var { resolveTableRef, readTagNames, statViewName, parseTableRef, countRollups } = require('./table_access');
+var { zoneName } = require('../machbase/timezone');
 
 // Cache DB-derived params from 1st call so 2nd call (with analysis) can reuse them
 var _paramsCache = {};
@@ -28,7 +30,6 @@ function purgeExpiredCache() {
 }
 
 // Extract routing kind from a template ID: 'R-2-vibration' -> 'R-2', 'C-1-vibration' -> 'C-1', 'R-2' -> 'R-2'.
-// Builtin compute dispatch keys on kind (R-1/R-2/R-3); custom (C-*) never matches -> generic path.
 function templateKind(id) {
   var m = /^([A-Za-z]-\d+)/.exec(id || '');
   return m ? m[1] : (id || '');
@@ -40,9 +41,8 @@ function reportTopicOf(id) {
   return m ? m[1].toLowerCase() : '';
 }
 
-// Same template intent? Exact ID, else same topic (R-2-vibration ≒ C-2-vibration — 1차 호출의
-// custom override로 kind만 바뀐 경우), else same kind. 2차 호출의 명시적 template_id가 캐시된
-// 파이프라인 결과를 무효화해야 하는지 판정에 사용.
+// 같은 템플릿 의도인지: ID 일치 → 같은 topic(R-2-vibration ≒ C-2-vibration) → 같은 kind 순
+// · 2차 호출의 template_id가 캐시를 무효화할지 판정용
 function sameTemplateIntent(a, b) {
   if (a === b) return true;
   var ta = reportTopicOf(a), tb = reportTopicOf(b);
@@ -51,19 +51,15 @@ function sameTemplateIntent(a, b) {
 }
 
 // ── Compute catalog ────────────────────────────────────────────────────────
-// Named domain calculations (1st-party curated). A template declares `compute: <name>`
-// in its .md frontmatter; the engine dispatches by lookup (no hardcoded template IDs),
-// so builtin and custom templates are treated identically. Adding a new technique = one
-// entry here (shared release), reused by any template that declares it.
-//   run(ctx, done)    : fetch raw data + assign result into ctx.params, then done()
-//   summarize(params) : build the computed-number summary the LLM reads to write analysis
-// Analysis direction/tone is NOT here — it lives in each template's `guide:` text, and
-// value-dependent tone is delegated to the LLM (given the numbers summarize() emits).
+// 템플릿 frontmatter `compute: <name>`으로 조회하는 도메인 계산(빌트인·커스텀 동일 취급)
+// · run(ctx, done)    : 원시 데이터 조회 + ctx.params에 결과 기록 후 done()
+// · summarize(params) : LLM이 분석 작성에 쓸 계산 수치 요약
+// · 분석 방향·톤은 템플릿 `guide:` 담당
 var COMPUTE = {
   driving: {
     run: function (ctx, done) {
       console.println('  [report] Fetching driving data for ' + ctx.tags.length + ' tags...');
-      fetchDrivingData(ctx.mc, ctx.tableName, ctx.tags, ctx.rollupUnit, ctx.timeWhere, ctx.cols, function (dErr, dData) {
+      fetchDrivingData(ctx.mc, ctx.tableName, ctx.tags, ctx.rollupUnit, ctx.timeWhere, ctx.cols, ctx.useRollup, ctx.tz, function (dErr, dData) {
         ctx.params.DRIVING_DATA_JSON = dData ? JSON.stringify(dData) : '{"per_tag":{},"events":{"accel":[],"brake":[],"turn":[]},"safety_score":0,"summary":{},"thresholds":{}}';
         done();
       });
@@ -85,7 +81,7 @@ var COMPUTE = {
         var pt = dd.per_tag || {}; var ptKeys = Object.keys(pt);
         if (ptKeys.length > 0) {
           s += '태그별 롤업 추이 데이터 포인트: ';
-          ptKeys.forEach(function (k) { s += k + '=' + ((pt[k].rollup || {}).times || []).length + '건 '; });
+          ptKeys.forEach(function (k) { s += k + '=' + (pt[k].rollup || []).length + '건 '; });
           s += '\n';
         }
       } catch (e) {}
@@ -95,7 +91,7 @@ var COMPUTE = {
   vibration: {
     run: function (ctx, done) {
       console.println('  [report] Fetching vibration data for ' + ctx.tags.length + ' tags...');
-      fetchVibrationData(ctx.mc, ctx.tableName, ctx.tags, ctx.rollupUnit, ctx.timeWhere, ctx.cols, function (vErr, vData) {
+      fetchVibrationData(ctx.mc, ctx.tableName, ctx.tags, ctx.rollupUnit, ctx.timeWhere, ctx.cols, ctx.useRollup, ctx.tz, function (vErr, vData) {
         ctx.params.PER_TAG_DATA_JSON = vData ? JSON.stringify(vData) : '{}';
         done();
       });
@@ -148,8 +144,8 @@ var COMPUTE = {
   finance: {
     run: function (ctx, done) {
       console.println('  [report] Fetching finance data...');
-      ctx.params.STOCK_NAME = ctx.stock || ctx.tableName;
-      fetchFinanceData(ctx.mc, ctx.tableName, ctx.tags, ctx.stock, ctx.rollupUnit, ctx.timeWhere, ctx.cols, function (fErr, fData) {
+      ctx.params.STOCK_NAME = ctx.stock || shortTableName(ctx.tableName);
+      fetchFinanceData(ctx.mc, ctx.tableName, ctx.tags, ctx.stock, ctx.rollupUnit, ctx.timeWhere, ctx.cols, ctx.useRollup, ctx.tz, function (fErr, fData) {
         if (fData) {
           ctx.params.TREND_DATA_JSON = JSON.stringify(fData.trend || []);
           if (fData.stockName) ctx.params.STOCK_NAME = fData.stockName;
@@ -205,6 +201,7 @@ function register(registry, mc) {
         tag_name: { type: 'string', description: '분석 대상 태그명 또는 종목명. 사용자가 특정 대상을 언급하면 반드시 전달.' },
         time_start: { type: 'string', description: '분석 기간 시작 (epoch 밀리초 숫자). ★사용자가 기간을 명시적으로 말할 때만 전달(예: "최근 1시간", "어제", "7월 데이터"). 기간 언급이 없으면 절대 넣지 말 것 — 임의의 기간을 추측해 넣지 마세요(전체 데이터 분석 + 자동 롤업).' },
         time_end: { type: 'string', description: '분석 기간 끝 (epoch 밀리초 숫자). time_start와 함께 전달.' },
+        timezone: { type: 'string', description: '리포트 시각 표시 시간대(IANA 이름, 예: UTC, Asia/Seoul). 사용자가 시간대를 따로 말할 때만 전달 — 생략하면 사용자 브라우저 시간대.' },
       },
       required: ['table'],
     },
@@ -227,21 +224,32 @@ function saveHtmlReport(mc, args, cb) {
     }
   }
   if (!tableName) return cb(null, 'table 파라미터가 필요합니다. 예: table="GOLD"');
-  tableName = tableName.toUpperCase();
 
+  // 소유자·database까지 채운 이름 사용 — 태그 통계 뷰가 DB.OWNER.V$<t>_STAT 형태라 접두 필요
+  // · 카탈로그엔 접근 가능 테이블만 나와 "없음"과 "권한 없음" 구분 불가
+  resolveTableRef(mc, String(tableName).toUpperCase(), function (refErr, ref) {
+    if (refErr) return cb(null, 'Error: ' + refErr.message);
+    reportTimezone(mc, anyStr(norm, 'timezone'), function (tz) {
+      nowIn(mc, tz, function (nowText) { buildReport(mc, norm, ref, tz, nowText, cb); });
+    });
+  });
+}
+
+function buildReport(mc, norm, ref, tz, nowText, cb) {
+  var tableName = ref.qualified;
   var templateID = anyStr(norm, 'template_id') || anyStr(norm, 'templateid') || 'R-0-general';
   var kind = templateKind(templateID);
   var now = new Date();
   var ts = now.getFullYear() + pad2(now.getMonth() + 1) + pad2(now.getDate()) + '_' + pad2(now.getHours()) + pad2(now.getMinutes()) + pad2(now.getSeconds());
-  // 경로·파일명에는 접두를 뺀 테이블 이름만 쓴다(폴더가 MACHBASEDB.SYS.X 로 생기지 않게).
+  // 경로·파일명엔 접두 뺀 테이블 이름 — MACHBASEDB.SYS.X 폴더 생성 방지
   var pathName = shortTableName(tableName);
   var filename = anyStr(norm, 'filename') || (pathName + '/' + pathName + '_Analysis_Report_' + ts + '.html');
   if (!filename.toLowerCase().endsWith('.html')) filename += '.html';
   if (filename.indexOf('/') < 0) filename = pathName + '/' + filename;
-  // 계정 폴더로 감싼다 — 리포트 링크도 이 이름에서 만들어진다.
+  // 계정 폴더 아래 저장 — 리포트 링크도 이 이름 기준
   filename = withUserRoot(mc, filename);
 
-  var params = { GENERATED_DATE: formatDateLocal(now), TABLE: tableName };
+  var params = { GENERATED_DATE: nowText, TABLE: shortTableName(tableName) };
   console.println('[report] === saveHtmlReport called === table=' + tableName + ' templateID=' + templateID);
   console.println('[report] args keys: ' + Object.keys(norm).join(', '));
   console.println('[report] has analysis: ' + (!!anyStr(norm, 'analysis')) + ', has recommendations: ' + (!!anyStr(norm, 'recommendations')));
@@ -253,10 +261,8 @@ function saveHtmlReport(mc, args, cb) {
   var carryAnalysis = '', carryReco = '';
   if (hasAnalysis || hasReco) {
     var cached = getCachedParams(tableName);
-    // 2차 호출의 명시적 template_id가 캐시된 템플릿과 다른 의도면(예: 1차 template_id 누락으로
-    // R-0-general 캐시 → 2차 R-2-vibration 지정) 캐시를 버리고 풀 파이프라인 재실행 — 새 템플릿의
-    // compute(차트 데이터)까지 다시 뽑아야 하므로 templateID만 바꿔치기하면 안 됨.
-    // 이전 호출에서 모아둔 analysis/recommendations 조각은 승계.
+    // 2차 호출의 template_id가 캐시와 다른 의도면 캐시 버리고 풀 파이프라인 재실행 — 새 템플릿 compute(차트 데이터) 재계산 필요
+    // · 모아둔 analysis/recommendations는 승계
     if (cached && explicitTemplateID && cached._templateID && !sameTemplateIntent(explicitTemplateID, cached._templateID)) {
       console.println('  [report] Template switch: cached ' + cached._templateID + ' → requested ' + explicitTemplateID + ', re-running full pipeline');
       carryAnalysis = cached.ANALYSIS || '';
@@ -266,15 +272,14 @@ function saveHtmlReport(mc, args, cb) {
     }
     if (cached) {
       console.println('  [report] Cache hit for ' + tableName);
-      // Accumulate analysis/recommendations across calls so the LLM needn't re-send the
-      // other piece on each retry — store HTML into the cache, save once both are present.
+      // analysis/recommendations를 호출 간 누적(HTML로 캐시) → 둘 다 모이면 저장
       if (hasAnalysis) cached.ANALYSIS = mdToHTML(anyStr(norm, 'analysis'));
       if (hasReco) cached.RECOMMENDATIONS = mdToHTML(anyStr(norm, 'recommendations'));
       cacheParams(tableName, cached);
       if (cached.ANALYSIS && cached.RECOMMENDATIONS) {
         var ckeys = Object.keys(cached);
         for (var ci = 0; ci < ckeys.length; ci++) params[ckeys[ci]] = cached[ckeys[ci]];
-        params.GENERATED_DATE = formatDateLocal(now);
+        params.GENERATED_DATE = nowText;
         return saveToFile(mc, cached._templateID || templateID, params, filename, cb);
       }
       // Only one collected so far → ask ONLY for the missing piece (the other is saved).
@@ -287,7 +292,7 @@ function saveHtmlReport(mc, args, cb) {
   var timeStart = dateStrToNano(anyStr(norm, 'time_start') || anyStr(norm, 'timestart'));
   var timeEnd = dateStrToNano(anyStr(norm, 'time_end') || anyStr(norm, 'timeend'));
   var timeWhere = '', timeWhereBase = '';
-  // 실제 컬럼명(PK/BASETIME/SUMMARIZED). detectColumns가 채우기 전 기본값. NAME/TIME/VALUE 하드코딩 대체.
+  // 실제 컬럼명(PK/BASETIME/SUMMARIZED), detectColumns 전 기본값
   var cols = { n: 'NAME', t: 'TIME', v: 'VALUE' };
   function buildTimeWhere() {
     if (timeStart && timeEnd) {
@@ -300,23 +305,18 @@ function saveHtmlReport(mc, args, cb) {
   var stock = anyStr(norm, 'tag_name') || anyStr(norm, 'stock') || anyStr(norm, 'tag') || '';
   if (stock) stock = extractStockPrefix(stock);
   var explicitRollup = !!anyStr(norm, 'rollup_unit');
-  var rollupUnit = anyStr(norm, 'rollup_unit') || pickRollupUnit(timeStart, timeEnd);
-  var statsCSV = '';
+  var rollupUnit = anyStr(norm, 'rollup_unit') || pickRollupUnit(toMs(timeStart), toMs(timeEnd));
+  var statsCSV = '', statsText = '';
+  var stockTags = [];      // stock 필터로 좁힌 태그(통계 뷰 WHERE용)
+  var periodDataCount = 0; // 기간 지정 시 그 기간의 건수 — 머리말 총 데이터 건수용
+  // 태그 통계 뷰(태그별 누적 건수·최소/최대·시간 범위, 전체 데이터 기준)
+  var statView = statViewName(ref);
 
-  // Fallback: if time filter set, check if data exists in that range
+  // 기간 지정 시 그 기간 건수(COUNT) — 0건이면 데이터 끝 기준으로 기간 이동 후 다시 집계
   function checkTimeRangeAndProceed() {
     if (!timeWhere) return doStep1();
-    var checkSQL = 'SELECT COUNT(*) FROM ' + tableName + timeWhereBase;
-    mc.querySQL(checkSQL, '', '', '', function (cerr, cntJSON) {
-      var cnt = 0;
-      if (!cerr && cntJSON) {
-        try {
-          var p = JSON.parse(cntJSON);
-          if (p && p.data && p.data.rows && p.data.rows.length > 0) cnt = parseInt(p.data.rows[0][0], 10) || 0;
-        } catch (e) {}
-      }
-      if (cnt > 0) return doStep1();
-      // No data in requested range → shift to MAX(TIME)
+    countPeriod(function (cnt) {
+      if (cnt > 0) { periodDataCount = cnt; return doStep1(); }
       console.println('[report] No data in requested time range, shifting to data MAX(TIME)...');
       mc.querySQL('SELECT MAX(' + cols.t + ') FROM ' + tableName, '', '', '', function (merr, maxJSON) {
         if (!merr && maxJSON) {
@@ -325,8 +325,8 @@ function saveHtmlReport(mc, args, cb) {
             if (p2 && p2.data && p2.data.rows && p2.data.rows.length > 0 && p2.data.rows[0][0] != null) {
               var maxNano = parseInt(p2.data.rows[0][0], 10);
               if (maxNano > 0) {
-                var tsMs = parseInt(timeStart, 10) || 0;
-                var teMs = parseInt(timeEnd, 10) || 0;
+                var tsMs = toMs(timeStart);
+                var teMs = toMs(timeEnd);
                 var durationMs = teMs - tsMs;
                 var newEndMs = Math.floor(maxNano / 1000000);
                 var newStartMs = newEndMs - durationMs;
@@ -341,17 +341,27 @@ function saveHtmlReport(mc, args, cb) {
             }
           } catch (e) {}
         }
-        doStep1();
+        countPeriod(function (cnt2) { periodDataCount = cnt2; doStep1(); });
       });
     });
   }
 
-  // No explicit rollup_unit & no user time range → pick rollup from the ACTUAL data span,
-  // so short high-frequency data isn't stuck on the coarse 'min' default (only affects the
-  // ROLLUP trend queries; raw waveform/FFT use LIMIT and are untouched).
+  function countPeriod(next) {
+    mc.querySQL('SELECT COUNT(*) FROM ' + tableName + timeWhereBase, '', '', '', function (err, json) {
+      var cnt = 0;
+      try {
+        var p = JSON.parse(json);
+        if (!err && p && p.data && p.data.rows && p.data.rows.length > 0) cnt = parseInt(p.data.rows[0][0], 10) || 0;
+      } catch (e) {}
+      next(cnt);
+    });
+  }
+
+  // rollup_unit·기간 미지정 → 실제 데이터 범위로 rollup 단위 결정(ROLLUP 추이 쿼리만 영향)
   function refineRollupFromData(next) {
     if (explicitRollup || (timeStart && timeEnd)) return next();
-    mc.querySQL('SELECT MIN(' + cols.t + '), MAX(' + cols.t + ') FROM ' + tableName, 'ms', '', '', function (e, json) {
+    // 데이터 전체 범위 — 통계 뷰로 조회(테이블 전체 스캔 회피)
+    mc.querySQL('SELECT MIN(MIN_TIME), MAX(MAX_TIME) FROM ' + statView, 'ms', '', '', function (e, json) {
       try {
         var p = JSON.parse(json);
         if (p && p.data && p.data.rows && p.data.rows.length > 0) {
@@ -368,11 +378,13 @@ function saveHtmlReport(mc, args, cb) {
 
   // Step 1: Get tags
   function doStep1() {
-    mc.querySQL('SELECT NAME FROM V$' + tableName + '_STAT LIMIT 2600', '', '', '', function (err, tagCSV) {
+    mc.querySQL('SELECT NAME FROM ' + statView + ' LIMIT 2600', '', '', '', function (err, tagCSV) {
     var tags = parseTagList(err ? '' : tagCSV);
+    // 대체 조회 실패 시 DB 사유(권한 없음 등) — 실패 원인 구분용
+    var tagFailReason = '';
 
     function afterTags(tags) {
-      if (tags.length === 0) return cb(null, 'Error: failed to retrieve tags from table ' + tableName);
+      if (tags.length === 0) return cb(null, 'Error: failed to retrieve tags from table ' + tableName + (tagFailReason ? ' — ' + tagFailReason : ''));
 
       var stockWhere = '';
       if (stock) {
@@ -388,7 +400,7 @@ function saveHtmlReport(mc, args, cb) {
         if (filtered.length === 0) {
           filtered = tags.filter(function (t) { return t.toUpperCase().indexOf(upper) >= 0; });
         }
-        if (filtered.length > 0) { tags = filtered; stockWhere = " AND " + cols.n + " IN ('" + filtered.join("','") + "')"; }
+        if (filtered.length > 0) { tags = filtered; stockTags = filtered; stockWhere = " AND " + cols.n + " IN ('" + filtered.join("','") + "')"; }
       }
 
       params.TAG_LIST_JSON = JSON.stringify(tags);
@@ -399,17 +411,15 @@ function saveHtmlReport(mc, args, cb) {
           templateID = 'R-1-finance';
         } else if (detectIMUTags(tags)) {
           templateID = 'R-3-driving';
-        } else if (detectVibrationTags(tags, tableName)) {
+        } else if (detectVibrationTags(tags, shortTableName(tableName))) {
           templateID = 'R-2-vibration';
         }
         kind = templateKind(templateID);
         if (kind !== 'R-0') console.println('  [report] Auto-detected template: ' + templateID);
       }
 
-      // Custom-over-builtin (same topic): if EXACTLY ONE custom C-*-<topic> exists for this
-      // builtin's topic, route to it deterministically. If several claim the same exact topic it's
-      // ambiguous → keep the model's choice (user disambiguates by name; variants should use
-      // distinct topic slugs e.g. vibration-press / vibration-motor so they don't collide).
+      // 같은 topic 커스텀 우선: C-*-<topic>이 정확히 하나면 그쪽으로, 여럿이면 모호 → 모델 선택 유지
+      // · 변형 템플릿은 서로 다른 topic slug 필요(예: vibration-press / vibration-motor)
       if (/^R-/.test(templateID)) {
         var bTopic = reportTopicOf(templateID);
         if (bTopic) {
@@ -429,14 +439,12 @@ function saveHtmlReport(mc, args, cb) {
         }
       }
 
-      // Step 2: Get stats
-      var statsSQL = 'SELECT ' + cols.n + ', COUNT(*) as cnt, ROUND(AVG(' + cols.v + '),2) as avg, ROUND(MIN(' + cols.v + '),2) as min, ROUND(MAX(' + cols.v + '),2) as max FROM ' + tableName;
-      var whereClause = timeWhereBase || '';
-      if (stockWhere) whereClause = whereClause ? whereClause + stockWhere : ' WHERE' + stockWhere.substring(4);
-      statsSQL += whereClause + ' GROUP BY ' + cols.n;
+      // Step 2: 태그별 통계 — 통계 뷰(전체 데이터 기준, 리포트 기간과 무관)
+      var statsSQL = 'SELECT NAME, ROW_COUNT, MIN_VALUE, MAX_VALUE, MIN_VALUE_TIME, MAX_VALUE_TIME, MIN_TIME, MAX_TIME FROM ' + statView +
+        (stockTags.length ? " WHERE NAME IN ('" + stockTags.join("','") + "')" : '') + ' ORDER BY NAME';
 
       console.println('[report] Stats SQL: ' + statsSQL.substring(0, 200));
-      mc.querySQL(statsSQL, '', '', '', function (err2, statsResult) {
+      mc.querySQL(statsSQL, '2006-01-02 15:04:05', tz, '', function (err2, statsResult) {
         console.println('[report] Stats result: err=' + (err2 ? err2.message : 'null') + ' len=' + (statsResult ? statsResult.length : 0));
         statsCSV = err2 ? '' : statsResult;
         if (statsCSV) {
@@ -446,14 +454,19 @@ function saveHtmlReport(mc, args, cb) {
               params.TAG_STATS_ROWS = sr.rows.join('\n');
               params.TAG_COUNT = String(sr.rows.length);
               params.CHART_DATA_JSON = JSON.stringify(sr.items);
+              statsText = sr.text;
             }
           } catch (e) { /* ignore */ }
         }
+        // 기간 지정 리포트의 머리말 건수는 그 기간 기준
+        if (timeWhere && periodDataCount > 0) params.DATA_COUNT = String(periodDataCount);
 
-        // Step 3: Get time range (same as Go: no specific tag, Default timeformat)
-        var timeRangeSQL = 'SELECT MIN(' + cols.t + '), MAX(' + cols.t + ') FROM ' + tableName + (timeWhereBase || '');
+        // Step 3: 리포트 기간 — 기간 지정이면 그 범위, 아니면 통계 뷰의 데이터 전체 범위
+        var timeRangeSQL = timeWhereBase
+          ? 'SELECT MIN(' + cols.t + '), MAX(' + cols.t + ') FROM ' + tableName + timeWhereBase
+          : 'SELECT MIN(MIN_TIME), MAX(MAX_TIME) FROM ' + statView;
         console.println('[report] TimeRange SQL: ' + timeRangeSQL);
-        mc.querySQL(timeRangeSQL, 'Default', 'Asia/Seoul', '', function (err3, timeCSV) {
+        mc.querySQL(timeRangeSQL, 'Default', tz, '', function (err3, timeCSV) {
           console.println('[report] TimeRange result: err=' + (err3 ? err3.message : 'null') + ' csv=' + (timeCSV ? timeCSV.substring(0, 200) : 'empty'));
           if (!err3 && timeCSV) {
             var tr = parseTimeRangeCSV(timeCSV);
@@ -498,7 +511,7 @@ function saveHtmlReport(mc, args, cb) {
               if (params.TAG_COUNT) summary += '태그 수: ' + params.TAG_COUNT + '\n';
               if (params.TIME_RANGE) summary += '조회 기간: ' + params.TIME_RANGE + '\n';
               if (params.DATA_COUNT) summary += '총 데이터 건수: ' + params.DATA_COUNT + '\n';
-              if (statsCSV) summary += '태그별 통계:\n' + statsCSV + '\n';
+              if (statsText) summary += '태그별 통계(전체 데이터 기준 — 리포트 기간 값이 아님, 기간 내 수치처럼 인용하지 말 것):\n' + statsText + '\n';
 
               // 계산 결과 요약은 compute 카탈로그가 생성 (LLM이 이 수치로 분석 작성)
               if (spec && spec.summarize) summary += spec.summarize(params);
@@ -516,7 +529,11 @@ function saveHtmlReport(mc, args, cb) {
           }
 
           if (spec && spec.run) {
-            spec.run({ mc: mc, tableName: tableName, tags: tags, rollupUnit: rollupUnit, timeWhere: timeWhere, cols: cols, stock: stock, params: params }, afterTemplateData);
+            // ROLLUP 없는 테이블은 DATE_TRUNC로 집계(ROLLUP 쿼리는 ERR-2264로 실패해 추이가 빈 리포트가 됨)
+            countRollups(mc, tableName, function (nRollup) {
+              if (!nRollup) console.println('  [report] ROLLUP 없음 → DATE_TRUNC로 집계: ' + tableName);
+              spec.run({ mc: mc, tableName: tableName, tags: tags, rollupUnit: rollupUnit, timeWhere: timeWhere, cols: cols, stock: stock, params: params, useRollup: nRollup > 0, tz: tz }, afterTemplateData);
+            });
           } else {
             afterTemplateData();
           }
@@ -525,10 +542,14 @@ function saveHtmlReport(mc, args, cb) {
     }
 
     if (tags.length === 0) {
-      // Fallback tag query
-      mc.querySQL('SELECT ' + cols.n + ' FROM ' + tableName + (timeWhereBase || '') + ' GROUP BY ' + cols.n, '', '', '', function (err1b, tagCSV2) {
-        tags = parseTagList(err1b ? '' : tagCSV2);
-        afterTags(tags);
+      // 통계 뷰가 비었거나 실패 → 메타 테이블 기준 태그 목록(데이터가 한 건도 없으면 빈 목록)
+      readTagNames(mc, ref, cols.n, function (err1b, metaTags) {
+        if (err1b) { tagFailReason = queryFailReason(err1b, ''); return afterTags([]); }
+        mc.querySQL('SELECT ' + cols.t + ' FROM ' + tableName + (timeWhereBase || '') + ' LIMIT 1', '', '', '', function (errX, resX) {
+          var hasData = false;
+          try { var px = JSON.parse(resX); hasData = !errX && px.success && px.data && px.data.rows && px.data.rows.length > 0; } catch (e) {}
+          afterTags(hasData ? metaTags : []);
+        });
       });
     } else {
       afterTags(tags);
@@ -570,20 +591,26 @@ function saveToFile(mc, templateID, params, filename, cb) {
   ensureParentOf(mc, filename, function () { doWrite(); });
 }
 
-// --- R-3 Driving Data Fetcher (aligned with Go report.go) ---
-function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cols, cb) {
+// --- R-3 Driving Data Fetcher ---
+// 시간 버킷 식 — ROLLUP이 있으면 ROLLUP(미리 집계된 값), 없으면 DATE_TRUNC(원본 행을 묶음)
+// · useRollup을 안 넘기면 ROLLUP
+function bucketExpr(unit, timeCol, useRollup) {
+  return useRollup === false ? "DATE_TRUNC('" + unit + "', " + timeCol + ")" : "ROLLUP('" + unit + "', 1, " + timeCol + ")";
+}
+
+function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cols, useRollup, tz, cb) {
   var perTag = {};
   var tagIdx = 0;
 
-  // Step 1: Fetch rollup + raw waveform per tag (same as Go: 4096 for raw)
+  // Step 1: Fetch rollup + raw waveform (4096 points) per tag
   function fetchNextTag() {
     if (tagIdx >= tags.length) return fetchThresholds();
     var tag = tags[tagIdx++];
 
-    var rollupSQL = "SELECT ROLLUP('" + rollupUnit + "', 1, " + cols.t + ") as t, AVG(" + cols.v + ") as v FROM " + tableName +
+    var rollupSQL = "SELECT " + bucketExpr(rollupUnit, cols.t, useRollup) + " as t, AVG(" + cols.v + ") as v FROM " + tableName +
       " WHERE " + cols.n + "='" + tag + "'" + (timeWhere || '') +
-      " GROUP BY ROLLUP('" + rollupUnit + "', 1, " + cols.t + ") ORDER BY t";
-    mc.querySQL(rollupSQL, 'Default', '', '', function (err, rollupJSON) {
+      " GROUP BY " + bucketExpr(rollupUnit, cols.t, useRollup) + " ORDER BY t";
+    mc.querySQL(rollupSQL, 'Default', tz, '', function (err, rollupJSON) {
       var rollup = [];
       if (!err && rollupJSON) {
         try {
@@ -597,8 +624,8 @@ function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cols, cb) 
         } catch (e) {}
       }
 
-      // Raw waveform (4096 points, same as Go)
-      var rawSQL = "SELECT " + cols.t + ", " + cols.v + " FROM " + tableName + " WHERE " + cols.n + "='" + tag + "'" + (timeWhere || '') + " ORDER BY " + cols.t + " LIMIT 4096";
+      // Raw waveform (4096 points)
+      var rawSQL = "SELECT " + scanForward(tableName) + cols.t + ", " + cols.v + " FROM " + tableName + " WHERE " + cols.n + "='" + tag + "'" + (timeWhere || '') + " LIMIT 4096";
       mc.querySQL(rawSQL, 'ms', '', '', function (err2, rawJSON) {
         var raw = parseRawCSV(rawJSON);
         perTag[tag] = { raw: raw, rollup: rollup };
@@ -608,7 +635,7 @@ function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cols, cb) 
     });
   }
 
-  // Step 2: Compute thresholds via SQL STDDEV (same as Go)
+  // Step 2: Compute thresholds via SQL STDDEV
   var thresholds = {};
   var threshAxes = [
     { axis: 'AccX', events: ['accel', 'brake'] },
@@ -639,7 +666,7 @@ function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cols, cb) 
     });
   }
 
-  // Step 3: Event detection from raw data (50000 limit, same as Go)
+  // Step 3: Event detection from raw data (50000 limit)
   var eventsData = { accel: [], brake: [], turn: [] };
   var eventAxIdx = 0;
 
@@ -650,7 +677,7 @@ function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cols, cb) 
     if (!actualTag || !thresholds[axisInfo.axis]) return fetchEvents();
 
     var th = thresholds[axisInfo.axis];
-    var eventSQL = "SELECT " + cols.t + ", " + cols.v + " FROM " + tableName + " WHERE " + cols.n + "='" + actualTag + "'" + (timeWhere || '') + " ORDER BY " + cols.t + " LIMIT 50000";
+    var eventSQL = "SELECT " + scanForward(tableName) + cols.t + ", " + cols.v + " FROM " + tableName + " WHERE " + cols.n + "='" + actualTag + "'" + (timeWhere || '') + " LIMIT 50000";
     mc.querySQL(eventSQL, 'ms', '', '', function (err, eventJSON) {
       if (!err && eventJSON) {
         var parsed = parseRawCSV(eventJSON);
@@ -668,7 +695,7 @@ function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cols, cb) 
     });
   }
 
-  // Step 4: Count total samples via SQL (same as Go)
+  // Step 4: Count total samples via SQL
   var totalSamples = 0;
   var cntAxIdx = 0;
   var countAxes = ['AccX', 'AccY'];
@@ -678,7 +705,10 @@ function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cols, cb) 
     var actualTag = findTagCI(tags, countAxes[cntAxIdx++]);
     if (!actualTag) return countSamples();
 
-    var cntSQL = "SELECT COUNT(*) FROM " + tableName + " WHERE " + cols.n + "='" + actualTag + "'" + (timeWhere || '');
+    // 기간 없으면 통계 뷰 ROW_COUNT(전체 스캔 회피), 기간 있으면 그 기간 COUNT
+    var cntSQL = timeWhere
+      ? "SELECT COUNT(*) FROM " + tableName + " WHERE " + cols.n + "='" + actualTag + "'" + timeWhere
+      : "SELECT ROW_COUNT FROM " + statViewName(parseTableRef(tableName)) + " WHERE NAME='" + actualTag + "'";
     mc.querySQL(cntSQL, '', '', '', function (err, cntJSON) {
       if (!err && cntJSON) {
         try {
@@ -757,7 +787,7 @@ function findTagCI(tags, name) {
 }
 
 // --- R-2 Vibration Data Fetcher ---
-function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cols, cb) {
+function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cols, useRollup, tz, cb) {
   var perTag = {};
   var tagIdx = 0;
 
@@ -765,17 +795,17 @@ function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cols, cb
     if (tagIdx >= tags.length) return enrichStats();
     var tag = tags[tagIdx++];
 
-    var rawSQL = "SELECT " + cols.t + ", " + cols.v + " FROM " + tableName + " WHERE " + cols.n + "='" + tag + "'" + (timeWhere || '') + " ORDER BY " + cols.t + " LIMIT 4096";
+    var rawSQL = "SELECT " + scanForward(tableName) + cols.t + ", " + cols.v + " FROM " + tableName + " WHERE " + cols.n + "='" + tag + "'" + (timeWhere || '') + " LIMIT 4096";
     mc.querySQL(rawSQL, 'ms', '', '', function (err, rawJSON) {
       var raw = parseRawCSV(rawJSON);
 
-      // ROLLUP with AVG, MIN, MAX, SUMSQ, COUNT (same column order as Go)
-      var rollupSQL = "SELECT ROLLUP('" + rollupUnit + "', 1, " + cols.t + ") as t, ROUND(AVG(" + cols.v + "),6) as avg_val, " +
+      // ROLLUP with AVG, MIN, MAX, SUMSQ, COUNT
+      var rollupSQL = "SELECT " + bucketExpr(rollupUnit, cols.t, useRollup) + " as t, ROUND(AVG(" + cols.v + "),6) as avg_val, " +
         "ROUND(MIN(" + cols.v + "),6) as min_val, ROUND(MAX(" + cols.v + "),6) as max_val, " +
-        "SUMSQ(" + cols.v + ") as sumsq, COUNT(" + cols.v + ") as cnt FROM " + tableName +
+        (useRollup === false ? "SUM(" + cols.v + "*" + cols.v + ")" : "SUMSQ(" + cols.v + ")") + " as sumsq, COUNT(" + cols.v + ") as cnt FROM " + tableName +
         " WHERE " + cols.n + "='" + tag + "'" + (timeWhere || '') +
-        " GROUP BY ROLLUP('" + rollupUnit + "', 1, " + cols.t + ") ORDER BY ROLLUP('" + rollupUnit + "', 1, " + cols.t + ")";
-      mc.querySQL(rollupSQL, 'Default', '', '', function (err2, rollupJSON) {
+        " GROUP BY " + bucketExpr(rollupUnit, cols.t, useRollup) + " ORDER BY " + bucketExpr(rollupUnit, cols.t, useRollup);
+      mc.querySQL(rollupSQL, 'Default', tz, '', function (err2, rollupJSON) {
         var rollup = [];
         if (!err2 && rollupJSON) {
           try {
@@ -795,7 +825,7 @@ function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cols, cb
         }
 
         // FFT: separate query with 131072 points (2^17), no timeformat → nanoseconds for sampleRate calc
-        var fftSQL = "SELECT " + cols.t + ", " + cols.v + " FROM " + tableName + " WHERE " + cols.n + "='" + tag + "'" + (timeWhere || '') + " ORDER BY " + cols.t + " LIMIT 131072";
+        var fftSQL = "SELECT " + scanForward(tableName) + cols.t + ", " + cols.v + " FROM " + tableName + " WHERE " + cols.n + "='" + tag + "'" + (timeWhere || '') + " LIMIT 131072";
         mc.querySQL(fftSQL, '', '', '', function (err3, fftJSON) {
           var fftRaw = parseRawCSV(fftJSON);
           var fft = computeFFT(fftRaw.times_ms, fftRaw.values, 4096);
@@ -808,7 +838,7 @@ function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cols, cb
     });
   }
 
-  // Compute stats from rollup data (same as Go computeVibStats)
+  // Compute stats from rollup data
   function enrichStats() {
     var keys = Object.keys(perTag);
     for (var i = 0; i < keys.length; i++) {
@@ -816,7 +846,7 @@ function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cols, cb
       var rollup = d.rollup || [];
 
       if (rollup.length > 0) {
-        // Aggregate across all rollup buckets (Go method)
+        // Aggregate across all rollup buckets
         var totalSumSq = 0, totalCount = rollup.length;
         var globalMin = Infinity, globalMax = -Infinity;
         var sumAvg = 0;
@@ -824,10 +854,8 @@ function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cols, cb
           var r = rollup[j];
           sumAvg += (r.avg || 0);
           if (r.rms !== undefined) totalSumSq += r.rms * r.rms;
-          // rollup has per-bucket min/max via p2p calculation, but we need raw min/max
-          // Use raw data for global min/max as rollup doesn't store individual min/max
         }
-        // For global min/max, use raw data
+        // For global min/max, use raw data (rollup keeps no per-bucket min/max)
         var vals = d.raw.values || [];
         for (var j = 0; j < vals.length; j++) {
           if (vals[j] < globalMin) globalMin = vals[j];
@@ -928,7 +956,7 @@ function calcRMS(vals) {
   return Math.sqrt(sumSq / vals.length);
 }
 
-// Cooley-Tukey Radix-2 FFT (matches Go computeFFTSpectrum)
+// Cooley-Tukey Radix-2 FFT
 // timestamps: nanosecond timestamps (no timeformat), vals: float values
 function computeFFT(timestamps, vals, maxBins) {
   if (!vals || vals.length < 16) return null;
@@ -988,7 +1016,7 @@ function computeFFT(timestamps, vals, maxBins) {
   for (var k = 1; k < halfN; k++) {
     rawMags[k - 1] = Math.sqrt(re[k] * re[k] + im[k] * im[k]) * 2 / N;
   }
-  // Bin down to maxBins (same logic as Go)
+  // Bin down to maxBins
   var freqs = [], mags = [];
   if (rawMags.length <= maxBins) {
     for (var k = 0; k < rawMags.length; k++) {
@@ -1013,7 +1041,7 @@ function computeFFT(timestamps, vals, maxBins) {
 }
 
 // --- R-1 Finance Data Fetcher ---
-function fetchFinanceData(mc, tableName, tags, stock, rollupUnit, timeWhere, cols, cb) {
+function fetchFinanceData(mc, tableName, tags, stock, rollupUnit, timeWhere, cols, useRollup, tz, cb) {
   var ohlcv = findOHLCVTags(tags, stock);
   var stockName = stock || '';
   if (!stockName && ohlcv.close) {
@@ -1024,11 +1052,11 @@ function fetchFinanceData(mc, tableName, tags, stock, rollupUnit, timeWhere, col
       if (idx > 0) { stockName = cn.substring(0, idx); break; }
     }
   }
-  if (!stockName) stockName = tableName;
+  if (!stockName) stockName = shortTableName(tableName);
 
   if (!ohlcv.close) return cb(null, { trend: [], stockName: stockName });
 
-  // Time label trim length by rollup unit (same as Go)
+  // Time label trim length by rollup unit
   var trimLen = 7; // month default
   if (rollupUnit === 'sec') trimLen = 19;
   else if (rollupUnit === 'min') trimLen = 16;
@@ -1052,10 +1080,10 @@ function fetchFinanceData(mc, tableName, tags, stock, rollupUnit, timeWhere, col
     var tag = fieldMap[field];
     var decimals = field === 'volume' ? 0 : 2;
 
-    var sql = "SELECT ROLLUP('" + rollupUnit + "', 1, " + cols.t + ") as t, ROUND(AVG(" + cols.v + ")," + decimals + ") as v FROM " + tableName +
+    var sql = "SELECT " + bucketExpr(rollupUnit, cols.t, useRollup) + " as t, ROUND(AVG(" + cols.v + ")," + decimals + ") as v FROM " + tableName +
       " WHERE " + cols.n + "='" + tag + "'" + (timeWhere || '') +
-      " GROUP BY ROLLUP('" + rollupUnit + "', 1, " + cols.t + ") ORDER BY ROLLUP('" + rollupUnit + "', 1, " + cols.t + ")";
-    mc.querySQL(sql, 'Default', '', '', function (err, json) {
+      " GROUP BY " + bucketExpr(rollupUnit, cols.t, useRollup) + " ORDER BY " + bucketExpr(rollupUnit, cols.t, useRollup);
+    mc.querySQL(sql, 'Default', tz, '', function (err, json) {
       var data = [];
       if (!err && json) {
         try {
@@ -1077,7 +1105,7 @@ function fetchFinanceData(mc, tableName, tags, stock, rollupUnit, timeWhere, col
     });
   }
 
-  // Merge OHLCV by time (same as Go mergeOHLCV)
+  // Merge OHLCV by time
   function mergeAndFinish() {
     var timeMap = {};
     var timeOrder = [];
@@ -1106,7 +1134,6 @@ function fetchFinanceData(mc, tableName, tags, stock, rollupUnit, timeWhere, col
     var trend = timeOrder.map(function(t) { return timeMap[t]; });
     console.println('  [report] R-1 OHLCV merged: ' + trend.length + ' rows');
 
-    // Compute finance summary (same as Go computeFinanceSummary)
     var financeSummary = computeFinanceSummary(trend);
 
     cb(null, { trend: trend, stockName: stockName, financeSummary: financeSummary });
@@ -1115,7 +1142,7 @@ function fetchFinanceData(mc, tableName, tags, stock, rollupUnit, timeWhere, col
   fetchNextField();
 }
 
-// --- Finance Summary (same as Go computeFinanceSummary) ---
+// --- Finance Summary ---
 function computeFinanceSummary(trendData) {
   if (!trendData || trendData.length === 0) return '';
   var toF = function(v) { return parseFloat(v) || 0; };
@@ -1250,20 +1277,6 @@ function detectVibrationTags(tags, tableName) {
   return false;
 }
 
-function findTagKey(obj, candidates) {
-  for (var i = 0; i < candidates.length; i++) {
-    if (obj[candidates[i]]) return candidates[i];
-  }
-  var keys = Object.keys(obj);
-  for (var i = 0; i < candidates.length; i++) {
-    var lower = candidates[i].toLowerCase();
-    for (var j = 0; j < keys.length; j++) {
-      if (keys[j].toLowerCase() === lower) return keys[j];
-    }
-  }
-  return '';
-}
-
 function calcMeanStd(vals) {
   if (!vals || vals.length === 0) return { mean: 0, std: 0 };
   var sum = 0;
@@ -1278,29 +1291,61 @@ function roundRate(count, total) {
   return Math.round(count / total * 1000) / 10;
 }
 
-function parseTimeRangeMs(csvData) {
-  try {
-    var p = JSON.parse(csvData);
-    if (p && p.data && p.data.rows && p.data.rows.length > 0) {
-      var row = p.data.rows[0];
-      if (row[0] == null || row[1] == null) return '';
-      var d0 = new Date(row[0]), d1 = new Date(row[1]);
-      if (isNaN(d0.getTime()) || isNaN(d1.getTime())) return '';
-      return formatDateLocal(d0) + ' ~ ' + formatDateLocal(d1);
-    }
-  } catch (e) {}
-  return '';
-}
-
 // --- Helpers ---
 function anyStr(obj, key) { var v = obj[key]; if (v === undefined || v === null) return ''; return String(v); }
 function pad2(n) { return n < 10 ? '0' + n : String(n); }
+// 시각 표시 시간대 — 요청한 시간대를 Neo가 알면 그것, 아니면 사용자 시간대
+function reportTimezone(mc, asked, cb) {
+  if (!asked) return cb(zoneName(mc));
+  mc.checkTimezone(asked, function (ok) { cb(ok ? asked : zoneName(mc)); });
+}
+// 현재 시각을 tz 기준 문자열로(조회 실패 시 서버 시각)
+function nowIn(mc, tz, cb) {
+  mc.querySQL('SELECT SYSDATE FROM M$SYS_USERS LIMIT 1', '2006-01-02 15:04:05', tz, '', function (err, text) {
+    var v = '';
+    try { var p = JSON.parse(text); if (!err && p.success) v = String(p.data.rows[0][0]); } catch (e) {}
+    cb(v || formatDateLocal(new Date()));
+  });
+}
 function formatDateLocal(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()); }
 function dateStrToNano(s) { if (!s) return ''; s = s.trim(); if (s[0] >= '0' && s[0] <= '9' && s.indexOf('-') < 0) return s; var d = new Date(s); if (isNaN(d.getTime())) return s; return String(d.getTime() * 1000000); }
+// 태그 첫 N건을 정렬 없이 시간순으로 읽는 스캔 힌트(ORDER BY TIME LIMIT과 결과 동일)
+// · 힌트 인자는 테이블 이름만 인정, DB·유저 접두가 붙으면 무시됨
+function scanForward(tableName) { return '/*+ SCAN_FORWARD(' + parseTableRef(tableName).table + ') */ '; }
+// 숫자 시각 문자열(ms 13자리 또는 ns 19자리) → ms
+function toMs(v) { var s = String(v || '').trim(); if (!/^\d+$/.test(s)) return 0; return s.length > 15 ? parseInt(s.substring(0, s.length - 6), 10) : parseInt(s, 10); }
 function msToNano(ms) { if (!ms) return ms; var s = String(ms).trim(); if (s.length > 15) return s; return s + '000000'; }
 function pickRollupUnit(startMs, endMs) { if (!startMs || !endMs) return 'min'; var s = parseInt(startMs, 10), e = parseInt(endMs, 10); if (!s || !e) return 'min'; var h = (e - s) / 1000 / 3600; if (h < 1) return 'sec'; if (h < 48) return 'min'; if (h < 720) return 'hour'; if (h < 8760) return 'day'; return 'month'; }
+// 조회 실패 사유 — DB 거부는 'HTTP 500: {"success":false,"reason":...}' 에러 또는 success:false 본문
+function queryFailReason(err, text) {
+  var raw = err ? String(err.message || err) : String(text || '');
+  var brace = raw.indexOf('{');
+  if (brace >= 0) {
+    try { var p = JSON.parse(raw.slice(brace)); if (p && p.success === false) return String(p.reason || ''); } catch (e) {}
+  }
+  return err ? raw : '';
+}
 function parseTagList(csvData) { if (!csvData) return []; try { var p = JSON.parse(csvData); if (p && p.data && p.data.rows) return p.data.rows.map(function (r) { return r[0]; }).filter(function (t) { return t; }); } catch (e) {} var lines = csvData.split('\n'); var tags = []; for (var i = 1; i < lines.length; i++) { var t = lines[i].trim(); if (t && t !== 'NAME') tags.push(t); } return tags; }
-function parseStatsCSV(csvData) { var rows = [], items = []; try { var p = JSON.parse(csvData); if (p && p.data && p.data.rows) { for (var i = 0; i < p.data.rows.length; i++) { var r = p.data.rows[i]; if (r.length < 5) continue; rows.push('<tr><td>' + r[0] + '</td><td class="num">' + r[1] + '</td><td class="num">' + r[2] + '</td><td class="num">' + r[3] + '</td><td class="num">' + r[4] + '</td></tr>'); items.push({ name: r[0], count: r[1], avg: r[2], min: r[3], max: r[4] }); } } } catch (e) {} return { rows: rows, items: items }; }
+// 통계 뷰 행 [NAME, ROW_COUNT, MIN_VALUE, MAX_VALUE, MIN_VALUE_TIME, MAX_VALUE_TIME, MIN_TIME, MAX_TIME]
+// → 표 6칸 행 · 차트 JSON · 모델용 CSV(첫/마지막 데이터 시각 포함)
+function parseStatsCSV(csvData) {
+  var rows = [], items = [], lines = ['태그,건수,최솟값,최댓값,최솟값 시각,최댓값 시각,첫 데이터,마지막 데이터'];
+  // 값 컬럼이 SUMMARIZED가 아니면 통계 뷰 최소/최대가 NULL → '-'
+  function cell(v) { return v == null ? '-' : v; }
+  try {
+    var p = JSON.parse(csvData);
+    if (p && p.data && p.data.rows) {
+      for (var i = 0; i < p.data.rows.length; i++) {
+        var r = p.data.rows[i];
+        if (r.length < 8) continue;
+        rows.push('<tr><td>' + r[0] + '</td><td class="num">' + r[1] + '</td><td class="num">' + cell(r[2]) + '</td><td class="num">' + cell(r[3]) + '</td><td>' + cell(r[4]) + '</td><td>' + cell(r[5]) + '</td></tr>');
+        items.push({ name: r[0], count: r[1], min: r[2], max: r[3], minTime: r[4], maxTime: r[5] });
+        lines.push(r.join(','));
+      }
+    }
+  } catch (e) {}
+  return { rows: rows, items: items, text: rows.length ? lines.join('\n') : '' };
+}
 function parseTimeRangeCSV(csvData) { try { var p = JSON.parse(csvData); if (p && p.data && p.data.rows && p.data.rows.length > 0) { var row = p.data.rows[0]; if (row[0] == null || row[1] == null) return ''; var s0 = String(row[0]), s1 = String(row[1]); if (s0 === 'null' || s1 === 'null' || !s0 || !s1) return ''; return s0.substring(0, 19) + ' ~ ' + s1.substring(0, 19); } } catch (e) {} return ''; }
 function findOHLCVTags(tags, stock) {
   var result = {}; var fields = ['open', 'high', 'low', 'close', 'volume'];
@@ -1308,9 +1353,7 @@ function findOHLCVTags(tags, stock) {
     var prefix = stock.toUpperCase() + '_';
     tags.forEach(function (t) { var upper = t.toUpperCase(); if (upper.indexOf(prefix) !== 0) return; var suffix = t.substring(prefix.length).toLowerCase(); if (fields.indexOf(suffix) >= 0) result[suffix] = t; });
   }
-  // 접두어(SILVER_open 등) 매칭 실패 또는 stock 미지정 → bare 이름(open/high/low/close/volume)으로 폴백.
-  // 태그가 SILVER_open 형태가 아니라 open/high/low/close 그대로인 테이블은 접두어 검색이 0건 → 폴백 없이는 차트가 빠진다.
-  // 멀티종목 테이블(SILVER_open, GOLD_open)은 접두어로 이미 채워져 폴백 미발동(bare 'open' 태그도 없음).
+  // 접두어(SILVER_open 등) 매칭 실패 또는 stock 미지정 → bare 이름(open/high/low/close/volume)으로 폴백
   if (!result.close || !result.open) {
     var lower = {}; tags.forEach(function (t) { lower[t.toLowerCase()] = t; });
     fields.forEach(function (f) { if (!result[f] && lower[f]) result[f] = lower[f]; });
@@ -1319,9 +1362,8 @@ function findOHLCVTags(tags, stock) {
 }
 function extractStockPrefix(tagVal) { var c = tagVal.split(',')[0].trim(); ['_close', '_open', '_high', '_low', '_volume', '_adj_close'].forEach(function (s) { var idx = c.toLowerCase().indexOf(s); if (idx > 0) c = c.substring(0, idx); }); return c.toUpperCase(); }
 function calcTotalCount(csvData) { var total = 0; try { var p = JSON.parse(csvData); if (p && p.data && p.data.rows) p.data.rows.forEach(function (r) { if (r.length >= 2) total += parseInt(r[1], 10) || 0; }); } catch (e) {} return total; }
-// ⚠️ 인라인 스타일 색은 **CSS 변수 + 옛 색 폴백**(var(--x, #구색)) 형태로만 쓸 것.
-//    하드코딩한 색은 다크 테마 템플릿에서 배경에 묻힌다(남색 제목 #1a365d 등).
-//    변수를 정의한 새 템플릿(Neo 토큰)에선 테마를 따라가고, 변수가 없는 고객 커스텀 템플릿에선 폴백 색 그대로 — 하위호환.
+// ⚠️ 인라인 스타일 색은 CSS 변수 + 폴백 색(var(--x, #색)) 형태로만 — 다크 테마에서 배경에 묻히는 것 방지
+// · 변수 없는 커스텀 템플릿은 폴백 색 사용
 function mdToHTML(text) {
   if (!text) return '';
   function inlineFmt(s) {

@@ -4,6 +4,8 @@ var http2 = require('@jsh/http');
 var { WebSocketServer } = require('ws');
 var { createGateway } = require('./ws_gateway');
 var { createAuth } = require('./auth');
+var { createClient } = require('../machbase/client');
+var { prepareSql, parseAmbiguity } = require('../tools/table_access');
 
 function runServer(cfg, port) {
   var gateway = createGateway(cfg, port);
@@ -20,22 +22,6 @@ function runServer(cfg, port) {
 
   // --- Relay helpers ---
 
-  function copyResponse(ctx, resp) {
-    setCORS(ctx);
-    var headers = resp.headers || {};
-    var headerKeys = Object.keys(headers);
-    for (var i = 0; i < headerKeys.length; i++) {
-      var k = headerKeys[i];
-      if (k.toLowerCase() === 'transfer-encoding') continue;
-      ctx.setHeader(k, headers[k]);
-    }
-    // ctx.response.status() 는 getter — 상태 설정은 ctx.status().
-    ctx.status(resp.statusCode);
-    var text = '';
-    try { text = resp.string(); } catch (e) {}
-    ctx.response.write(text);
-  }
-
   function relayError(ctx, route, err) {
     console.println('[Server] proxy ' + route + ' failed: ' + err.message);
     setCORS(ctx);
@@ -44,30 +30,49 @@ function runServer(cfg, port) {
 
   // --- Relay routes (proxy to machbase-neo) ---
 
-  // 브라우저의 TQL 실행 중계. 인증 경로(/web/api/tql)로 보내고 호출자의 토큰을 그대로 넘긴다.
-  // 서비스 계정 토큰으로 대신 채우지 않는다 — 그러면 누구나 이 경로로 무인증 실행이 된다.
+  // Run 코드(SQL·TQL)의 테이블 이름 정규화 — 에이전트 도구와 같은 prepareSql, 호출자 토큰의 계정 기준
+  // · 접두 없는 이름 → DB.소유자.테이블
+  // · 후보가 여럿이면 실행하지 않고 안내(ambiguous), 그 밖의 실패(없음·권한)는 원문 그대로 넘겨 Neo가 판정
+  function qualifyRunTql(tql, authHeader) {
+    var out = { tql: tql };
+    var token = auth.bearerOf(authHeader);
+    var user = (token && tql) ? auth.verifyToken(token) : null;
+    if (!user) return out;
+    var mc = createClient({ host: cfg.machbase.host, port: cfg.machbase.port, user: user, token: token });
+    prepareSql(mc, tql, function (err, sql) {
+      if (!err) { out.tql = sql; return; }
+      var amb = parseAmbiguity(err.message);
+      if (amb) {
+        out.ambiguous = '테이블 ' + amb.table + '이(가) 여러 계정에 있습니다: ' + amb.candidates.join(', ') +
+          '. 코드에 DB.소유자.테이블 형태로 적어 주세요.';
+      }
+    });
+    return out;
+  }
+
+  // 브라우저 TQL 실행 중계 — 호출자 토큰만 전달(서비스 계정 토큰으로 채우면 무인증 실행 경로가 됨)
+  // · 차트 응답의 에셋 주소(/web/...)는 상대 주소 그대로 — 화면 iframe의 <base href>(접속 주소)로 풀림
   server.post('/db/tql', function (ctx) {
     var qs = ctx.request.queryString;
-    var targetURL = neoBase + '/web/api/tql' + (qs ? '?' + qs : '');
+    var targetURL = neoBase + '/db/tql' + (qs ? '?' + qs : '');
     try {
       var body = ctx.request.body;
       var reqBody = (typeof body === 'string') ? body : JSON.stringify(body);
+      var tqlAuth = ctx.request.getHeader('Authorization');
+      var qualified = qualifyRunTql(reqBody, tqlAuth);
+      if (qualified.ambiguous) {
+        setCORS(ctx);
+        return ctx.json(400, { success: false, reason: qualified.ambiguous });
+      }
+      reqBody = qualified.tql;
       var req = http2.NewRequest('POST', targetURL);
       req.header.set('Content-Type', ctx.request.getHeader('Content-Type') || 'text/plain');
-      var tqlAuth = ctx.request.getHeader('Authorization');
       if (tqlAuth) req.header.set('Authorization', tqlAuth);
-      // 이 헤더가 있어야 TQL 이 호출자의 계정으로 실행된다(없으면 SYS 권한으로 돈다).
-      req.header.set('X-Console-Id', 'neo-pkg-llm-chat, console-log-level=NONE');
-      req.header.set('X-Console-Log-Level', 'NONE');
       if (reqBody) req.writeString(reqBody);
       var resp = _proxyClient.do(req);
       setCORS(ctx);
       var text = '';
       try { text = resp.string(); } catch (e2) {}
-      var isChart = (text.indexOf('"chartID"') !== -1 || text.indexOf('"geomapID"') !== -1) && text.indexOf('/web/') !== -1;
-      if (isChart) {
-        text = text.replace(/("\/web\/)/g, '"' + neoBase + '/web/');
-      }
       var headers = resp.headers || {};
       var headerKeys = Object.keys(headers);
       for (var hi = 0; hi < headerKeys.length; hi++) {
@@ -83,49 +88,6 @@ function runServer(cfg, port) {
     }
   });
 
-  server.get('/web/*path', function (ctx) {
-    // 라우터의 *path 캡처는 앞 슬래시를 포함한다. 그대로 이으면 '/web//api/...' 가 되어
-    // 정적 에셋 외의 경로가 전부 404 가 된다.
-    var sub = String(ctx.param('path') || '');
-    if (sub.charAt(0) === '/') sub = sub.slice(1);
-    var path = '/web/' + sub;
-    var qs = ctx.request.queryString;
-    var targetURL = neoBase + path + (qs ? '?' + qs : '');
-    try {
-      var req = http2.NewRequest('GET', targetURL);
-      // 호출자의 토큰만 넘긴다. 서비스 계정 토큰을 덧씌우면 브라우저가 그 계정 권한으로
-      // /web/api/* 를 호출할 수 있다. 차트 에셋(/web/echarts/*, /web/api/tql-assets/*)은
-      // 인증을 요구하지 않으므로 토큰 없이도 로드된다.
-      var clientAuth = ctx.request.getHeader('Authorization');
-      if (clientAuth) req.header.set('Authorization', clientAuth);
-      copyResponse(ctx, _proxyClient.do(req));
-    } catch (e) {
-      relayError(ctx, path, e);
-    }
-  });
-
-  server.post('/web/*path', function (ctx) {
-    // 라우터의 *path 캡처는 앞 슬래시를 포함한다. 그대로 이으면 '/web//api/...' 가 되어
-    // 정적 에셋 외의 경로가 전부 404 가 된다.
-    var sub = String(ctx.param('path') || '');
-    if (sub.charAt(0) === '/') sub = sub.slice(1);
-    var path = '/web/' + sub;
-    var qs = ctx.request.queryString;
-    var targetURL = neoBase + path + (qs ? '?' + qs : '');
-    try {
-      var body = ctx.request.body;
-      var reqBody = (typeof body === 'string') ? body : JSON.stringify(body);
-      var req = http2.NewRequest('POST', targetURL);
-      req.header.set('Content-Type', ctx.request.getHeader('Content-Type') || 'application/json');
-      var clientAuth = ctx.request.getHeader('Authorization');
-      if (clientAuth) req.header.set('Authorization', clientAuth);
-      if (reqBody) req.writeString(reqBody);
-      copyResponse(ctx, _proxyClient.do(req));
-    } catch (e) {
-      relayError(ctx, path, e);
-    }
-  });
-
   // --- Config API ---
 
   var fs = require('fs');
@@ -136,12 +98,9 @@ function runServer(cfg, port) {
   if (!CGI_BIN_DIR) CGI_BIN_DIR = pathMod.resolve('..');
   var CONFIGS_DIR = pathMod.join(CGI_BIN_DIR, 'llm', 'configs');
   var PREFS_DIR = pathMod.join(CGI_BIN_DIR, 'llm', 'prefs');
-  var CONFIG_FILE = pathMod.join(CGI_BIN_DIR, 'config.json');
-  var CONFIG_DEFAULT = { server: { port: '8884' } };
 
   console.println('[Server] CONFIGS_DIR: ' + CONFIGS_DIR);
   console.println('[Server] PREFS_DIR: ' + PREFS_DIR);
-  console.println('[Server] CONFIG_FILE: ' + CONFIG_FILE);
 
   function setCORS(ctx) {
     ctx.setHeader('Access-Control-Allow-Origin', '*');
@@ -172,7 +131,7 @@ function runServer(cfg, port) {
   }
 
   // ── Per-user UI prefs (favorites) ──
-  // Conservative filename charset to avoid path traversal via the `user` param.
+  // 파일명 문자 제한 — 경로 탈출 방지
   function safePrefName(name) {
     return String(name || '').replace(/[^A-Za-z0-9_.-]/g, '_') || 'sys';
   }
@@ -202,18 +161,8 @@ function runServer(cfg, port) {
 
   function jsonReply(ctx, status, data) {
     setCORS(ctx);
-    // 상태 설정은 ctx.json/ctx.status 로 한다. ctx.response.status() 는 현재 상태를 읽는
-    // getter 라 인자를 줘도 무시되고 응답이 전부 200 으로 나간다.
+    // 상태 설정은 ctx.json/ctx.status — ctx.response.status() 는 getter 라 인자 무시(전부 200)
     ctx.json(status, data);
-  }
-
-  function readMainConfig() {
-    try {
-      if (fs.existsSync(CONFIG_FILE)) {
-        return JSON.parse(fs.readFileSync(CONFIG_FILE, { encoding: 'utf8' }));
-      }
-    } catch (e) {}
-    return JSON.parse(JSON.stringify(CONFIG_DEFAULT));
   }
 
   function listConfigNames() {
@@ -227,9 +176,8 @@ function runServer(cfg, port) {
   }
 
   // -- config 접근 제어 --
-  // config 파일은 계정의 DB 자격증명과 LLM API 키를 담고, 파일명이 곧 워커의 실행 계정이다.
-  // 따라서 본인 것만 읽고 쓸 수 있어야 한다. 판정은 요청의 JWT 로 하며, 브라우저가 보내는
-  // 이름(경로·본문)은 신뢰하지 않는다.
+  // · config 파일은 LLM API 키를 담고 파일명이 곧 워커의 실행 계정 → 본인 것만 읽기·쓰기
+  // · 판정은 요청 헤더의 API 토큰으로만, 브라우저가 보내는 이름(경로·본문)은 불신
   function requestUser(ctx) {
     return auth.verifyToken(auth.bearerOf(ctx.request.getHeader('Authorization')));
   }
@@ -242,40 +190,24 @@ function runServer(cfg, port) {
   function ownConfigNames(user) {
     return listConfigNames().filter(function (n) { return n === user; });
   }
-  // 저장되는 machbase.user 를 인증된 사용자로 고정 -- 본문에 다른 계정을 적어 보내
-  // 그 계정으로 실행시키는 것을 막는다.
+  // 저장 전 정리
+  // · machbase.user 를 인증된 계정으로 고정 — 본문에 다른 계정을 적어 그 계정으로 실행시키는 것 방지
+  // · 접속 비밀(token·password) 제거 — 설정 파일은 /db/files 로 다른 계정에 노출
   function forceOwner(parsed, user) {
     parsed = parsed || {};
     parsed.machbase = parsed.machbase || {};
     parsed.machbase.user = user;
+    delete parsed.machbase.token;
+    delete parsed.machbase.password;
     return parsed;
   }
 
-  // /api/config
-  server.get('/api/config', function (ctx) {
-    jsonReply(ctx, 200, { success: true, reason: 'success', data: readMainConfig() });
+  // 토큰 검증(설정창 [검증] 버튼) — 성공 시 소문자 계정 이름
+  server.get('/api/token/validate', function (ctx) {
+    var user = requestUser(ctx);
+    if (!user) return jsonReply(ctx, 401, { success: false, reason: 'invalid token' });
+    jsonReply(ctx, 200, { success: true, reason: 'success', data: { user: user } });
   });
-  server.put('/api/config', handleMainConfigPut);
-  server.post('/api/config', function (ctx) {
-    var override = (ctx.query('_method') || '').toUpperCase();
-    if (override === 'PUT') { handleMainConfigPut(ctx); return; }
-    jsonReply(ctx, 405, { success: false, reason: 'method not allowed (use _method=PUT)' });
-  });
-
-  function handleMainConfigPut(ctx) {
-    try {
-      var parsed = parseBody(ctx);
-      var existing = readMainConfig();
-      if (parsed.server && parsed.server.port) {
-        existing.server = existing.server || {};
-        existing.server.port = String(parsed.server.port);
-      }
-      fs.writeFileSync(CONFIG_FILE, JSON.stringify(existing, null, 2));
-      jsonReply(ctx, 200, { success: true, reason: 'success', data: existing });
-    } catch (e) {
-      jsonReply(ctx, 500, { success: false, reason: 'failed to save: ' + e.message });
-    }
-  }
 
   // /api/configs
   server.get('/api/configs', function (ctx) {
@@ -363,13 +295,10 @@ function runServer(cfg, port) {
     catch (e) { jsonReply(ctx, 500, { success: false, reason: e.message }); }
   }
 
-  // /api/prefs — per-user UI preferences (favorites)
-  // GET  /api/prefs   → { favorites: [...] }
-  // POST /api/prefs   (text/plain body { favorites: [...] }) → saves
-  // 대상 사용자는 요청의 JWT 에서 정한다 — 이름을 파라미터로 받으면 남의 즐겨찾기를
-  // 읽고 덮어쓸 수 있다.
-  // POST is used for saves (Content-Type text/plain) to avoid a CORS preflight,
-  // same convention as /api/configs.
+  // /api/prefs — 사용자별 UI 환경설정(즐겨찾기)
+  // · GET → { favorites }, POST·PUT(text/plain 본문 { favorites }) → 저장
+  // · 대상 사용자는 API 토큰으로 판정 — 이름 파라미터를 받으면 남의 즐겨찾기 읽기·덮어쓰기 가능
+  // · 저장은 POST + text/plain — CORS preflight 회피(/api/configs 와 같은 방식)
   function handlePrefsSave(ctx) {
     var user = requestUser(ctx);
     if (!user) return denyUnauthenticated(ctx);
@@ -399,51 +328,37 @@ function runServer(cfg, port) {
   server.get('/api/debug', function (ctx) {
     if (!requestUser(ctx)) return denyUnauthenticated(ctx);
     var dirExists = fs.existsSync(CONFIGS_DIR);
-    var fileExists = fs.existsSync(CONFIG_FILE);
     var files = [];
     if (dirExists) { try { files = fs.readdirSync(CONFIGS_DIR); } catch (e) {} }
     jsonReply(ctx, 200, {
       CONFIGS_DIR: CONFIGS_DIR, CONFIGS_DIR_EXISTS: dirExists, CONFIGS_FILES: files,
-      CONFIG_FILE: CONFIG_FILE, CONFIG_FILE_EXISTS: fileExists,
       activeWorkers: Object.keys(gateway.routes).length,
     });
   });
 
-  // /api/info
-  server.get('/api/info', function (ctx) {
-    var mainCfg = readMainConfig();
-    var p = (mainCfg.server && mainCfg.server.port) || '8884';
-    jsonReply(ctx, 200, { ok: true, data: { port: p } });
-  });
-
-  // /health — neo service proxy 의 healthPath 메타데이터 대상.
-  // 프록시 자체는 호출하지 않지만 servicectl proxy list 등에서 가리킨다.
+  // /health — 서비스 프록시 healthPath 메타데이터 대상(servicectl proxy list 등에서 참조)
   server.get('/health', function (ctx) {
     jsonReply(ctx, 200, { ok: true });
   });
 
   // --- WebSocket: external (browser) ---
-  // 라우트를 둘로 나눠 등록한다 — JSH ws 의 path 매칭은 path-template 의 끝 segment 가
-  // 정적일 때만 동작하므로 /ws/:user 형태 하나로는 합칠 수 없다.
-  // service proxy 경유 WS 는 이 라우트들로 도달하지 않는다.
+  // 브라우저 WS 라우트 — /ws(서비스 프록시 /web/services/<svc>/ws 경유)
   var wss = new WebSocketServer({ server: server, path: '/ws' });
-  var wss2 = new WebSocketServer({ server: server, path: '/:user/ws' });
 
-  // 사용자 식별은 메시지에 실려 오는 neo JWT 로만 한다. URL segment 나 본문 user_id 는
-  // 브라우저가 정하는 값이라 신뢰하지 않는다. 검증된 이름은 연결 단위로 유지한다.
+  // 사용자 식별은 메시지마다 실려 오는 API 토큰으로만(URL segment·본문 user_id 는 불신)
+  // · 메시지마다 재검증 — 토큰 교체·폐기 즉시 반영
   function onBrowserConnection(socket) {
-    var verifiedUser = '';
+    var lastUser = '';
     console.println('[Server] Browser WS connected');
 
     socket.on('message', function (event) {
       var raw = (typeof event === 'string') ? event : (event && event.data) ? event.data : String(event);
-      if (!verifiedUser) {
-        var token = '';
-        try { token = (JSON.parse(raw) || {}).auth_token || ''; } catch (e) { /* 비 JSON 은 아래에서 무시됨 */ }
-        verifiedUser = auth.verifyToken(token) || '';
-        if (verifiedUser) console.println('[Server] WS authenticated: ' + verifiedUser);
-      }
-      gateway.handleBrowserMessage(socket, raw, verifiedUser);
+      var token = '';
+      try { token = (JSON.parse(raw) || {}).auth_token || ''; } catch (e) { /* 비 JSON 은 게이트웨이에서 무시 */ }
+      var user = auth.verifyToken(token) || '';
+      if (user && user !== lastUser) console.println('[Server] WS authenticated: ' + user);
+      lastUser = user;
+      gateway.handleBrowserMessage(socket, raw, user, user ? token : '');
     });
 
     socket.on('close', function () {
@@ -453,7 +368,6 @@ function runServer(cfg, port) {
   }
 
   wss.on('connection', onBrowserConnection);
-  wss2.on('connection', onBrowserConnection);
 
   // --- WebSocket: internal (workers) ---
   var wssInternal = new WebSocketServer({ server: server, path: '/internal/ws' });
@@ -464,8 +378,7 @@ function runServer(cfg, port) {
   });
 
   // --- Graceful shutdown ---
-  // Worker cleanup is handled by scripts/stop.js (runs as separate process,
-  // can call service.stop). Gateway shutdownHook only closes the HTTP server.
+  // 종료 훅은 HTTP 서버만 닫음 — 워커 정리는 stop.js(별도 프로세스, service.stop 가능) 담당
   var process3 = require('process');
   process3.addShutdownHook(function () {
     console.println('[Server] Shutdown hook triggered');

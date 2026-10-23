@@ -1,4 +1,4 @@
-# neo-pkg-llm-chat v3.3.1
+# neo-pkg-llm-chat v4.0.0
 
 An LLM-powered chat package for querying and analyzing time-series data in Machbase Neo using natural language
 

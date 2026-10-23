@@ -1,8 +1,6 @@
-// Worker process — runs as a separate service per session
-// Started by Gateway via CGI → service.start(), connects back via internal WS
-//
-// Usage: jsh worker.js <sessionID>
-//   Reads workers/<sessionID>.json for config
+// 워커 프로세스 — 세션마다 별도 서비스로 실행
+// · 게이트웨이가 CGI(service.start)로 기동, 내부 WS 로 게이트웨이에 접속
+// · 사용: jsh worker.js <sessionID> — 설정은 workers/<sessionID>.json
 
 'use strict';
 
@@ -12,7 +10,7 @@ var fs = require('fs');
 var ws = require('ws');
 
 var SCRIPT_DIR = path.resolve(path.dirname(process.argv[1]));
-// Ensure cwd matches SCRIPT_DIR (working_dir from service may not set cwd)
+// cwd 를 스크립트 폴더로 고정 — 서비스 working_dir 이 cwd 를 안 바꿀 수 있음
 try { process.chdir(SCRIPT_DIR); } catch (e) {}
 var WORKERS_DIR = path.join(SCRIPT_DIR, 'workers');
 
@@ -51,25 +49,25 @@ try {
 }
 cfg.provider = workerCfg.provider;
 cfg.model = workerCfg.model;
+// 실행 계정 = 게이트웨이가 토큰으로 검증한 계정(설정 파일 값 아님)
+cfg.machbase.user = workerCfg.user_id;
 
 // --- Initialize components ---
 var { createLLM } = require('./llm/factory');
 var { createClient } = require('./machbase/client');
+var { userZone } = require('./machbase/timezone');
 var { createRegistry } = require('./tools/registry');
 var { createAgent } = require('./agent/agent');
 var followups = require('./agent/followups');
-var logger = require('./logger/logger');
-
-logger.init({ dir: 'logs', prefix: 'worker-' + sessionID.substring(0, 12), level: 'DEBUG' });
 
 var mc = createClient(cfg.machbase);
 var registry = createRegistry(mc);
 
-// Output redaction: mask the REAL secrets + credential patterns from
-// everything sent to the UI — progress narration, tool-result previews, and final answer.
+// UI 로 나가는 모든 출력(진행 서술·도구 결과 미리보기·최종 답변)에서 실제 비밀값·자격증명 패턴 가림
 var security = require('./tools/security');
+// 사전 차단에 쓸 설정 파일 이름 — configs 폴더의 계정별 설정 파일 전부
+try { security.setConfigFiles(fs.readdirSync(path.dirname(cfgPath))); } catch (e) {}
 var OUTPUT_SECRETS = [
-  cfg.machbase && cfg.machbase.password,
   cfg.claude && cfg.claude.api_key,
   cfg.chatgpt && cfg.chatgpt.api_key,
   cfg.gemini && cfg.gemini.api_key,
@@ -82,7 +80,7 @@ try {
   process.exit(1);
 }
 
-var agent = createAgent(llmClient, registry);
+var agent = createAgent(llmClient, registry, mc);
 console.println('[Worker] Tools: ' + registry.toolNames().length + ' loaded');
 
 // --- Shutdown hook ---
@@ -112,9 +110,21 @@ conn.on('message', function (event) {
   var msg;
   try { msg = JSON.parse(raw); } catch (e) { return; }
   if (msg.type === 'chat') {
+    // API 토큰은 메모리에만 보관 — 게이트웨이가 질문마다 전달
+    mc.setToken(msg.machbase_token);
+    applyTimezone(msg.tz);
     runChat(msg.query);
   }
 });
+
+// 브라우저 시간대 — Neo가 모르는 이름이면 이전 값 유지
+function applyTimezone(z) {
+  if (!z || z === mc.timezone()) return;
+  mc.checkTimezone(z, function (ok, offsetMin) {
+    if (ok) mc.setTimezone(z, offsetMin);
+    else console.println('[Worker] 알 수 없는 시간대 무시: ' + z);
+  });
+}
 
 conn.on('close', function () {
   console.println('[Worker] Gateway connection closed — exiting');
@@ -129,6 +139,7 @@ conn.on('error', function (err) {
 function runChat(query) {
   console.println('[Worker] Query: ' + query.substring(0, 100));
   sendStreamMsg('answer_start');
+  agent.zone = userZone(mc);
 
   agent.onProgress = function (text) {
     if (agent.cancelled) return;
@@ -151,8 +162,7 @@ function runChat(query) {
     sendStreamMsg('stream_msg_start');
     sendStreamMsg('stream_msg_delta', result || '');
     sendStreamMsg('stream_msg_stop');
-    // answer_stop first: the answer is complete, so the UI unblocks before the
-    // follow-up call runs. Chips land afterwards or never — either is fine.
+    // answer_stop 먼저 — 후속 질문 생성 전에 UI 입력 잠금 해제(칩은 늦게 오거나 안 와도 무방)
     sendStreamMsg('answer_stop');
 
     followups.generate(llmClient, cfg.provider, query, result || '', function (items) {
@@ -166,7 +176,7 @@ function runChat(query) {
 function sendStreamMsg(msgType, text) {
   var message = { ver: '1.0', id: Date.now(), type: msgType };
   if (text !== undefined) {
-    var safe = security.redactSecrets(text, OUTPUT_SECRETS);
+    var safe = security.redactSecrets(text, OUTPUT_SECRETS.concat(mc.secrets()));
     message.body = { ofStreamBlockDelta: { contentType: 'text/markdown', text: safe } };
   }
   sendJSON({ type: 'msg', message: message });
@@ -178,5 +188,5 @@ function sendJSON(obj) {
   }
 }
 
-// Keep the event loop alive so WS messages can be dispatched
+// 이벤트 루프 유지 — 없으면 WS 메시지 미수신
 setInterval(function () {}, 1000);

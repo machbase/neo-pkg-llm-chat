@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { useApp } from "./context/AppContext";
-import { getConfigList, getConfig, createConfig, updateConfig } from "./services/settingsApi";
+import { getConfigList, getConfig, createConfig, updateConfig, checkToken } from "./services/settingsApi";
+import type { TokenCheck } from "./services/settingsApi";
 import { defaultConfig } from "./types/settings";
-import { getCurrentUser } from "./utils/auth";
-import { MachbaseSection } from "./sections/MachbaseSection";
+import { getCurrentUser, getApiToken, setApiToken, clearApiToken } from "./utils/auth";
+import { MachbaseSection, tokenCheckMessage } from "./sections/MachbaseSection";
 import { ApiKeysSection } from "./sections/ApiKeysSection";
 import { ModelsSection } from "./sections/ModelsSection";
 import { Chat } from "./components/chat/Chat";
@@ -14,11 +15,9 @@ import type { AppConfig, ModelProvider } from "./types/settings";
 
 type AppTab = "settings" | "chat" | null;
 
-// "Usable" = at least one provider has both credentials and at least one named model.
-// Ollama is special: base_url empty is OK because the server falls back to
-// `${machbase.host}:11434` (see cgi-bin/llm/config/config.js ollamaURL()), so we only
-// require a named model. A freshly seeded sys.json has all-empty models and so fails
-// this check, sending the user to settings on first run.
+// 사용 가능 = API 키와 이름 있는 모델을 함께 가진 프로바이더가 하나 이상
+// · Ollama 는 base_url 비어도 됨(서버가 `${machbase.host}:11434` 로 폴백) — 모델 이름만 필요
+// · 갓 시드된 sys.json 은 모델이 비어 있어 첫 실행 시 설정 화면으로 이동
 function isConfigUsable(c: AppConfig): boolean {
     if (c.claude.api_key.trim() && c.claude.models.some((m) => m.name.trim())) return true;
     if (c.chatgpt.api_key.trim() && c.chatgpt.models.some((m) => m.name.trim())) return true;
@@ -34,6 +33,11 @@ export default function App() {
     const [saving, setSaving] = useState(false);
     const [validationErrors, setValidationErrors] = useState<string[]>([]);
     const [chatResetKey, setChatResetKey] = useState(0);
+    const [tokenInput, setTokenInput] = useState<string>(() => getApiToken());
+    const [tokenCheck, setTokenCheck] = useState<TokenCheck | null>(null);
+    const [checking, setChecking] = useState(false);
+    // 저장된(검증·계정 일치 확인된) 토큰의 계정 — 없으면 채팅 불가
+    const [savedUser, setSavedUser] = useState<string | null>(null);
 
     const loadConfigList = useCallback(async () => {
         try {
@@ -59,41 +63,92 @@ export default function App() {
         [notify, setSelectedConfig]
     );
 
-    const currentUser = getCurrentUser() ?? "sys";
+    const blankConfig = useCallback((): AppConfig => {
+        const d = defaultConfig();
+        return { ...d, machbase: { host: "127.0.0.1", port: "5654" } };
+    }, []);
+
+    // 검증된 토큰 저장 + (불러온 설정이 없을 때만) 그 계정의 기존 설정을 불러옴 — 불러왔으면 true
+    // · 새 브라우저에서 토큰만 넣고 저장할 때 서버의 기존 설정(LLM 키)을 빈 값으로 덮어쓰는 것 방지
+    // · 이미 불러온 설정은 편집 중일 수 있어 다시 불러오지 않음
+    const adoptToken = useCallback(
+        async (token: string, user: string): Promise<boolean> => {
+            setApiToken(token);
+            setSavedUser(user);
+            if (selectedConfig !== null) return false;
+            const list = await loadConfigList();
+            if (!list.includes(user)) return false;
+            const data = await getConfig(user);
+            setConfig(data);
+            setSelectedConfig(user);
+            return true;
+        },
+        [loadConfigList, setSelectedConfig, selectedConfig]
+    );
 
     useEffect(() => {
         (async () => {
-            const list = await loadConfigList();
-            if (list.includes(currentUser)) {
-                // Fetch directly (not via loadConfig) so we can synchronously inspect
-                // the data and decide routing — setConfig is async and won't show up
-                // in state by the time we'd check it.
-                const data = await getConfig(currentUser);
-                setConfig(data);
-                setSelectedConfig(currentUser);
-                setActiveTab(isConfigUsable(data) ? "chat" : "settings");
-            } else {
-                setConfig((prev) => ({
-                    ...prev,
-                    machbase: {
-                        ...prev.machbase,
-                        host: "127.0.0.1",
-                        port: "5654",
-                        user: currentUser,
-                    },
-                }));
-                setActiveTab("settings");
+            const stored = getApiToken();
+            if (stored) {
+                const check = await checkToken(stored);
+                setTokenCheck(check);
+                if (check.status === "ok") {
+                    // loadConfig 대신 직접 조회 — setConfig 는 비동기라 바로 아래 라우팅 판단에 못 씀
+                    setSavedUser(check.user);
+                    const list = await loadConfigList();
+                    if (list.includes(check.user)) {
+                        const data = await getConfig(check.user);
+                        setConfig(data);
+                        setSelectedConfig(check.user);
+                        setActiveTab(isConfigUsable(data) ? "chat" : "settings");
+                        return;
+                    }
+                } else {
+                    notify(`저장된 API 토큰을 사용할 수 없습니다. ${tokenCheckMessage(check).text}`, "error");
+                }
             }
+            setConfig(blankConfig());
+            setActiveTab("settings");
         })();
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+    const handleTokenChange = useCallback((value: string) => {
+        setTokenInput(value);
+        setTokenCheck(null);
+        setValidationErrors((prev) => prev.filter((e) => e !== "machbase.token"));
+    }, []);
+
+    const handleVerifyToken = useCallback(async () => {
+        const token = tokenInput.trim();
+        if (!token) return;
+        setChecking(true);
+        const check = await checkToken(token);
+        setTokenCheck(check);
+        if (check.status === "ok") {
+            const loaded = await adoptToken(token, check.user);
+            if (loaded) notify(`${check.user.toUpperCase()} 계정의 기존 설정을 불러왔습니다.`, "success");
+        }
+        setChecking(false);
+    }, [tokenInput, adoptToken, notify]);
+
+    const handleClearToken = useCallback(() => {
+        clearApiToken();
+        setSavedUser(null);
+        setTokenInput("");
+        setTokenCheck(null);
+        setSelectedConfig(null);
+        setConfig(blankConfig());
+        setChatResetKey((k) => k + 1);
+        setActiveTab("settings");
+        notify("API 토큰을 지웠습니다.", "success");
+    }, [blankConfig, notify, setSelectedConfig]);
 
     const handleSave = useCallback(async () => {
         const errors: string[] = [];
         if (!config.machbase.host.trim()) errors.push("machbase.host");
         if (!config.machbase.port.trim()) errors.push("machbase.port");
-        if (!config.machbase.user.trim()) errors.push("machbase.user");
-        if (!config.machbase.password.trim()) errors.push("machbase.password");
-        // Validate model entries: if added, name must not be empty
+        if (!tokenInput.trim()) errors.push("machbase.token");
+        // 추가된 모델 항목은 이름·model_id 필수
         const providers: Array<{ key: string; models: { name: string; model_id: string }[] }> = [
             { key: "claude", models: config.claude.models },
             { key: "chatgpt", models: config.chatgpt.models },
@@ -106,7 +161,7 @@ export default function App() {
                 if (!m.model_id.trim()) errors.push(`model.${p.key}.${i}.model_id`);
             });
         }
-        // At least one provider must have API key + model (Ollama: model only)
+        // API 키+모델 갖춘 제공자 하나 이상 필수(Ollama는 모델만)
         if (!isConfigUsable(config)) errors.push("no_provider");
 
         if (errors.length > 0) {
@@ -124,12 +179,25 @@ export default function App() {
         setValidationErrors([]);
         setSaving(true);
         try {
-            // Filename is always the logged-in user's identity (from JWT). Force the
-            // machbase.user field to match so the saved DB credentials line up with the
-            // saved file name, and one user can't accidentally overwrite another's file
-            // by editing the form value.
-            const owner = currentUser;
-            const payload: AppConfig = { ...config, machbase: { ...config.machbase, user: owner } };
+            // 저장 직전 토큰 재검증 — 무효·콘솔 계정 불일치면 차단
+            const token = tokenInput.trim();
+            const check = await checkToken(token);
+            setTokenCheck(check);
+            if (check.status !== "ok") {
+                setValidationErrors(["machbase.token"]);
+                notify(tokenCheckMessage(check).text, "error");
+                setSaving(false);
+                return;
+            }
+            // 파일명 = 토큰 계정(서버도 같은 이름만 허용)
+            const owner = check.user;
+            const loaded = await adoptToken(token, owner);
+            if (loaded) {
+                notify(`${owner.toUpperCase()} 계정의 기존 설정을 불러왔습니다. 확인 후 다시 저장하세요.`, "info");
+                setSaving(false);
+                return;
+            }
+            const payload: AppConfig = { ...config, machbase: { host: config.machbase.host, port: config.machbase.port } };
             const isNew = selectedConfig === null;
             let savedName: string;
             if (isNew) {
@@ -147,17 +215,15 @@ export default function App() {
             notify(`Save failed: ${e instanceof Error ? e.message : "unknown error"}`, "error");
         }
         setSaving(false);
-    }, [config, selectedConfig, notify, loadConfigList, setSelectedConfig, currentUser]);
+    }, [config, selectedConfig, notify, loadConfigList, setSelectedConfig, tokenInput, adoptToken]);
 
     const handleOpenSettings = useCallback(async () => {
-        const list = await loadConfigList();
-        if (list.includes(currentUser)) {
-            await loadConfig(currentUser);
-        } else if (selectedConfig && list.includes(selectedConfig)) {
-            await loadConfig(selectedConfig);
+        if (savedUser) {
+            const list = await loadConfigList();
+            if (list.includes(savedUser)) await loadConfig(savedUser);
         }
         setActiveTab("settings");
-    }, [loadConfigList, loadConfig, currentUser, selectedConfig]);
+    }, [loadConfigList, loadConfig, savedUser]);
 
     const handleMachbaseChange = useCallback((machbase: AppConfig["machbase"]) => {
         setConfig((prev) => ({ ...prev, machbase }));
@@ -183,12 +249,16 @@ export default function App() {
         setValidationErrors([]);
     }, []);
 
+    const chatBlocked = savedUser === null || selectedConfig === null || !isConfigUsable(config);
+
     return (
         <>
             <div className="page bg-surface" style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+                {/* 문구 필수: Neo는 로드 후 1.2초간 글자·이미지 없는 화면을 "빈 앱"으로 판정해 오류 화면으로 덮음 */}
                 {activeTab === null && (
-                    <div className="flex-1 flex items-center justify-center">
+                    <div className="flex-1 flex items-center justify-center" style={{ gap: "var(--spacing-8)", color: "var(--color-on-surface-muted)", fontSize: "var(--font-size-sm)" }}>
                         <span className="spinner" />
+                        <span>Loading...</span>
                     </div>
                 )}
                 {activeTab !== null && (
@@ -197,25 +267,19 @@ export default function App() {
                             <div className="page-header">
                                 <div className="page-header-inner">
                                     <div className="page-header-lead">
-                                        {/* Back sits left of the title where a back control is looked
-                                            for. Icon only — grouped with the title it needs no word,
-                                            and beside Save the word read as a section label.
-                                            Gate chat entry: a user must have a SAVED, usable config.
-                                            selectedConfig === null means nothing is saved/loaded yet
-                                            (filling the form without saving doesn't count) — matches the
-                                            backend gate that checks the config FILE exists. */}
+                                        {/* 채팅으로 돌아가기 — 제목 왼쪽 아이콘 버튼
+                                            · 활성 조건: 저장된 토큰 + 저장된 사용 가능 설정(폼 입력만은 제외, 백엔드의 설정 파일 검사와 일치) */}
                                         <button
                                             className="btn btn-icon btn-ghost page-header-back"
                                             onClick={() => setActiveTab("chat")}
-                                            disabled={selectedConfig === null || !isConfigUsable(config)}
+                                            disabled={chatBlocked}
                                             aria-label="채팅으로 돌아가기"
-                                            title={selectedConfig === null || !isConfigUsable(config) ? "사용 가능한 설정(제공자·API 키·모델)을 저장한 뒤 채팅할 수 있습니다." : "채팅으로 돌아가기"}
+                                            title={chatBlocked ? "API 토큰과 사용 가능한 설정(제공자·API 키·모델)을 저장한 뒤 채팅할 수 있습니다." : "채팅으로 돌아가기"}
                                         >
                                             <Icon name="arrow_back" className="icon-sm" />
                                         </button>
                                     <div>
-                                        {/* Do not echo the account name in the title (it is the
-                                            logged-in user; showing it leaks the admin id on screen). */}
+                                        {/* 제목에 계정 이름 미표시 — 관리자 id 화면 노출 방지 */}
                                         <h1 className="page-title">{selectedConfig === null ? "New Configuration" : "Configuration"}</h1>
                                         <p className="page-desc">Manage LLM providers, API keys, models, and connection settings.</p>
                                     </div>
@@ -232,7 +296,18 @@ export default function App() {
                             <div className="page-body">
                                 <div className="page-body-inner">
                                     <div className="flex flex-col gap-32">
-                                        <MachbaseSection config={config.machbase} onChange={handleMachbaseChange} errors={validationErrors} />
+                                        <MachbaseSection
+                                            config={config.machbase}
+                                            onChange={handleMachbaseChange}
+                                            errors={validationErrors}
+                                            token={tokenInput}
+                                            onTokenChange={handleTokenChange}
+                                            tokenCheck={tokenCheck}
+                                            checking={checking}
+                                            onVerify={handleVerifyToken}
+                                            savedUser={savedUser}
+                                            onClearToken={handleClearToken}
+                                        />
                                         <ApiKeysSection
                                             claude={config.claude}
                                             chatgpt={config.chatgpt}
@@ -254,7 +329,7 @@ export default function App() {
                             </div>
                         </div>
                         <div className="flex-1 overflow-hidden" style={{ display: activeTab === "chat" ? undefined : "none" }}>
-                            <Chat key={chatResetKey} onOpenSettings={handleOpenSettings} />
+                            <Chat key={chatResetKey} onOpenSettings={handleOpenSettings} accountName={savedUser} />
                         </div>
                     </>
                 )}

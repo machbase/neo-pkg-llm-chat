@@ -30,7 +30,7 @@
 | bridges/bridge-mysql.md | MySQL 브리지 | MySQL브리지,외부DB,MySQL,연결문자열,DSN,parseTime,시간컬럼깨짐,TIMESTAMP파싱,외부DB읽기,외부DB쓰기,TQL로쓰기 | MySQL을 브리지로 붙일 때 연결 문자열과 시각 컬럼이 깨지지 않게 하는 설정 |
 | bridges/bridge-mssql.md | MSSQL 브리지 | MSSQL브리지,SQL Server,외부DB | MSSQL을 브리지로 등록해 외부 DB 데이터를 조회하고 주고받기 |
 | installation/installation.md | 설치와 시작하기 | 설치,install,다운로드,도커,docker,시작,정지,웹UI,배포모드,포트 | 지원 하드웨어와 운영체제, 설치 방법, 화면 없이 돌리는 Headless·Head Only 모드 |
-| operations/command-line.md | 명령행 도구와 서버 실행 플래그 | 명령행,CLI,serve,shell,restore,gen-config,플래그,옵션,--host,--data,--port,--http-port,--mqtt-port,--config,--pid,--preset,외부접속,원격허용,서버실행,서버시작,포트변경,데이터디렉터리,설정파일지정,대화형셸,셸접속,백업복원 | 서버를 띄우고 멈추는 명령과 포트·데이터 경로·외부 접속 허용 같은 실행 플래그 |
+| operations/command-line.md | 명령행 도구와 서버 실행 플래그 | 명령행,CLI,serve,shell,restore,gen-config,플래그,옵션,--host,--data,--port,--http-port,--mqtt-port,--config,--pid,--preset,외부접속,원격허용,서버실행,서버시작,포트변경,데이터디렉터리,설정파일지정,대화형셸,셸접속,백업복원 | 서버를 띄우는 명령과 포트·데이터 경로·외부 접속 허용 같은 실행 플래그 |
 | operations/server-config.md | 설정 파일 | 설정파일,config,HCL,리스너,데이터디렉토리,로깅설정,설정템플릿,gen-config,프로퍼티,포트설정,바인드설정 | 설정 파일을 뽑아 쓰는 방법과 데이터·환경설정 디렉터리 기본 위치, 수신 설정 |
 | operations/address-ports.md | 바인드 주소와 포트 | 주소,포트,바인드,원격접속,5654,5653,5652,5656,포트변경,외부접속,원격허용,방화벽 | 기본은 로컬에서만 받는데 원격에서 붙게 하려면 바꿀 바인드 주소와 포트 |
 | operations/metrics.md | 서버 지표 | 지표,메트릭,statz,모니터링,성능지표,지표조회,성능확인,상태확인 | 서버 상태 지표를 1분·5분·15분 주기로 보고 무엇을 확인할지 |
@@ -39,7 +39,7 @@
 | sdk-go/machgo.md | Go 클라이언트 SDK | go SDK,golang,appender,대량입력 | Go에서 네이티브 프로토콜로 붙는 순수 Go 클라이언트 — 설치와 시작 |
 | sdk-go/machcli.md | CGo 클라이언트 SDK | cgo,C클라이언트,네이티브 | Go에서 C 라이브러리를 감싼 래퍼로 붙기 — 사전 준비와 설정 |
 | sdk-go/sqldriver.md | Go SQL 드라이버 | sql드라이버,database/sql,커넥션 | Go 표준 database/sql 인터페이스로 붙을 때 등록되는 드라이버 이름과 연결 문자열 |
-| security/security.md | 보안과 인증 | 보안,인증,토큰,X.509,인증서,키생성,TLS,비밀번호 | 접속에 쓸 키와 토큰을 만들고 화면·셸·HTTP에서 인증하기 |
+| security/security.md | 보안과 인증 | 보안,인증,토큰,API토큰,토큰발급,token gen,nt_,X.509,인증서,인증서발급,key gen,키생성,TLS,토큰인증,비밀번호 | API 토큰(nt_)·X.509 인증서를 웹 UI나 셸(token gen·key gen)로 발급하고 HTTP·MQTT에서 토큰으로 인증하기, 토큰 인증 옵션별 동작 |
 | sql/sql-guide.md | SQL 사용 가이드 | SQL,쿼리,예제,테이블생성,입력,조회,집계,백업,모니터링,SQL예제,쿼리작성,실습,화면실행,웹UI,SQL편집기,결과그래프,CHART,CSV내려받기,파일내려받기,show tags,desc,비표준명령,Non-SQL | 웹 화면에서 SQL을 실행하고 결과를 그래프로 보거나 CSV로 내려받기, 표준이 아닌 명령 |
 | sql/sql-tag-table.md | 태그 테이블 데이터 모델 | 태그테이블,tag table,메타데이터,BASETIME,SUMMARIZED,PIVOT,인덱스,태그테이블만들기,메타데이터설정,태그조회 | 센서 시계열을 담는 태그 테이블이 어떤 구조이고 일반 테이블과 뭐가 다른지 |
 | sql/sql-rollup.md | ROLLUP 사전집계 | 롤업,rollup,사전집계,집계테이블,ROLLUP_FORCE,롤업갭,롤업만들기,롤업조회,롤업삭제,사전집계설정 | 넓은 시간 범위를 빠르게 집계하려고 미리 계산해 두기 — 지원 함수와 시간 단위 |
@@ -60,15 +60,15 @@
 | tql/tql-guide.md | TQL 개요와 개념 | TQL,티큐엘,파이프라인,SRC,SINK,MAP,데이터변환,TQL이란,TQL작성법,TQL시작하기,파이프라인작성 | TQL이 무엇이고 SQL과 어떻게 다른지, 스크립트를 어떻게 구성하는지 |
 | tql/tql-reference.md | TQL 문법 레퍼런스 | TQL문법,기본타입,statement,param,연산자,pragma | 여러 줄 SQL과 덩어리 값을 escape 없이 쓰는 법, 실행 방식을 지시하는 것 |
 | tql/tql-src.md | TQL 소스 함수 | TQL소스,SRC,SQL(),CSV(),SCRIPT(),HTTP(),FAKE(),ARGS(),데이터읽기,데이터읽기,소스지정,쿼리결과가져오기 | TQL 스크립트를 무엇으로 시작하는지 — SQL·CSV·FAKE 등 데이터 소스 함수 |
-| tql/tql-sink.md | TQL 싱크 함수 | TQL싱크,SINK,INSERT(),APPEND(),CSV(),JSON(),CHART(),출력,결과출력,파일저장,차트출력,테이블입력 | TQL 스크립트를 무엇으로 끝내는지 — 화면 출력·파일 저장·테이블 입력·결과 버리기 |
+| tql/tql-sink.md | TQL 싱크 함수 | TQL싱크,SINK,INSERT(),APPEND(),CSV(),JSON(),CHART(),출력,결과출력,파일저장,차트출력,테이블입력 | TQL 스크립트를 무엇으로 끝내는지 — 화면 출력·테이블 입력·결과 버리기 |
 | tql/tql-map.md | TQL MAP 변환 함수 | TQL MAP,변환,MAPVALUE,PUSHVALUE,POPVALUE,TAKE,DROP,FILTER,GROUP,TRANSPOSE,값변환,컬럼추가,컬럼제거,필터링,그룹화 | TQL 중간에서 값을 바꾸고 거르고 묶는 변환 함수들 |
 | tql/tql-group.md | TQL GROUP 집계 | TQL집계,GROUP,by(),평균,합계,분산,공분산,백분위 | TQL에서 데이터를 묶어 집계할 때 기준 지정과 제곱평균 같은 집계 방법 |
 | tql/tql-script.md | TQL SCRIPT 함수 | TQL스크립트,SCRIPT(),자바스크립트,JSH모듈,컨텍스트,스크립트작성,자바스크립트사용 | TQL 안에서 자바스크립트로 값을 직접 계산하고 변환하기 |
 | tql/tql-utilities.md | TQL 유틸리티 함수 | TQL함수,문자열함수,시간함수,수학함수,리스트,상수 | TQL 어디서나 쓰는 공통 함수 — 문자열 다듬기, 패턴 맞추기, 미리 정해진 상수 |
-| tql/tql-time-examples.md | TQL 시간 처리 예제 | TQL시간,시간변환,시간포맷,시간대,parseTime,timeformat,시간변환,시간계산,시간대변환 | TQL에서 시간을 다루는 예제 — 시간 계산과 형식 지정 |
+| tql/tql-time-examples.md | TQL 시간 처리 예제 | TQL시간,시간변환,시간포맷,시간대,parseTime,timeformat,시간변환,시간계산,시간대변환 | TQL에서 시간을 다루는 예제 — 시간 형식 지정과 변환 |
 | tql/tql-filters.md | TQL 신호 필터 | TQL필터,이동평균,저역통과,칼만필터,노이즈제거,신호처리 | 측정 신호에 섞인 잡음을 걷어내는 필터들 — 평균 필터 등 종류와 차이 |
 | tql/tql-fft.md | TQL FFT 주파수 분석 | FFT,푸리에,주파수분석,진동분석,스펙트럼 | TQL로 주파수 분석(FFT)을 돌려 신호 성분을 보는 예제 |
-| tql/tql-reading.md | TQL 조회 출력 API | TQL조회,출력형식,CSV,JSON,NDJSON,MARKDOWN,결과캐시 | TQL 결과를 CSV·JSON 등 어떤 형식으로 내보낼지와 구분자·헤더 지정 |
+| tql/tql-reading.md | TQL 조회 출력 API | TQL조회,출력형식,CSV,JSON,NDJSON,MARKDOWN,결과캐시 | TQL 결과를 CSV·JSON 등 어떤 형식으로 내보낼지와 구분자 지정 |
 | tql/tql-writing.md | TQL 데이터 입력 API | TQL입력,쓰기,INSERT CSV,APPEND CSV,사용자정의 | HTTP나 MQTT로 TQL을 호출해 데이터를 넣기 — INSERT와 APPEND 방식 |
 | tql/tql-http.md | TQL HTTP 요청 처리 | TQL HTTP,쿼리문자열,요청헤더,요청본문,multipart,폼데이터 | TQL에서 외부 HTTP를 호출해 데이터를 가져오거나 보내기 |
 | tql/tql-html.md | TQL HTML 생성 | TQL HTML,템플릿,이스케이핑,웹페이지 | TQL 결과를 내 서식대로 문서로 뽑기 — 값 참조와 자동 escape |
@@ -112,7 +112,7 @@
 | jsh/javascript-process-module.md | 프로세스 제어 모듈 | 프로세스,daemonize,데몬,schedule,ps,프로세스실행,데몬만들기,주기실행,프로세스목록 | Machbase 고유 프로세스 제어 — 데몬으로 띄우기, 예약 실행, 프로세스 목록 |
 | jsh/javascript-process-node-module.md | 프로세스 모듈(Node 호환) | 프로세스,argv,환경변수,exit,시그널,메모리사용량,종료훅 | 노드 방식 프로세스 다루기 — 강제 종료 때 정리 콜백이 도는지와 두 모듈의 구분 |
 | jsh/javascript-psutil-module.md | 시스템 자원 모니터링 | psutil,CPU사용률,메모리,디스크,부팅시각,자원모니터링 | 시스템 자원을 자세히 보기 — CPU·메모리·스왑·프로토콜별 네트워크 카운터 |
-| jsh/javascript-system-module.md | 시스템 유틸 모듈 | 시스템,현재시각,시간파싱,로그,location | 프로세스 id 등 시스템 정보를 얻는 유틸 |
+| jsh/javascript-system-module.md | 시스템 유틸 모듈 | 시스템,현재시각,시간파싱,로그,location | 현재 시각(now)·시각 파싱(parseTime)·시간대(location)·로거 등 시스템 유틸 |
 | jsh/javascript-service-module.md | 서비스 모듈 | 서비스,service,서비스등록,servicectl,설치,시작,정지 | 장시간 도는 서비스를 스크립트로 만들고 등록·제어하기 |
 | jsh/javascript-service-proxy.md | 서비스 프록시 | 서비스프록시,리버스프록시,라우트등록,프리픽스 | 내가 띄운 서버를 별도 포트 없이 밖에서 닿게 하기 — 주소 형식과 옵션 |
 | jsh/javascript-events-module.md | 이벤트 모듈 | 이벤트,EventEmitter,리스너,on,once | 이벤트 리스너를 붙였다 떼기 — 개수 제한과 오류 이벤트 처리 |
@@ -213,7 +213,7 @@
 | dbms/performance-tuning/tuning-storage-cluster.md | 스토리지·Cluster 튜닝 | 스토리지튜닝,checkpoint,용량,클러스터측정 | 노드마다 들어오는 양이 쏠릴 때 분산에 관여하는 설정과 함께 볼 것 |
 | dbms/rdb-table-usage/rdb-backup-restore-mount.md | TRANSACTION 백업·복원·마운트 | TRANSACTION백업,복원,마운트,지원범위 | 관계형 테이블의 백업·복원·마운트 지원 범위와 검증 항목 |
 | dbms/rdb-table-usage/rdb-constraints-errors-troubleshooting.md | TRANSACTION 제약과 오류 해결 | TRANSACTION제약,에디션제한,문제해결 | 관계형 테이블에서 안 되는 것과 자주 나는 오류 해결 |
-| dbms/rdb-table-usage/rdb-create-alter-drop.md | TRANSACTION 테이블 생성·변경·삭제 | TRANSACTION생성,UNIQUE INDEX,AUTO_INCREMENT,변경,트랜잭션테이블만들기,인덱스생성,ARRAY,배열 | 관계형 테이블을 만드는 문법이 여러 가지일 때 결과가 같은지와 컬럼 변경 되돌리기 |
+| dbms/rdb-table-usage/rdb-create-alter-drop.md | TRANSACTION 테이블 생성·변경·삭제 | TRANSACTION생성,UNIQUE INDEX,AUTO_INCREMENT,변경,트랜잭션테이블만들기,인덱스생성,ARRAY,배열 | 관계형 테이블을 만드는 문법과 컬럼 변경 되돌리기 |
 | dbms/rdb-table-usage/rdb-data-input-mutation.md | TRANSACTION 데이터 입력과 변경 | TRANSACTION입력,UPDATE,DELETE,INSERT SELECT,대량입력,행수정,행삭제,대량입력 | 관계형 테이블에 고속 입력을 쓸 수 있는지와 배치로 밀어 넣기 |
 | dbms/rdb-table-usage/rdb-index-performance.md | TRANSACTION 인덱스와 성능 | TRANSACTION인덱스,JSON path인덱스,조회성능 | 관계형 테이블에서 키와 유일 색인이 개수·빈 값 처리에서 어떻게 다른지 |
 | dbms/rdb-table-usage/insert-on-duplicate-key-update.md | 중복 키 갱신 입력 | ON DUPLICATE KEY UPDATE,중복키,upsert,덮어쓰기 | 없으면 넣고 있으면 고치기를 한 문장으로 — 어디서 되고 어떤 충돌에 반응하는지 |
@@ -222,8 +222,8 @@
 | dbms/rdb-table-usage/rdb-operations-lifecycle.md | TRANSACTION 운영과 생명주기 | TRANSACTION운영,데이터정리,백업복구 | 관계형 테이블에 배치를 한 덩어리로 돌려 다른 쪽이 밀릴 때 나누는 방법 |
 | dbms/rdb-table-usage/rdb-overview-use-criteria.md | TRANSACTION 테이블 개요와 사용 기준 | TRANSACTION개요,TXN,관계형테이블,RDB,사용기준,CREATE TXN TABLE,TRX,구버전이름,이름변경,테이블종류키워드,VOLATILE대체,사용가능이름,설계순서 | 관계형 테이블을 언제 쓰는지와 지금 쓸 수 있는 종류 키워드 |
 | dbms/rdb-table-usage/rdb-query-analysis.md | TRANSACTION 조회와 분석 | TRANSACTION조회,SELECT,정렬,JOIN조회,집계,집계테이블,사전집계,업무조회,JSON경로,덩어리값,JSON path,LIMIT,필터링 | 관계형 테이블에서 원본을 집계해 따로 담고 덩어리 값 경로 조건 걸기 |
-| dbms/rdb-table-usage/rdb-table-structure-schema.md | TRANSACTION 테이블 구조와 스키마 | TRANSACTION구조,스키마,설계 | 관계형 테이블이 언제 생겼고 컬럼은 최소 몇 개인지, 쓸 수 있는 타입 |
-| dbms/rdb-table-usage/transaction.md | 트랜잭션 | 트랜잭션,COMMIT,ROLLBACK,트랜잭션경계 | 여러 변경을 하나로 묶는 시작 구문과 중간 지점 저장 후 되돌리기 |
+| dbms/rdb-table-usage/rdb-table-structure-schema.md | TRANSACTION 테이블 구조와 스키마 | TRANSACTION구조,스키마,설계 | 관계형 테이블 컬럼은 최소 몇 개인지와 쓸 수 있는 타입 |
+| dbms/rdb-table-usage/transaction.md | 트랜잭션 | 트랜잭션,COMMIT,ROLLBACK,트랜잭션경계 | 여러 변경을 하나로 묶는 시작 구문(BEGIN) — 중간 지점 저장(SAVEPOINT)은 미지원 |
 | dbms/reference/command-line-tools.md | 명령행 도구 레퍼런스 | 명령행도구,CLI도구,도구목록,접속옵션,설치본,도구목록,단일노드,에디션별도구,사용불가 | 서버 관리·데이터 가져오기·쿼리 실행에 쓰는 명령행 도구 목록과 공통 접속 옵션 |
 | dbms/cli/csvimport-csvexport.md | csvimport·csvexport 명령·옵션 | csvimport,csvexport,CSV입출력 | 파일 첫 줄을 컬럼 이름으로 삼고 테이블이 없으면 만들어 가며 넣기 |
 | dbms/cli/machadmin.md | machadmin 명령·옵션 | machadmin,서버시작,서버종료,DB생성,DB삭제 | 비정상 종료 후 복구 방식을 고르고 백업 이미지 안을 들여다보는 관리 명령 |
@@ -266,7 +266,7 @@
 | dbms/sql-syntax/lookup-predicate-delete-syntax.md | LOOKUP 조건 DELETE 문법 | LOOKUP삭제,조건삭제,조건으로삭제 | 룩업 테이블을 조건으로 지우기와 조건 없이 지웠을 때 |
 | dbms/sql-syntax/lookup-predicate-update-syntax.md | LOOKUP 조건 UPDATE 문법 | LOOKUP업데이트,조건갱신,조건으로수정 | 룩업 테이블을 조건으로 고치기 — 지금 값을 기준으로 계산해 넣기와 못 바꾸는 컬럼 |
 | dbms/sql-syntax/tag-data-update-syntax.md | TAG 데이터 UPDATE 문법 | TAG업데이트문법,METADATA UPDATE,태그수정,태그값수정,메타수정 | 태그 데이터를 고칠 때 쓸 수 있는 조건과 바꿀 수 있는 컬럼 |
-| dbms/sql-syntax/tag-data-update-where-set-constraints.md | TAG UPDATE WHERE·SET 제약 | TAG업데이트제약,WHERE제약,SET제약,오류사례 | 태그 데이터를 고칠 때 조건이 거부되는 이유 — 이름 조건만 주면 왜 안 되는지와 뜨는 오류 번호 |
+| dbms/sql-syntax/tag-data-update-where-set-constraints.md | TAG UPDATE WHERE·SET 제약 | TAG업데이트제약,WHERE제약,SET제약,오류사례 | 태그 데이터를 고칠 때 조건이 거부되는 이유 — 이름 조건만 주면 왜 안 되는지와 오류 사례 |
 | dbms/sql-syntax/execute-procedure-syntax.md | EXEC 프로시저 | 프로시저실행,EXEC,TABLE_FLUSH,INDEX_FLUSH,TABLE_REFRESH,ROLLUPGAP,롤업갭확인,강제반영,캐시갱신,즉시적용 | 테이블과 롤업을 제어하는 EXEC 프로시저 — 반영 강제, 색인 정리 |
 | dbms/sql-syntax/index-syntax.md | INDEX 문법 — 인덱스 생성·삭제 | 인덱스,CREATE INDEX,INDEX_TYPE,LSM,KEYWORD인덱스,TAG인덱스,인덱스만들기,인덱스생성방법,인덱스삭제,컬럼인덱스,값컬럼인덱스 | 색인을 만들고 지우는 구문과 테이블 종류별로 쓸 수 있는 색인 |
 | dbms/sql-syntax/load-data-infile-syntax.md | LOAD DATA INFILE | 파일적재,LOAD DATA,대량적재,machloader비교,파일가져오기,CSV적재,파일입력 | 서버가 직접 파일을 읽어 넣기 — 첫 줄 컬럼명에 예약어나 특수문자가 섞였을 때 옵션 |
@@ -282,11 +282,11 @@
 | dbms/sql-syntax/sampling-hint.md | SAMPLING 힌트 | 샘플링,SAMPLING,표본추출,표본조회,일부만조회 | 많은 데이터에서 일부만 골라 빠르게 훑는 샘플링 지시 |
 | dbms/sql-syntax/select-syntax.md | SELECT 문법 — 데이터 조회 | SELECT,조회,WHERE,GROUP BY,HAVING,ORDER BY,LIMIT,데이터조회,정렬,필터,그룹화,상위N건 | 데이터를 조회·거르기·집계하는 SELECT 전체 문법과 각 절의 쓰임 |
 | dbms/sql-syntax/series-syntax.md | SERIES BY 문법 | SERIES BY,시리즈,구간생성,구간나누기,시계열구간 | SERIES BY 절은 정렬된 결과 집합에서 특정 조건을 만족하는 연속적인 행의 구간(series)을 추출합니다. 연속된 구간에서 시작/종료 시각과 패턴을 분석할 때 사용합니다. |
-| dbms/sql-syntax/set-operator-syntax.md | 집합 연산자 | UNION ALL,집합연산,합집합,결과합치기,합집합 | 두 조회 결과를 합치거나 교집합·차집합 구하기와 타입 호환 규칙 |
+| dbms/sql-syntax/set-operator-syntax.md | 집합 연산자 | UNION ALL,집합연산,합집합,결과합치기,합집합 | 두 조회 결과 합치기(UNION ALL만 지원, 교집합·차집합 불가)와 타입 호환 규칙 |
 | dbms/sql-syntax/system-session-alter-syntax.md | SYSTEM·SESSION 설정 | ALTER SYSTEM,ALTER SESSION,시스템설정,세션설정,설정변경,세션설정변경 | 서버 전역 설정과 현재 세션 설정 바꾸기 — 세션 끊기, 문장만 취소, 체크포인트 |
 | dbms/sql-syntax/user-auth-syntax.md | 사용자·권한 문법 | 사용자,계정,USER,GRANT,REVOKE,권한,비밀번호변경,계정만들기,계정삭제,권한부여,권한회수,비밀번호변경 | 사용자를 만들고 지우고 권한을 주고 회수하기, 공개키 기반 인증 키 관리 |
-| dbms/sql-syntax/view-syntax.md | VIEW 문법 — 뷰 생성·삭제 | 뷰,VIEW,CREATE VIEW,DROP VIEW,뷰만들기,뷰삭제,뷰조회 | 저장해둔 조회 정의를 만들고 통째로 바꾸기, 실행할 때 조건 값 넘기기 |
-| dbms/sql-syntax/window-function-over-syntax.md | 윈도우 함수와 OVER | 윈도우함수,OVER,파티션,순위,누적,순위매기기,누적합,이전값,다음값 | 윈도우 함수(Window Function)는 결과 행을 그룹으로 축소하지 않고 각 행에 대해 집계 또는 순위 계산을 수행하는 함수입니다. OVER() 절을 사용해 계산 범위(윈도우)를 정의합니다. |
+| dbms/sql-syntax/view-syntax.md | VIEW 문법 — 뷰 생성·삭제 | 뷰,VIEW,CREATE VIEW,DROP VIEW,뷰만들기,뷰삭제,뷰조회 | 저장해둔 조회 정의를 만들고 통째로 바꾸기 — 조건 값은 뷰 정의가 아니라 조회할 때 넘기기 |
+| dbms/sql-syntax/window-function-over-syntax.md | 윈도우 함수와 OVER | 윈도우함수,OVER,파티션,순위,누적,순위매기기,누적합,이전값,다음값 | 행을 줄이지 않고 이전·다음 행 값을 가져오는 윈도우 함수(LAG·LEAD)와 OVER 절 — 순위·누적합은 미지원 |
 | dbms/sql-types/type-data-types-dictionary.md | 데이터 타입 사전 | 데이터타입,타입목록,정수,부동소수점,문자열,날짜시간,IP,ARRAY,배열타입 | 쓸 수 있는 데이터 타입과 각각의 범위·용도 |
 | dbms/sql-types/array.md | 숫자 ARRAY 타입 | ARRAY,배열타입,배열컬럼,고정길이배열,요소조회,ARRAY_LENGTH,cardinality,배열컬럼추가,배열CAST,배열NULL | 한 행에 같은 숫자 타입 값을 정해진 개수만큼 담는 배열 — 만들기와 나중에 추가하기, 요소 하나씩 꺼내기, 통째로 바꾸기, 배열이 아예 없는 것과 요소만 없는 것의 구분 |
 | dbms/sql-types/decimal-numeric-fixed-point.md | DECIMAL·NUMERIC 고정소수점 | 고정소수점,DECIMAL,NUMERIC,정밀도,반올림 | 10진수를 오차 없이 담는 고정소수점 타입 — 반올림과 범위 초과, 테이블별 지원 |
@@ -299,7 +299,7 @@
 | dbms/reference/lookup-sql-json.md | LOOKUP SQL·JSON 지원표 | LOOKUP JSON지원,지원현황 | 룩업 테이블에서 덩어리 값에 쓸 수 있는 SQL 범위 표 |
 | dbms/reference/support-scope-privileges.md | 권한별 기능 지원표 | 권한지원,GRANT,REVOKE,권한필요작업 | 권한을 묶어서 한 번에 주는 이름과 작업별로 필요한 권한 |
 | dbms/reference/rdb.md | TRANSACTION 기능 지원표 | TRANSACTION지원,기능지원여부 | 관계형 테이블에서 어떤 SQL 기능이 되는지 정리한 표 |
-| dbms/reference/support-scope-rollup.md | ROLLUP 지원 범위 | 롤업지원범위,롤업제약 | 롤업이 구성별·테이블별로 되는지와 손으로 돌리거나 멈추는 명령 |
+| dbms/reference/support-scope-rollup.md | ROLLUP 지원 범위 | 롤업지원범위,롤업제약 | 롤업이 구성별·테이블별로 되는지 |
 | dbms/reference/table-types-type.md | 테이블 타입별 기능 지원표 | 테이블타입지원,기능지원표,타입별제약,비교표,ARRAY | 다섯 가지 테이블 유형이 각각 무엇을 지원하는지 종합 표 |
 | dbms/reference/tag-data-update.md | TAG UPDATE 지원표 | TAG업데이트지원,WHERE지원,SET지원,계측값수정,UPDATE조건,조건절지원,메타데이터수정,이름표수정,SET컬럼,값보정 | 이미 쌓인 계측값을 고칠 때 쓸 수 있는 조건과 이름표 정보 수정 |
 | dbms/security-access-control/access-control.md | 접속 제어 | 접속제어,원격접속,BIND_IP_ADDRESS,네트워크노출 | 원격에서 붙을 수 있게 허용하고 어느 주소로 받을지 제한하는 접속 제어 설정 |
@@ -316,7 +316,7 @@
 | dbms/tag-rollup-usage/json-summarized-rollup.md | JSON SUMMARIZED ROLLUP | JSON롤업,SUMMARIZED,json집계 | 덩어리 값 안의 숫자 필드를 미리 집계하기 — 경로 적는 법과 문자열이 섞였을 때 |
 | dbms/tag-rollup-usage/rollup-overview-use-criteria.md | ROLLUP 개요와 사용 기준 | 롤업개요,롤업이란,사용기준,기본동작,설계순서 | 롤업을 쓸지 말지와 어떤 종류를 고를지 기준 — 거리 기준으로 쌓는 표에도 되는지 |
 | dbms/tag-rollup-usage/rollup-patterns-scenarios.md | ROLLUP 활용 시나리오 | 롤업시나리오,롤업활용,센서분석 | 롤업을 만들고 상태를 확인한 뒤 구간 집계를 조회하는 흐름을 단계로 |
-| dbms/tag-rollup-usage/performance-tuning-rollup.md | ROLLUP 성능 튜닝 | 롤업성능,롤업튜닝,최적화 | 롤업으로 얼마나 빨라지는지와 계층 설계, 조회 힌트 |
+| dbms/tag-rollup-usage/performance-tuning-rollup.md | ROLLUP 성능 튜닝 | 롤업성능,롤업튜닝,최적화 | 롤업으로 얼마나 빨라지는지와 계층 설계, 실행 계획 확인 |
 | dbms/tag-rollup-usage/query-syntax-rollup.md | ROLLUP 조회 문법 | 롤업조회,조회문법,시간단위,주월연,origin | 미리 집계한 값을 꺼내 쓰는 함수 인자와 주 단위로 볼 때 경계 기준 |
 | dbms/tag-rollup-usage/rollup-rebuild.md | ROLLUP 재생성 | 롤업재생성,ROLLUP_REBUILD,재구축,정의변경 | 원본을 보정한 뒤 영향받은 구간만 다시 계산할지 통째로 다시 만들지 정하기 |
 | dbms/tag-rollup-usage/target-tag-table-design.md | ROLLUP 대상 테이블 설계 | 롤업대상,롤업설계,SUMMARIZED설계 | 롤업 계층을 어떻게 쌓고 위쪽은 무엇을 소스로 삼으며 저장 공간을 어림하기 |
@@ -331,7 +331,7 @@
 | dbms/tag-table-usage/tag-table-structure-schema.md | TAG 테이블 구조와 스키마 | TAG구조,TAG스키마,설계,binary컬럼,LSL,USL,허용범위,규격한계,범위위반,TRACE로그,위반기록,자동중복제거,값컬럼설계,VARCHAR최적화,시간축,거리축,ARRAY | 태그 테이블 컬럼 설계 — 시간축·거리축 고르기, 값 범위를 벗어나면 흔적 남기기, 이진 데이터 |
 | dbms/tag-table-usage/tag-data-update-correction.md | TAG 데이터 UPDATE와 보정 | TAG업데이트,데이터보정,대량정정,UPDATE성능 | 값을 고치되 원본 흔적을 남기는 설계와 양이 많을 때 주의 |
 | dbms/tag-table-usage/tag-metadata.md | TAG 메타데이터 | 태그메타데이터,METADATA,메타컬럼,메타입력,메타수정,메타삭제,메타등록,메타조회,메타변경,ARRAY | 태그 속성을 넣고 고치는 구문과 마지막으로 바뀐 시각이 어디 남는지 |
-| dbms/tag-table-usage/tag-tagmetaimport.md | 메타데이터 일괄 등록 | tagmetaimport,메타일괄등록,메타가져오기 | 태그 이름표를 CSV로 무더기 등록하거나 갱신하는 도구와 파일 형식 |
+| dbms/tag-table-usage/tag-tagmetaimport.md | 메타데이터 일괄 등록 | tagmetaimport,메타일괄등록,메타가져오기 | 태그 이름표를 CSV로 무더기 등록하는 도구와 파일 형식 — 다시 실행해도 기존 태그는 갱신 안 됨 |
 | dbms/troubleshooting/trouble-cluster.md | Cluster 문제 | 클러스터문제,노드비정상,에디션제한오류 | 클러스터가 이상할 때 토폴로지 변경·재시작 전에 무엇을 수집하고 어디를 보는지 |
 | dbms/troubleshooting/item.md | 입력·적재 문제 | 입력실패,적재실패,CSV실패,컬렉터실패,파일입력실패,업로드실패,인코딩,문자셋,EUCJP,KSC5601,UTF8,import실패,적재오류,확인순서,machloader실패 | 파일로 밀어 넣는 게 실패할 때 확인 순서와 인코딩 이름을 어디서 대조하는지 |
 | dbms/troubleshooting/performance.md | 쿼리·성능 문제 | 쿼리느림,성능문제,검색결과이상,메모리부족 | 결과가 예상과 다르거나 느릴 때 확인 순서 — 시간대 설정 포함 |

@@ -51,18 +51,40 @@ Click the **Favorites** button next to the input area to open a panel for saving
 - Items can be reordered by dragging, and each item can be removed.
 - Re-adding an existing question does not create a duplicate — it highlights the existing item instead.
 
-Favorites are stored per logged-in user on the server (persisted across devices) and isolated per user. Without a logged-in user, they are kept temporarily in browser local storage.
+Favorites are stored on the server per API token account (persisted across devices) and isolated per account. When they cannot be saved to the server (no token, or the service is unreachable), they are kept temporarily in browser local storage.
 
 ## Automatic Mode Switching
 
-Depending on the question text, the internal execution mode may change automatically.
+The internal execution flow is chosen automatically from the question text.
 
-- `report` / `summary report` or their Korean equivalents (`리포트`, `보고서`)
-  - Prioritizes the HTML report generation flow.
-- `advanced`, `spectrum`, `envelope`, `anomaly`, `vibration analysis`, `frequency`, `crest factor`, `peak-to-peak`, `FFT`, `RMS` or their Korean equivalents (`심층`, `다각도`, `고급`, `스펙트럼`, `엔벨로프`, `진동 분석`, `이상치`, `이상 탐지`)
-  - Prioritizes the advanced analysis flow (in-depth charts compiled from analysis intent).
-- General query, analysis, or dashboard requests
-  - Use the basic analysis flow.
+- `report` / `summary report` (Korean `리포트`, `보고서`)
+  - Creates an HTML report.
+- `advanced`, `FFT`, `RMS`, `spectrum`, `anomaly`, etc. (Korean `심층`, `고급`, `스펙트럼`, `이상 탐지`)
+  - Uses the advanced analysis flow, which creates in-depth charts compiled from analysis intent (IR).
+- Chart, dashboard, or analysis requests
+  - Uses the basic analysis flow, which creates table-based charts.
+- Queries naming a table or tag, and value questions such as `average`, `latest`, `how many` (Korean `평균`, `최근`, `몇 건`, `온도 몇 도야`)
+  - Answers by querying with SQL.
+- Concept or usage questions such as `what is`, `how to`, `example` (Korean `뭐야`, `어떻게`, `예제`)
+  - Answers from the manual documents.
+
+The full classification order is in "Query Type Detection" on the first page of the technical documentation.
+
+## Time Display
+
+Times in query results, charts, and reports are shown in **the browser's time zone**. To see another time zone, say so in the question, for example "in UTC".
+
+Dates in the question (`yesterday`, `March 2025`) are interpreted in the Neo server's time zone.
+
+## The "※ 적용 기준" Line at the End of an Answer
+
+If a chart cannot be drawn with the requested unit, period, or tag, the tool adjusts the value (for example, a 1-minute unit over 6 months is raised to 1 day). If a local model (Ollama) leaves the adjusted value out of its answer, one "applied basis" line is appended at the end.
+
+```text
+※ 적용 기준: 일 단위 · 기간 2025-09-21 ~ 2026-03-23
+```
+
+It is not added when the model already wrote the value in its answer.
 
 ## While a Response Is Being Generated
 
@@ -98,7 +120,7 @@ This is mainly used when:
 - Create a dashboard
   - `"Create an analysis dashboard for the Example table data"`
 - Create an in-depth dashboard
-  - `"Create an in-depth analysis dashboard for the Example table data"`
+  - `"Create an advanced analysis dashboard for the Example table data"`
 - Create an analysis report
   - `"Write an analysis report for the Example table data"`
 

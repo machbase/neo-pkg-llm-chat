@@ -1,23 +1,12 @@
-// forecast_report — 예측 결과를 **HTML 리포트**로 굽는다(템플릿 R-4-forecast).
-//
-// 왜 리포트인가: 채팅의 마크다운 표는 태그 5개 × 모델 10개를 담을 수 없다(눌리고, 모델이 자기 말로 다시 쓴다).
-// 리포트는 **태그 드롭다운 × 모델 드롭다운**으로 계산해둔 걸 전부 열람시킨다 — 리더보드에서 점수만 매기고
-// 버리던 나머지 9개 모델의 예측 곡선을 살려서 보여주는 게 핵심(fcRun opts.allModels).
-//
-// 차트는 외부 라이브러리 없이 canvas 2D(기존 리포트 관례 — 오프라인 안전, CDN 불가 환경 대응).
-// 분석문은 **결정론적으로 생성**한다(LLM 2차 호출 없음): 리포트 저장을 모델에게 맡기면 2차 호출을 건너뛰고
-// 가짜 URL을 지어낸다. 숫자는 도구가, 서술은 템플릿이 책임진다.
-
-// ★템플릿은 **neo/forecast/** 에 둔다 — neo/report/ 가 아니다.
-//   neo/report/ 에 두면 리포트 생태계 전체에 자동 등록돼 세 군데로 샌다:
-//     ① listReportTemplates() → LLM에게 "사용 가능한 리포트 템플릿"으로 노출 → save_html_report가 고름
-//     ② matchBuiltinByQuery("예측 리포트") → 제목 토큰 매칭
-//     ③ 그 경로로 가면 {FORECAST_DATA_JSON}이 미치환 → `var D = {FORECAST_DATA_JSON};` JS 문법오류 → **빈 페이지**
-//   플래그(internal:true)로 걸러내는 건 opt-out이라 새 소비자가 생기면 또 샌다.
-//   **폴더를 분리하면 리포트 스캐너가 애초에 못 본다**(구조적으로 불가능). 그래서 로더도 여기서 따로 갖는다.
+// forecast_report — 예측 결과 HTML 리포트 생성(템플릿 R-4-forecast)
+// · 태그 드롭다운 × 모델 드롭다운으로 전 모델 예측 곡선 열람(fcRun opts.allModels)
+// · 차트는 외부 라이브러리 없이 canvas 2D(오프라인·CDN 불가 환경 대응)
+// · 분석문은 결정론 생성(LLM 2차 호출 없음 — 모델의 저장 생략·가짜 URL 방지)
+// · 템플릿은 neo/forecast/에 둠 — neo/report/면 리포트 스캐너에 노출돼 {FORECAST_DATA_JSON} 미치환 빈 페이지
 var fs = require('fs');
 var path = require('path');
 var { withUserRoot, ensureParentOf, shortTableName } = require('./paths');
+var { wallTime, userZone } = require('../machbase/timezone');
 
 var _tmplCache = null, _tmplTs = 0;
 var TMPL_TTL = 30000;
@@ -53,13 +42,9 @@ function expandTemplate(params) {
   return html;
 }
 
-// 헤더 로고 → base64 data URI. 리포트는 단일 HTML로 저장·이동되므로 외부 파일 참조가 통하지 않는다(오프라인/CSP 대응).
-//
-// 🐛 **PNG를 런타임에 인코딩하면 안 된다**: jsh 워커의 `fs.readFileSync(png)`는 Buffer가 아니라 **문자열**을 돌려줘
-//    `.toString('base64')`가 **아무 일도 하지 않는다** → 원시 PNG 바이트가 그대로 img src에 박혀 깨진 글자가 쏟아졌다
-//    (node에선 Buffer라 정상 동작해 로컬 미리보기에선 안 잡혔다).
-// → **미리 인코딩된 텍스트 파일(.b64)** 을 utf8로 읽는다. 런타임에 바이너리를 다루지 않는다.
-//    로고 교체 시: node -e "require('fs').writeFileSync('machbase-logo-header.b64', require('fs').readFileSync('machbase-logo-header.png').toString('base64'))"
+// 헤더 로고 → base64 data URI(단일 HTML 리포트라 외부 파일 참조 불가)
+// · 미리 인코딩된 .b64를 utf8로 읽음 — jsh fs.readFileSync(png)는 Buffer가 아닌 문자열이라 런타임 base64 인코딩 불가
+// · 로고 교체: node -e "require('fs').writeFileSync('machbase-logo-header.b64', require('fs').readFileSync('machbase-logo-header.png').toString('base64'))"
 var _logoCache = null;
 function logoDataURI() {
   if (_logoCache !== null) return _logoCache;
@@ -74,8 +59,7 @@ function logoDataURI() {
   return _logoCache;
 }
 
-// 버킷 단위 → 사람이 읽는 표현. "학습 3625버킷(day)"는 (ⓐ 태그 5개를 **합친 수**라 오해를 부르고
-// ⓑ '버킷'이 내부 용어라) 쓰지 않는다. "일 단위 데이터"처럼 **무슨 간격의 데이터를 썼는지**만 말한다.
+// 버킷 단위 → 한국어 간격 표현("일 단위 데이터" 등)
 function unitKo(u) {
   if (u === 'sec') return '초';
   if (u === 'min') return '분';
@@ -109,16 +93,9 @@ function fmtN(x) {
   if (a >= 0.01) return x.toFixed(4);
   return x === 0 ? '0' : x.toExponential(2);
 }
-function fmtDate(ms) {
-  var d = new Date(ms);
-  function p(n) { return (n < 10 ? '0' : '') + n; }
-  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
-}
-function stamp() {
-  var d = new Date();
-  function p(n) { return (n < 10 ? '0' : '') + n; }
-  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
-}
+// 날짜·생성 시각은 사용자 시간대 기준
+function fmtDate(ms, zone) { return wallTime(ms, zone.offsetMin).slice(0, 10); }
+function stamp(zone) { return wallTime(Date.now(), zone.offsetMin).slice(0, 16); }
 function fileStamp() {
   var d = new Date();
   function p(n) { return (n < 10 ? '0' : '') + n; }
@@ -143,7 +120,7 @@ function tagPayload(parsed, res, descOf) {
     };
     order.push(e.method);
   }
-  // 자동 선택 모델이 리더보드에 없을 수도 있다(폴백 등) → 그 경우 선택 모델을 직접 얹는다.
+  // 자동 선택 모델이 리더보드에 없으면(폴백 등) 직접 추가
   if (!models[res.method]) {
     var pts = res.points || [], lastP = pts.length ? pts[pts.length - 1] : null;
     models[res.method] = {
@@ -164,14 +141,9 @@ function tagPayload(parsed, res, descOf) {
   return { auto: res.method, order: order, actual: act, models: models };
 }
 
-// 결정론적 분석문(HTML). LLM 없이 **수치 근거로** 쓴다. 예측값을 확정된 미래처럼 서술하지 않는다.
-//
-// ★가볍게 + 라벨 행으로:
-//   ① 내용은 "방향 / 예측값(대표) / 얼마나 믿을지 / 한계"만 — 추세 연장 기법이 말할 수 있는 전부다.
-//      섹션을 잘게 쪼개 길게 쓰면 과잉 분석("추세만 보는 내용을 잘게 쪼갤 필요 있나").
-//      '데이터' 행은 **넣지 않는다**(바로 위 스펙 패널과 100% 중복).
-//   ② 형식은 **라벨 + 한 줄 행**(.a-row) — 산문 문단을 이어 붙이면 가독성이 떨어진다.
-//      항목별로 끊어야 스캔이 된다. 모델 선택 근거·제외 사유 상세는 아래 모델 비교표가 담당(반복 금지).
+// 결정론적 분석문(HTML) — 수치 근거만, 예측값을 확정된 미래처럼 서술 안 함
+// · 라벨 + 한 줄 행(.a-row): 방향 / 예측값 / 신뢰도 / 제외 / 한계
+// · '데이터' 행 없음(스펙 패널과 중복), 모델 선택 근거는 모델 비교표 담당
 function analysisHtml(horizonLabel, rows, items) {
   var ok = [], bad = [], i;
   for (i = 0; i < rows.length; i++) (rows[i].ok ? ok : bad).push(rows[i]);
@@ -200,8 +172,7 @@ function analysisHtml(horizonLabel, rows, items) {
   }
   out.push(row('방향', dirParts.join(' &nbsp;·&nbsp; ')));
 
-  // ② 예측값 — 대표 태그(검증 오차 최소) 하나만 값·범위로. "점이 아니라 범위"를 숫자로 보여준다.
-  //    라벨은 '예시'가 아니라 '예측값'(사용자 지적) — 예시가 아니라 실제 예측 수치를 읽는 행이다.
+  // ② 예측값 — 대표 태그(검증 오차 최소) 하나만 값·95% 범위로
   var rep = null;
   for (i = 0; i < ok.length; i++) {
     if (!byTag[ok[i].tag] || !(ok[i].mape >= 0)) continue;
@@ -236,7 +207,7 @@ function analysisHtml(horizonLabel, rows, items) {
     out.push(row('제외', bad.map(function (b) { return '<code>' + esc(b.tag) + '</code> — ' + esc(b.reason); }).join(' &nbsp;·&nbsp; ')));
   }
 
-  // ⑤ 한계 — 추세 연장 기법이라는 것 한 줄. 앰버 콜아웃(a-caution)으로 강조 — 빨강(오류 의미론)은 과하다.
+  // ⑤ 한계 — 추세 연장 기법임을 한 줄, 앰버 콜아웃(a-caution)
   out.push(row('한계', '과거의 추세·주기를 앞으로 연장하는 통계 기법입니다 — 특정 값이 아니라 <strong>범위와 방향</strong>으로 읽으세요. 모델별 성적·제외 사유는 아래 모델 비교표 참고.', 'a-caution'));
 
   return out.join('\n');
@@ -244,8 +215,7 @@ function analysisHtml(horizonLabel, rows, items) {
 
 // 위험 판정 기준: 검증 오차(MAPE)가 이 값을 넘으면 "예측 사실상 무의미" — 표의 ● 점·MAPE 강조·분석문이 전부 공유.
 var RISK_MAPE = 40;
-// 안내는 **호버 전용**(행 전체 title) — 표 밑 범례 행도 달아봤으나 "지저분하고 없으면 필요 없는 설명"(사용자)이라 철회.
-// 짧게: 뜻(무의미)이 먼저, 기준(40%)은 괄호로.
+// 위험 행 호버 안내 문구(뜻 먼저, 기준은 뒤)
 var RISK_TIP = '예측이 사실상 무의미 — 검증 오차(MAPE) ' + RISK_MAPE + '% 초과';
 
 // rows: [{ok, tag, method, slope, r2, mape, last, reason}] (요약표용)
@@ -258,10 +228,8 @@ function statsRows(rows) {
       continue;
     }
     var arrow = r.slope > 0 ? '&#8593;' : (r.slope < 0 ? '&#8595;' : '&#8594;');
-    // 위험 행(MAPE >= RISK_MAPE, "예측 사실상 무의미")만 앞에 상태 점 하나 + MAPE 강조.
-    // 모든 셀에 뿌리면 경고 인플레이션이 되므로 **믿기 어려운 행에만** 한정한다(숫자 자체가 이미 신호).
-    // 뜻은 **행 전체 호버**로만 안내. ⚠️ 네이티브 title이 아니라 data-tip — title은 커서를 ~1초 정지해야
-    // 떠서 사실상 발견 불가. 템플릿의 즉석 툴팁 스크립트(tr[data-tip])가 커서 따라 바로 띄운다.
+    // 위험 행(MAPE >= RISK_MAPE)만 상태 점 + MAPE 강조, 뜻은 행 호버로 안내
+    // · title 대신 data-tip — 템플릿 즉석 툴팁(tr[data-tip])용, 네이티브 title은 표시 지연
     var risk = (r.mape >= RISK_MAPE);
     out.push('<tr' + (risk ? ' data-tip="' + RISK_TIP + '"' : '') + '>' +
       '<td>' + (risk ? '<span class="dot"></span>' : '') + esc(r.tag) + '</td>' +
@@ -298,20 +266,21 @@ function buildAndSave(mc, opts, items, cb) {
   if (!tags.length) return cb(null, null); // 그릴 게 없으면 리포트 생략
 
   var uKo = unitKo(unit);
-  var horizonLabel = horizon + uKo;               // "181일" — "181 day"보다 자연스럽다
+  var horizonLabel = horizon + uKo;               // 예: "181일"
   var data = { horizonLabel: horizonLabel, unit: uKo, tags: tags, perTag: perTag };
 
   var logo = logoDataURI();
+  var zone = userZone(mc);
   var params = {
     TABLE: table,
     LOGO_IMG: logo ? '<img class="logo" src="' + logo + '" alt="Machbase">' : '',
-    GENERATED_DATE: stamp(),
-    // CAP 초과 자동 선정이면 "5 / 312개"로 전체 규모를 스펙 패널에 명시(분석의 '데이터' 행이 삭제돼 여기가 유일한 자리).
+    GENERATED_DATE: stamp(zone),
+    // CAP 초과 자동 선정이면 "5 / 312"로 전체 규모 표시
     TAG_COUNT: String(tags.length) + ((opts.topTotal > tags.length) ? '<span class="unit"> / ' + opts.topTotal + '</span>' : ''),
-    // 보조 줄 = 선정 기준(태그 이름 나열은 긴 이름이 칸을 침범해 삭제 — 대신 "왜 이 태그들인가"를 짧게).
+    // 보조 줄 = 태그 선정 기준
     TAG_PICK_NOTE: (opts.topTotal > tags.length) ? '데이터 많은 순 상위 선정' : '테이블 전체 태그',
-    DATA_UNIT: uKo + ' 단위 데이터',              // 버킷 수(태그 합산이라 오해 유발) 대신 데이터 간격을 말한다
-    TIME_RANGE: isFinite(minT) ? (fmtDate(minT) + ' ~ ' + fmtDate(maxT)) : '-',
+    DATA_UNIT: uKo + ' 단위 데이터',              // 데이터 간격 표시(버킷 수는 태그 합산이라 오해 유발)
+    TIME_RANGE: isFinite(minT) ? (fmtDate(minT, zone) + ' ~ ' + fmtDate(maxT, zone)) : '-',
     ROLLUP_LABEL: uKo,
     HORIZON_LABEL: horizonLabel,
     TAG_STATS_ROWS: statsRows(rows),
@@ -322,7 +291,7 @@ function buildAndSave(mc, opts, items, cb) {
   var html;
   try { html = expandTemplate(params); } catch (e) { return cb(e); }
 
-  // 계정 폴더로 감싼다 — 아래 url 도 이 이름에서 만들어진다.
+  // 계정 폴더 아래 저장 — url도 이 이름 기준
   var pathName = shortTableName(table);
   var filename = withUserRoot(mc, pathName + '/' + pathName + '_Forecast_Report_' + fileStamp() + '.html');
   ensureParentOf(mc, filename, function () {

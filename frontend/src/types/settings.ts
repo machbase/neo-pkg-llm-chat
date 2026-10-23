@@ -1,12 +1,11 @@
-export interface ServerConfig {
+interface ServerConfig {
     port: string;
 }
 
+// API 토큰은 config 에 없음 — 브라우저(utils/auth)에만 보관
 export interface MachbaseConfig {
     host: string;
     port: string;
-    user: string;
-    password: string;
 }
 
 export interface ModelEntry {
@@ -36,14 +35,6 @@ export interface AppConfig {
 export type ApiProvider = "claude" | "chatgpt" | "gemini";
 export type ModelProvider = "claude" | "chatgpt" | "gemini" | "ollama";
 
-export type ToastType = "success" | "error" | "warning";
-
-export interface ToastItem {
-    id: string;
-    message: string;
-    type: ToastType;
-}
-
 export interface ApiResponse<T> {
     success: boolean;
     reason: string;
@@ -54,7 +45,7 @@ export interface ApiResponse<T> {
 export function defaultConfig(): AppConfig {
     return {
         server: { port: "8884" },
-        machbase: { host: "", port: "", user: "", password: "" },
+        machbase: { host: "", port: "" },
         claude: { api_key: "", models: [] },
         chatgpt: { api_key: "", models: [] },
         gemini: { api_key: "", models: [] },

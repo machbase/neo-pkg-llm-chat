@@ -43,6 +43,9 @@ export const ResultTableView = ({ data }: { data: TablePayload }) => {
                     </tbody>
                 </table>
             </div>
+            <div className="chat-result-table__count">
+                {totalRows === 0 ? "결과 없음 (0행)" : `${totalRows.toLocaleString()}행`}
+            </div>
             {data.rowsAffected !== undefined && (
                 <div className="chat-result-table__affected">rowsAffected: {data.rowsAffected}</div>
             )}

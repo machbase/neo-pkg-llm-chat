@@ -18,11 +18,16 @@ function createRegistry(mc) {
   // Async execute: cb(err, result)
   function execute(name, args, cb) {
     if (!args) args = {};
-    // Security chokepoint: every tool call from every LLM backend is screened here exactly once.
+    // 보안 관문 — 모든 LLM 백엔드의 도구 호출을 여기서 한 번 검사
     var sec = security.checkToolCall(name, args);
     if (sec.denied) return cb(null, sec.message);
     var tool = tools[name];
     if (!tool) return cb(new Error('Unknown tool: ' + name));
+    // 내부 전용 도구는 모델이 이름으로 불러도 실행 안 함(다른 도구는 get(name).fn으로 직접 호출)
+    if (tool.internal) {
+      return cb(null, 'Error: ' + name + '은(는) 내부 전용 도구라 호출할 수 없습니다.' +
+        (tool.useInstead ? ' 대신 ' + tool.useInstead + '을(를) 사용하세요.' : ''));
+    }
     try {
       tool.fn(args, cb);
     } catch (e) {
@@ -77,7 +82,6 @@ function createRegistry(mc) {
   require('./dashboard').register(registry, mc);
   require('./report').register(registry, mc);
   require('./docs').register(registry, mc);
-  require('./timer').register(registry, mc);
   require('./util').register(registry, mc);
 
   return registry;
@@ -100,9 +104,4 @@ function argInt(args, key, fallback) {
   return fallback || 0;
 }
 
-function argBool(args, key, fallback) {
-  if (args[key] !== undefined) return !!args[key];
-  return fallback || false;
-}
-
-module.exports = { createRegistry, argStr, argInt, argBool };
+module.exports = { createRegistry, argStr, argInt };

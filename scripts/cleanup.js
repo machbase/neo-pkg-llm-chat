@@ -1,38 +1,26 @@
 'use strict';
 
-// Post-update cleanup of orphaned files.
-//
-// Why: package updates overwrite the repo in place, so a file that existed in an
-// older version but was removed in the new one stays behind as an orphan. This
-// script deletes those leftovers using a MANUALLY-maintained list.
-//
-// MERGER: when you remove a file/folder from the repo, add its package-root-relative
-// path to scripts/obsolete.json -> "remove". Keep the list cumulative (never prune):
-// deletion is idempotent, so stale entries are harmless and version-jump updates
-// (e.g. 1.0 -> 2.1) still get cleaned.
-//
-// Invoked from scripts/install.js (runs on install + update). Also runnable standalone:
-//   machbase-neo jsh scripts/cleanup.js
-//
-// Safe by design: refuses absolute paths, ".." traversal, anything escaping the
-// package root, and a hardcoded set of runtime/user-data dirs. Best-effort — it
-// never throws into the caller, so a bad entry can't break install.
+// 업데이트 후 고아 파일 정리 — 수동 관리 목록 scripts/obsolete.json "remove" 기준
+// · 레포에서 파일·폴더 삭제 시 패키지 루트 기준 경로를 목록에 추가, 누적 유지(삭제는 멱등 → 버전 건너뛴 업데이트도 정리)
+// · install.js에서 호출(설치·업데이트), 단독 실행: machbase-neo jsh scripts/cleanup.js
+// · 절대 경로·".." 탈출·루트 밖·보호 폴더 거부, 호출자에 예외 전파 없음
 
 var path = require('path');
 var fs = require('fs');
 
-// Runtime / user data that must NEVER be deleted, even if listed by mistake.
+// 목록에 있어도 삭제 금지 — 런타임·사용자 데이터
 var PROTECTED = [
   'scripts',
   'configs',
   'cgi-bin/llm/configs',
+  'cgi-bin/llm/prefs',
   'cgi-bin/llm/workers',
   'cgi-bin/llm/logs',
   'logs',
 ];
 
 function normalizeRel(p) {
-  // forward slashes, drop leading "./", drop trailing slashes, trim.
+  // 슬래시 통일·앞 "./"·뒤 슬래시 제거
   return String(p).replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '').trim();
 }
 
@@ -108,9 +96,7 @@ function runCleanup(pkgRoot) {
 
 module.exports = { runCleanup: runCleanup };
 
-// Standalone execution: machbase-neo shell jsh scripts/cleanup.js
-// Detect "run directly" without relying on require.main (jsh support is unclear):
-// when required by install.js, argv[1] is install.js, so the regex stays false.
+// 단독 실행 판정 — jsh의 require.main 지원 불확실 → argv[1] 파일명도 확인(install.js에서 require 시 false)
 var _proc = require('process');
 var _entry = (_proc.argv && _proc.argv[1]) ? String(_proc.argv[1]).replace(/\\/g, '/') : '';
 var _isMain = (typeof require !== 'undefined' && require.main === module) || /\/cleanup\.js$/.test(_entry);

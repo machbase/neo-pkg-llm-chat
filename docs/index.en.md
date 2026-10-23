@@ -5,7 +5,7 @@ weight: 10
 
 # LLM Chat Technical Documentation
 
-[한국어](./index.kr.md) | **English**
+[한국어](./index.kr.md) | **English** | [日本語](./index.ja.md)
 
 The Machbase Neo LLM Chat package is an LLM-based chat interface for interacting with the Machbase Neo time-series database in natural language.
 Through conversation, you can query data, generate dashboards, create analysis reports, and explore manual documents.
@@ -20,6 +20,11 @@ Select the LLM Chat package and click the `Install` button to install it.
 Installation may take a short time, so wait until it is completed.
 
 ![Package installation screen](./images/package-install.png)
+
+### Requirements
+
+- Machbase Neo 8.7.3 or later
+- A Machbase Neo API token for the account that will use LLM Chat (issued in the Neo web console; see [First Setup](./first-setup.en.md))
 
 ### Uninstall
 
@@ -36,7 +41,7 @@ The package supports four LLM providers. Provider calls themselves are single-sh
 | Gemini | Google Gemini API | No |
 | Ollama | Ollama REST API | Yes |
 
-Provider and connection settings are configured from the web-based Settings screen. API keys, model lists, and Machbase Neo connection information can all be saved directly in the browser.
+Provider and connection settings are configured from the web-based Settings screen. API keys, model lists, and Machbase Neo connection information are saved on the server per account, while the Machbase Neo API token is stored only in the browser, never on the server.
 
 ## Agentic Loop
 
@@ -44,12 +49,22 @@ The agentic loop is the core execution engine of this package. When a user sends
 
 ### Query Type Detection
 
-- Questions containing `report` / `summary report` or their Korean equivalents (`리포트`, `보고서`)
-  - Classified as report mode and use the HTML analysis report flow.
-- Questions containing `advanced`, `spectrum`, `envelope`, `anomaly`, `vibration analysis`, `frequency`, `crest factor`, `peak-to-peak`, `FFT`, or `RMS` or their Korean equivalents (`심층`, `다각도`, `고급`, `스펙트럼`, `엔벨로프`, `진동 분석`, `이상치`, `이상 탐지`)
-  - Classified as advanced mode and produce in-depth charts compiled from analysis intent (IR).
-- Other analysis or dashboard requests
-  - Classified as basic mode and use the table-based chart flow.
+Each question is classified in the order below to choose an execution flow. Each flow has a fixed set of tools the model can use (see Common Rules in [Technical Reference](./technical-reference.en.md)).
+
+| Question | Flow |
+| :--- | :--- |
+| Pasted code (`SQL(`, `CHART(`, etc.) | Data query |
+| Contains `report` / `summary report` (Korean `리포트`, `보고서`) | Report — generates an HTML analysis report |
+| Contains `timer`, `cron`, `scheduler` (Korean `타이머`, `스케줄러`) | Document search — answered from the manual (timer registration is not supported) |
+| A short question about the server version or status | System info |
+| `forecast` (Korean `예측`) without mentioning a report or dashboard | Data query — generates a forecast report |
+| Execution requests, queries naming a table or tag, measurement questions such as `온도 몇 도야` ("what is the temperature") | Data query |
+| Concept or usage questions (`what is`, `how to`, `example`; Korean `뭐야`, `어떻게`, `예제`) | Document search |
+| `advanced`, `FFT`, `RMS`, `spectrum`, `anomaly`, etc. (Korean `심층`, `고급`, `스펙트럼`, `이상 탐지`) | Advanced analysis — in-depth charts compiled from analysis intent (IR) |
+| Chart, dashboard, analysis, or trend requests | Basic analysis — table-based charts |
+| Lookup expressions such as `average`, `latest`, `how many`, `list` (Korean `평균`, `최근`, `몇 건`, `목록`) | Data query |
+| Greetings | General conversation |
+| Anything else | Document search |
 
 ### Correction (Fixer) Layer
 
@@ -58,9 +73,12 @@ Before a tool runs, the fixer layer auto-corrects common LLM mistakes so the cal
 | Fixer | Description |
 | :--- | :--- |
 | Argument normalization | Corrects wrong or misspelled parameter names in tool calls |
-| `validateTagInArgs` | Checks whether tag names used in a call exist in the actual table |
+| Exploration assist | Infers the table name for `list_table_tags` and adds `profile` to `describe_table` in basic analysis |
+| Question context injection | Passes the period, unit, and original text read from the question to the report and chart compile tools (takes precedence over the model's values) |
 | Time range correction | Adjusts `time_start` / `time_end` to match actual data boundaries |
-| TQL fix | Repairs common TQL syntax issues before execution |
+| Time value cleanup | Normalizes `time_start` / `time_end` to epoch ms strings |
+| Chart definition cleanup | Normalizes the dashboard `charts` array |
+| Newline cleanup | Turns literal `\n` into real newlines |
 
 ### Guard Pipeline
 
@@ -70,7 +88,7 @@ Pre-tool guards:
 
 | Guard | Description |
 | :--- | :--- |
-| `consecutive_failure` | Skips a tool after it fails twice in a row instead of retrying forever |
+| `consecutive_failure` | When the same tool keeps failing, re-prompts the model to reread the error and fix it; after 4 consecutive compile failures, has it skip that chart |
 | `dashboard_early` | Prevents dashboard creation before all TQL templates are saved (advanced mode) |
 | `redundant_finalize` | Blocks extra finalize calls after the dashboard URL was already issued (avoids orphan files) |
 
@@ -87,6 +105,20 @@ Post-loop guards:
 | `tql_inject` (tql_omission) | Ensures the validated ```tql chart is present and intact in the final answer |
 | `raw_tql` | Detects hand-written ```tql that came from no tool result and redirects to the compiler |
 | `fake_tql_answer` | Blocks fabricated / hallucinated TQL syntax in the final answer |
+| `applied_basis` | If a tool changed the unit, period, or tag and the answer does not mention the applied value, appends one `※ 적용 기준:` ("applied basis") line to the answer (local models) |
+
+### Execution-Stage Limits
+
+Right before a tool runs, the following checks apply.
+
+| Limit | Applies to | Behavior |
+| :--- | :--- | :--- |
+| Allowed tools | All models | A tool that is not in the current flow's allowed list does not run, even if the model calls it by name |
+| Repeated identical call | All models | After the same tool has run twice with the same arguments, further identical calls are blocked |
+| SQL run count | Local models (Ollama) | `execute_sql_query` runs at most 8 times per question; after that the model is told to answer from the results so far |
+| Time unit | Local models (Ollama) | For hourly/daily/weekly/monthly questions (Korean `시간별`, `일별`, `주별`, `월별`), SQL with no bucket or a different bucket is sent back for rewriting before it runs. The example bucket uses `ROLLUP` if the table has a ROLLUP table, otherwise `DATE_TRUNC` |
+
+As blocks accumulate, local models stop using tools and answer from what they have confirmed so far.
 
 ## What This Documentation Covers
 
@@ -100,11 +132,12 @@ Post-loop guards:
 ## Basic Workflow
 
 1. Install the LLM Chat package in Neo.
-2. When you open it for the first time, enter the connection information in Settings.
-3. Enter the API key or endpoint for the provider you want to use.
-4. Register one or more models.
-5. Save and move to the Chat screen.
-6. Select a model and send questions from the Chat screen.
+2. Issue an API token for your account in the Neo web console.
+3. When you open it for the first time, enter Host, Port, and the API token in Settings and click **검증** (Verify).
+4. Enter the API key or endpoint for the provider you want to use.
+5. Register one or more models.
+6. Save and move to the Chat screen.
+7. Select a model and send questions from the Chat screen.
 
 ## Screen Layout
 

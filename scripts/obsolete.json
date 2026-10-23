@@ -3,6 +3,17 @@
   "remove": [
     "cgi-bin/package.json",
     "cgi-bin/llm/server/ws_server.js",
-    "cgi-bin/llm/neo/tql/tql-analysis-templates.md"
+    "cgi-bin/llm/neo/tql/tql-analysis-templates.md",
+    "cgi-bin/llm/tools/timer.js",
+    "cgi-bin/llm/server/ws_client.js",
+    "cgi-bin/llm/logger/",
+    "cgi-bin/llm/context/catalog.js",
+    "cgi-bin/llm/catalog-old-reference.md",
+    "test/compare_rounds.js",
+    "cgi-bin/config.json",
+    "frontend/settings.html",
+    "frontend/src/components/common/ConfirmDialog.tsx",
+    "frontend/src/assets/image/neow_favicon.webp",
+    "cgi-bin/llm/skill/timer.js"
   ]
 }

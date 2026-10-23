@@ -1,4 +1,4 @@
-var { rePromptNoToolCalls } = require('./guard');
+var { rePromptNoToolCalls, finalizedWithoutTools } = require('./guard');
 
 // Detects when advanced analysis is done but charts are missing from dashboard
 var ChartOmissionGuard = {
@@ -6,6 +6,7 @@ var ChartOmissionGuard = {
   check: function (agent, msg) {
     if (!agent.advanced) return msg;
     if (msg.toolCalls && msg.toolCalls.length > 0) return msg;
+    if (finalizedWithoutTools(agent)) return msg; // 완성 후 도구 없는 강제답변 차례 → 차트 추가 불가
 
     var savedTQLs = getSavedTQLPaths(agent.messages);
     var chartCount = countDashboardCharts(agent.messages);
@@ -31,8 +32,8 @@ function getSavedTQLPaths(msgs) {
       for (var j = 0; j < m.toolCalls.length; j++) {
         var nm = m.toolCalls[j].function.name;
         var fargs = m.toolCalls[j].function.arguments || {};
-        // save_tql_file / compile_tql_from_spec / forecast_table(filename 있을 때만 = 저장 경로). filename 없는 답변/인라인 경로는 ''.
-        if (nm === 'save_tql_file' || nm === 'compile_tql_from_spec' || nm === 'forecast_table') {
+        // compile_tql_from_spec / forecast_table(filename 있을 때만 = 저장 경로). filename 없는 답변/인라인 경로는 ''.
+        if (nm === 'compile_tql_from_spec' || nm === 'forecast_table') {
           pendingPaths.push(fargs.filename || '');
         } else {
           pendingPaths.push('');
@@ -40,12 +41,8 @@ function getSavedTQLPaths(msgs) {
       }
     } else if (m.role === 'tool' && pendingPaths.length > 0) {
       var p = pendingPaths.shift();
-      if (p) {
-        var content = m.content.toLowerCase();
-        if (content.indexOf('error') < 0 && content.indexOf('fail') < 0) {
-          paths.push(p);
-        }
-      }
+      // 실제 저장 성공(TQL file saved 응답)만 집계 — 차단(취소됨)·중복 건너뜀·오류는 제외
+      if (p && String(m.content || '').indexOf('TQL file saved') >= 0) paths.push(p);
     }
   }
   return paths;

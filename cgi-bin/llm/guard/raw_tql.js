@@ -1,9 +1,9 @@
 var { rePromptNoToolCalls } = require('./guard');
 var docIntent = require('../agent/doc_intent');
 
-// 답변에 들어간 ```tql 코드블록 중, 어떤 도구 결과(compile_tql_from_spec/문서)에도 없는 = 모델이 손으로 쓴 것을 탐지.
-// 손으로 쓴 TQL은 시간범위 보정·0건·SQL 검증을 전부 건너뛰어 미래범위/빈 차트/깨진 바인딩이 그대로 나가므로,
-// 도구로 다시 생성하도록 재유도(프롬프트 규칙을 약한 모델이 무시하는 경우의 하드 백스톱).
+// 답변의 ```tql 블록 중 도구 결과(compile_tql_from_spec/문서)에 없는 손으로 쓴 TQL 탐지 → 도구 재생성 재유도
+// · 손 TQL은 시간범위 보정·0건·SQL 검증 생략 — 미래범위/빈 차트/깨진 바인딩 방지
+var RAW_TQL_PROMPT_CAP = 1; // 질문당 재유도 횟수 — 넘으면 답변 그대로 통과
 var RawTqlGuard = {
   name: 'raw_tql',
   check: function (agent, msg) {
@@ -29,8 +29,10 @@ var RawTqlGuard = {
     if (unbacked === 0) return msg;
 
     console.println('  [guard] raw_tql: ' + unbacked + ' hand-written TQL block(s) not backed by any tool result');
-    // DocLookup 문서 모드(EXCEPTION 불성립)에서는 compile이 결정론 가드로 차단됨 → compile 조언은 모순(핑퐁).
-    // 문서 예제 원문 인용으로 유도한다(fake_tql_answer의 doc-mode 분기와 동일 조건).
+    if ((agent._rawTqlPrompts || 0) >= RAW_TQL_PROMPT_CAP) return msg;
+    agent._rawTqlPrompts = (agent._rawTqlPrompts || 0) + 1;
+    // DocLookup 문서 모드(EXCEPTION 불성립)는 compile 차단 → 문서 예제 원문 인용으로 유도(핑퐁 방지)
+    // · 조건은 fake_tql_answer doc-mode 분기와 동일
     var _q = agent.currentQuery || '';
     var _exception = docIntent.wantsExample(_q) &&
       !!docIntent.mentionsTable(_q, agent._docTableNames !== undefined ? agent._docTableNames : null);
@@ -40,6 +42,12 @@ var RawTqlGuard = {
         '답변을 다시 쓰되: **개념 설명은 그대로 유지**하고, 예제만 방금 읽은 문서의 코드블록 **1~2개**를 ' +
         '한 글자도 바꾸지 말고 그대로 인용해 교체하세요(테이블명/태그 치환 금지, 문서에 예제가 없으면 예제 생략). ' +
         '사과·정정 과정 언급·문서 파일 경로(.md) 언급 금지 — 완성된 최종 답변만 새로 쓰세요.');
+    }
+    // DocLookup 예제 상한 도달 — compile이 차단되므로 새로 만들라는 지시는 핑퐁, 만든 예제만 쓰게 함
+    if (agent._docExampleCapped) {
+      return rePromptNoToolCalls(agent, msg,
+        '답변의 TQL 중 ' + unbacked + '개가 도구를 거치지 않고 직접 작성됐습니다. 예제는 이미 충분히 만들었으니 더 컴파일하지 마세요. ' +
+        '**도구가 돌려준 검증된 TQL만** ```tql 블록에 그대로 넣고, 손으로 쓴 예제는 빼고 답변을 다시 작성하세요.');
     }
     var hint = '답변의 TQL 중 ' + unbacked + '개가 도구를 거치지 않고 직접 작성됐습니다. ' +
       '손으로 쓴 TQL은 시간범위 보정·0건·SQL 검증을 건너뛰어 미래 시간범위/빈 차트/깨진 series 바인딩이 그대로 나갑니다. ' +

@@ -1,12 +1,12 @@
 // Example prompts grouped by category for the empty-state suggestions panel.
 
-export interface PromptItem {
+interface PromptItem {
   id: string;
   label: string;
   prompt: string;
 }
 
-export interface PromptCategory {
+interface PromptCategory {
   id: string;
   title: string;
   icon: string;

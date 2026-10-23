@@ -1,20 +1,4 @@
 var ToolPrompts = {
-  sql_tools: '## SQL 도구 사용법\n' +
-    '- execute_sql_query: 직접 SQL 실행. GROUP BY 없이 사용 가능.\n' +
-    '- timeformat: "ms" 파라미터로 지정! SQL 안에 넣지 마세요!\n' +
-    '- UPDATE 구문 사용 금지\n' +
-    '- 통계 조회: describe_table로 확인한 실제 컬럼명 사용! (예: SELECT NAME, COUNT(*), AVG(VALUE) FROM 테이블 GROUP BY NAME)\n' +
-    '- 시간 범위 확인: describe_table로 확인한 BASETIME 컬럼 사용! (예: SELECT MIN(TIME), MAX(TIME) FROM 테이블, timeformat:"ms")\n',
-
-  tql_tools: '## TQL 도구 사용법\n' +
-    '- TQL의 SQL() 안에서는 반드시 GROUP BY 포함!\n' +
-    '- TQL SQL()에서 큰따옴표(") 사용 금지 → 백틱 사용!\n' +
-    '- TQL SQL()에서 ROLLUP alias 사용 금지! 표현식 직접 사용\n' +
-    '- TQL에서 SQL()은 파일당 1회만 사용 가능\n' +
-    '- save_tql_file: 파일명/폴더명은 반드시 영어로만! 한글 절대 금지!\n' +
-    '- tql_content에는 raw TQL을 직접 작성! (TEMPLATE 문법 없음) 골격은 tql/tql-chart-conventions.md 그대로 복사 후 TABLE/TAG/기간만 변경.\n' +
-    '- ROLLUP 단위 선택: 수시간→\'sec\', 수일→\'hour\', 수주~수년→\'day\'\n',
-
   tql_spec_tools: '## TQL 컴파일 도구 (compile_tql_from_spec) — raw TQL 직접작성 대신 사용\n' +
     '★ 답변에 보여줄 TQL은 **반드시 compile_tql_from_spec로 생성한 것만**! 절대 ```tql을 직접 손으로 쓰지 마세요. ' +
     '예제가 여러 개여도 **각 예제마다 compile_tql_from_spec를 호출**하세요. ' +
@@ -32,7 +16,7 @@ var ToolPrompts = {
     '- timeRange는 describe_table로 확인한 실제 데이터 기간(TO_DATE 문자열, 예 \"2026-02-01 00:00:00\").\n' +
     '- 검증 실패 메시지가 오면 **spec(JSON)만 고쳐 재호출**(TQL을 직접 작성하지 마세요).\n' +
     '- open/high/low/close 태그가 보이는 시세 데이터면 kind=\"ohlc\"로 캔들차트를 만드세요.\n' +
-    '- IR이 표현 못 하는 특수 분석(히트맵/FFT/3D 등)만 save_tql_file로 raw 작성(escape hatch).\n',
+    '- IR이 표현 못 하는 특수 분석(히트맵/FFT/3D 등)은 지원하지 않습니다. TQL을 직접 쓰지 말고 지원 범위 밖이라고 안내하세요.\n',
 
   forecast_tools: '## 예측 도구 (forecast_table) — 산출물은 **HTML 리포트**\n' +
     '★ 예측 요청이면 **즉시 forecast_table을 호출**하세요. 어떤 태그냐·저장 여부를 **먼저 되묻지 마세요** — 태그를 안 주면 {table}만 줘서 호출하면 도구가 처리합니다(1개=자동, 2~5개=전부, 5개 초과=데이터 많은 순 상위 5개 자동 선정).\n' +
@@ -100,19 +84,6 @@ var ToolPrompts = {
     '- ★**미래 수치를 지어내지 마세요**: "차기 목표 95", "중기 100~110" 같은 목표가·전망치를 답변에 쓰면 안 됩니다. 검증(백테스트·MAPE)도 신뢰구간도 없는 숫자입니다.\n' +
     '  (리포트 본문의 recommendations는 템플릿 지침에 따른 **정성적 전략 의견**이지 검증된 예측이 아닙니다 — 답변에서 예측처럼 옮기지 마세요.)\n' +
     '- ★사용자가 **예측/전망**을 원한 것으로 보이면 답변 끝에 반드시 안내: "검증된 예측이 필요하면 **\"<테이블> 예측해줘\"** 라고 요청하세요 — 후보 모델 전수 비교·검증 오차(MAPE)·95% 신뢰구간이 포함된 **예측 전용 리포트**를 만듭니다."\n',
-
-  timer_tools: '## 타이머 도구 사용법\n' +
-    '- add_timer: 타이머 생성. 생성만으로는 실행 안 됨! 반드시 start_timer 호출 필요.\n' +
-    '- auto_start는 사용자가 명시적으로 요청하지 않는 한 false로 설정.\n' +
-    '- 스케줄 형식: "@every 5s", "@every 1m", "0 30 * * * *", "@daily", "@hourly"\n' +
-    '- TQL 스크립트는 반드시 timer-templates.md 문서의 패턴을 참고하여 작성.\n' +
-    '- 테이블/타이머/폴더 이름 통일 (예: SENSOR_DATA 하나로)\n',
-
-  common_prohibitions: '## 금지사항\n' +
-    '- 도구 호출 없이 답변 절대 금지! 어떤 질문이든 최소 1개 도구를 호출한 후 답변하세요.\n' +
-    '- 문서 경로를 추측하거나 만들지 마세요! 반드시 카탈로그에서 찾은 경로를 그대로 복사해서 사용하세요.\n' +
-    '- 빈 객체({})를 값으로 넣지 마세요. 생략하거나 정확한 값을 넣으세요.\n' +
-    '- 기본 접속 정보: host=127.0.0.1, port=5654 (자동 적용됨, 별도 지정 불필요)\n',
 };
 
 module.exports = { ToolPrompts };

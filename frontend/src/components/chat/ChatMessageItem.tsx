@@ -11,15 +11,9 @@ const formatClock = (ts: number) =>
 interface ChatMessageItemProps {
     message: Message;
     userMessageAlign?: UserMessageAlign;
-    /**
-     * Invoked when the user saves an edited user-message.
-     * Receives the message id and the new (trimmed) content.
-     */
+    /** 수정한 사용자 메시지 저장 시 호출 — (메시지 id, trim된 새 내용) */
     onEdit?: (messageId: string, newContent: string) => void;
-    /**
-     * Controls whether the pencil icon is rendered at all. The parent gates this
-     * on `!isProcessingAnswer && isConnected`.
-     */
+    /** 연필 아이콘 표시 여부 */
     canEdit?: boolean;
 }
 
@@ -34,25 +28,19 @@ export const ChatMessageItem = ({ message, userMessageAlign = "left", onEdit, ca
 
     const isUser = message.role === "user";
     const isAssistant = message.role === "assistant";
-    // Footer rides on the model stamp, so it appears on finished answers only.
+    // 하단 메타 — 모델 표시가 있는 완료 답변에만
     const showMeta = isAssistant && !!message.model && !message.isProcess;
 
-    // Local edit state — strictly per-item. Never reuse usePkgChat's shared
-    // isComposingRef here: that ref tracks the main input's IME composition,
-    // and sharing it would corrupt either side's Enter-vs-newline behavior.
+    // 항목별 편집 상태 — 본 입력창의 IME 조합 ref와 공유 금지(Enter·줄바꿈 판정 오염)
     const [isEditing, setIsEditing] = useState(false);
     const [draft, setDraft] = useState(message.content);
     const isComposingRef = useRef(false);
-    // One-frame guard after compositionend: some browsers (older WebKit,
-    // certain Korean IMEs) emit the Enter keydown that finalized the composition
-    // *after* compositionend fires, so isComposingRef has already flipped to
-    // false. We hold this guard true until the next frame to absorb that Enter.
+    // compositionend 후 한 프레임 Enter 무시 — 일부 브라우저·한글 IME가 조합 확정 Enter를 compositionend 뒤에 발생
     const justComposedRef = useRef(false);
     const textareaRef = useRef<HTMLTextAreaElement | null>(null);
     const bubbleRef = useRef<HTMLDivElement | null>(null);
 
-    // Show the pencil only on user, non-process messages, and only when the
-    // parent has granted edit capability.
+    // 연필 아이콘 — 완료된 사용자 메시지 + 편집 허용 시만
     const showEditAffordance = isUser && !message.isProcess && canEdit && !!onEdit;
 
     useEffect(() => {
@@ -60,23 +48,19 @@ export const ChatMessageItem = ({ message, userMessageAlign = "left", onEdit, ca
         const ta = textareaRef.current;
         if (!ta) return;
         ta.focus();
-        // Place cursor at end of the existing content.
+        // 커서를 내용 끝으로
         const end = ta.value.length;
         ta.setSelectionRange(end, end);
     }, [isEditing]);
 
-    // If the parent revokes edit capability mid-edit (e.g. a new stream starts
-    // and isProcessingAnswer flips to true, or the WS disconnects), bail out of
-    // edit mode so the user isn't left typing into a dead affordance.
+    // 편집 중 편집 권한 회수(새 스트림 시작·WS 끊김) 시 편집 모드 종료
     useEffect(() => {
         if (isEditing && !canEdit) {
             setIsEditing(false);
         }
     }, [canEdit, isEditing]);
 
-    // Click outside the editing bubble dismisses edit mode (discards draft).
-    // Use mousedown so the dismiss fires before focus shifts to the click
-    // target — matches how popovers/menus typically behave.
+    // 말풍선 밖 클릭 시 편집 취소(초안 폐기) — mousedown 사용, 포커스 이동 전 처리
     useEffect(() => {
         if (!isEditing) return;
         const handlePointerDown = (e: MouseEvent) => {
@@ -119,7 +103,7 @@ export const ChatMessageItem = ({ message, userMessageAlign = "left", onEdit, ca
             e.preventDefault();
             commitEdit();
         }
-        // Shift+Enter falls through to default textarea behavior (newline).
+        // Shift+Enter는 기본 동작(줄바꿈)
     };
 
     const bubbleClass = [
@@ -153,10 +137,7 @@ export const ChatMessageItem = ({ message, userMessageAlign = "left", onEdit, ca
                             }}
                             onCompositionEnd={() => {
                                 isComposingRef.current = false;
-                                // Hold the guard until the next frame so a
-                                // trailing Enter keydown (fired after
-                                // compositionend in some IMEs/browsers) is
-                                // absorbed instead of committing the edit.
+                                // 다음 프레임까지 가드 유지 — 조합 확정 뒤 오는 Enter로 저장되는 것 방지
                                 justComposedRef.current = true;
                                 if (typeof requestAnimationFrame === "function") {
                                     requestAnimationFrame(() => {
@@ -186,7 +167,7 @@ export const ChatMessageItem = ({ message, userMessageAlign = "left", onEdit, ca
                         {message.isProcess || isUser ? (
                             <div className="chat-msg-text">{message.content}</div>
                         ) : (
-                            <RenderMd content={message.content} isInterrupt={message.isInterrupt} isProcess={message.isProcess} />
+                            <RenderMd content={message.content} isInterrupt={message.isInterrupt} />
                         )}
                         {showEditAffordance && (
                             <button type="button" className="chat-msg-edit-btn" onClick={beginEdit} aria-label="Edit message" title="Edit message">

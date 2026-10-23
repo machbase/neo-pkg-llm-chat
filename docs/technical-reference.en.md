@@ -11,11 +11,25 @@ This document describes the built-in tools, automation features, templates, and 
 
 These rules apply across the tools below.
 
-**Execution identity and reach** — every query runs as the logged-in account, and Machbase decides what it may touch. The visible tables are the ones that account **owns plus the ones granted to it**, across **every database** it can `CONNECT` to.
+**Execution identity and reach** — every query runs as the account of the API token entered in Settings, and Machbase decides what it may touch. The visible tables are the ones that account **owns plus the ones granted to it**, across **every database** it can `CONNECT` to.
 
 **Table names** — tools return names as `DATABASE.OWNER.TABLE` (for example `MACHBASEDB.SYS.EXAMPLE`). An unqualified name resolves in the connected account's schema, so a table owned by someone else is not found even when access was granted. When an unqualified name comes in, the tool fills the owner in just before execution (if the same name exists under several owners it does not guess — it asks which one).
 
-**Where output is stored** — `.tql`, `.dsh`, and report files are written **under the account folder**. Calling with `filename="GOLD/chart.tql"` stores it at `{user}/GOLD/chart.tql`, and dashboard/report links and timer paths follow the same rule. Separate folders keep two accounts from overwriting each other's output (the files themselves stay readable by other accounts).
+**Where output is stored** — `.tql`, `.dsh`, and report files are written **under the account folder**. Calling with `filename="GOLD/chart.tql"` stores it at `{user}/GOLD/chart.tql`, and dashboard/report links follow the same rule. Separate folders keep two accounts from overwriting each other's output (the files themselves stay readable by other accounts).
+
+**Available tools** — each question flow gives the model a fixed set of tools. A tool that is not in the list does not run even if the model calls it by name.
+
+| Flow | Tools |
+| :--- | :--- |
+| Data query | `list_tables`, `list_table_tags`, `describe_table`, `execute_sql_query`, `compile_tql_from_spec`, `forecast_table` |
+| Basic analysis | `list_tables`, `list_table_tags`, `describe_table`, `execute_sql_query`, `create_dashboard_with_charts`, `preview_dashboard`, `forecast_table`, `list_available_documents`, `get_full_document_content` |
+| Advanced analysis | Basic analysis tools + `compile_tql_from_spec`, `create_folder` |
+| Report | `save_html_report` |
+| Document search | `search_documents`, `list_available_documents`, `get_full_document_content`, `get_document_sections`, `extract_code_blocks`, `list_tables`, `describe_table`, `list_table_tags`, `compile_tql_from_spec` |
+| System info | `get_version`, `debug_mcp_status`, `execute_sql_query` |
+| General | Every tool except the three delete tools (`remove_chart_from_dashboard`, `delete_dashboard`, `delete_file`) |
+
+The three delete tools are not in any flow; delete dashboards and files in the Neo web console. The dashboard edit tools (`get_dashboard`, `add_chart_to_dashboard`, `update_chart_in_dashboard`, `update_dashboard_time_range`) are only in the general flow, so they are not used for edit requests that are classified into an analysis flow (such as "add a chart").
 
 ## list_tables()
 
@@ -73,7 +87,7 @@ list_table_tags(table_name="EXAMPLE")
 Get the table type (TAG / LOG) and column structure (name, type, role such as PRIMARY KEY / BASETIME / SUMMARIZED), plus whether ROLLUP tables exist. The agentic loop calls this before generating TQL/SQL so it knows the real column names. Includes an access check, and when given a qualified name it reads the companion objects (tag metadata, stat view) with the same prefix.
 
 - `table_name` *string* required, table name to describe
-- `profile` *boolean* for TAG tables, also return the tag list, per-tag statistics (count / avg / min / max), and the data time range in milliseconds. Useful when building dashboards. Default: `false`
+- `profile` *boolean* for TAG tables, also return the tag list, per-tag statistics (count / avg / min / max), and the data time range in milliseconds. Useful when building dashboards. The time range also shows readable times in the user's time zone. Default: `false`
 
 ### Example: Describe a Table
 
@@ -99,12 +113,18 @@ Execute an SQL query directly on Machbase Neo.
 - `sql_query` *string* required, SQL query to execute
 - `format` *string* output format: `csv` (default) or `json`
 - `timeformat` *string* time format: `default`, `ms`, `us`, `ns`
-- `timezone` *string* timezone (for example `UTC`, `Asia/Seoul`)
+- `timezone` *string* timezone (for example `UTC`, `Asia/Seoul`). Pass only when the user asks for a specific zone; when omitted, the user's browser time zone is used
 - `limit` *integer* maximum rows to return. Default: `500`
 
 > Note: `UPDATE`, `DELETE`, and `DROP` statements are blocked for safety. When SQL execution fails, the tool returns a parsed error message.
 >
-> The query runs as the logged-in account, and Machbase refuses tables it may not read. An unqualified name after `FROM`/`JOIN` gets its owner filled in just before execution (for example `FROM EXAMPLE` becomes `FROM MACHBASEDB.SYS.EXAMPLE`).
+> The query runs as the API token's account, and Machbase refuses tables it may not read. An unqualified name after `FROM`/`JOIN` gets its owner filled in just before execution (for example `FROM EXAMPLE` becomes `FROM MACHBASEDB.SYS.EXAMPLE`).
+>
+> Times in results are shown in readable form (`Default`) in the user's time zone. For a pure range query (`MIN(TIME)`, `MAX(TIME)`) with `timeformat="ms"`, the user-time-zone time is written next to each number.
+>
+> When a ROLLUP query fails (`ERR-2264` for a table without a ROLLUP table, `ERR-2816` for an aggregate that ROLLUP cannot compute), the tool suggests the equivalent `DATE_TRUNC` expression for the same unit.
+>
+> Local models (Ollama) can run this tool at most 8 times per question.
 
 ### Example: Tag Statistics
 
@@ -137,50 +157,16 @@ MIN(TIME),MAX(TIME)
 
 *Syntax*: `execute_tql_script( tql_content )`
 
-Execute a TQL (Transforming Query Language) script on Machbase Neo. It returns chart HTML or CSV data depending on the SINK function used in the script. Output longer than 5000 characters is truncated.
+An **internal-only** tool that executes TQL scripts. It is not exposed to the model, and it does not run even if the model calls it by name. `compile_tql_from_spec` uses it internally to verify the TQL it compiles.
 
-- `tql_content` *string* required, TQL script content
-
-### Example: Execute TQL with CSV Output
-
-```text
-execute_tql_script(tql_content="SQL(`SELECT NAME, COUNT(*) FROM EXAMPLE GROUP BY NAME`)\nCSV()")
-```
-
-```csv
-temperature,15230
-humidity,15230
-pressure,15230
-```
-
-### Example: Execute TQL with Chart Output
-
-```js
-SQL(`SELECT TIME, VALUE FROM EXAMPLE WHERE NAME = 'temperature' GROUP BY TIME, VALUE ORDER BY TIME`)
-CHART(
-    size("600px", "340px"),
-    chartOption({
-        xAxis: { type: "time" },
-        yAxis: {},
-        series: [{
-            type: "line",
-            data: column(0).map(function(t, idx){ return [t, column(1)[idx]]; })
-        }]
-    }),
-    tz("Asia/Seoul")
-)
-```
-
-The tool returns the rendered chart as an HTML fragment.
+- TQL pasted into the chat is not executed. Run it in the TQL editor of the Neo web console.
+- Pasted SQL is executed with `execute_sql_query`.
 
 ## save_tql_file()
 
 *Syntax*: `save_tql_file( filename, tql_content )`
 
-Save a TQL or SQL script file to Machbase Neo. TQL files are validated by execution before saving.
-
-- `filename` *string* required, file path (for example `GOLD/chart.tql`)
-- `tql_content` *string* required, TQL script content
+An **internal-only** tool that saves TQL files. It is not exposed to the model, and it does not run even if the model calls it by name. `compile_tql_from_spec` and `forecast_table` use it internally when they save files.
 
 Before saving, the tool:
 
@@ -188,38 +174,61 @@ Before saving, the tool:
 2. If the query returns 0 rows, snaps the time range to the table's actual MIN/MAX(TIME) boundaries and retries.
 3. Creates parent folders automatically when needed.
 
-### Example: Save a Chart TQL
-
-```text
-save_tql_file(
-    filename="GOLD/avg_trend.tql",
-    tql_content="SQL(`SELECT ...`)\nCHART(...)"
-)
-```
-
-```text
-File saved successfully: GOLD/avg_trend.tql
-```
-
-If validation fails:
-
-```text
-TQL validation failed (not saved): MACH-ERR 2044 ...
-```
-
 ## compile_tql_from_spec()
 
 *Syntax*: `compile_tql_from_spec( spec [, filename] )`
 
-Compile execution-verified TQL from an analysis intent (IR JSON) instead of hand-writing raw TQL. The tool auto-injects the real column names and ROLLUP availability from the database, validates tag names, corrects the time range to the actual data boundaries, and returns TQL that is guaranteed to run. This is the preferred way to generate chart TQL.
+Compile execution-verified TQL from an analysis intent (IR JSON) instead of hand-writing raw TQL. The tool auto-injects the real column names and ROLLUP availability from the database, validates tag names, corrects the time range to the actual data boundaries, and returns TQL that is guaranteed to run. This is the only way the model creates and saves TQL. Special charts that the IR cannot express (heatmap, FFT, 3D, and so on) are not supported.
 
 - `spec` *object* required, analysis intent. Key fields:
   - `kind` — `metrics` (single tag, one or more aggregates), `tags` (multi-tag comparison), `ohlc` (candlestick / price), or `geomap` (coordinates / map)
   - `table`, `tag` / `tags`, `timeRange: { start, end }`
   - `rollup` — bucket unit (`sec`, `min`, `hour`, `day`, `week`, `month`) or `null` for raw
+  - `rollupN` *optional* — bucket multiple. For example, a 5-minute average is `rollup: "min"`, `rollupN: 5`. Values such as `"5min"` or `"10s"` are split automatically
   - `metrics` — for `kind=metrics`, e.g. `[{ "agg": "avg", "label": "..." }]` (agg: avg / max / min / sum / count / sumsq / raw)
   - `output` *optional* — `{ chartType: "line" | "bar", title, subtitle }`
 - `filename` *string* optional, save path `"TABLE/name.tql"` (English only). If provided, the TQL is saved for dashboard use (reference it from `charts` via `tql_path`). If omitted, the verified TQL text is returned in the answer.
+
+### Time Range and Bucket Unit
+
+The chart time range and bucket unit depend on whether the user's question names a time range and a unit. The time range takes priority over the unit.
+
+| Question | Example | Result |
+| :--- | :--- | :--- |
+| Unit only | "BITCOIN 1-minute average" | Keeps the unit and trims the range to the length that fits the unit, ending at the last data timestamp |
+| Range and unit | "1-minute average for the last 6 months" | Keeps the range and raises the unit if it is too fine for the range |
+| Range only | "Trend for the last week" | Picks the unit automatically for the range |
+| Neither | "BITCOIN trend" | Full range, automatic unit |
+
+- A unit in the question counts when a number and a bucket expression appear together, such as "1분 평균" (1-minute average), "5분 단위" (5-minute unit), "10초 간격" (10-second interval), "1시간마다" (every hour), "5분봉" (5-minute candles), "시간별" (hourly), or "일별" (daily).
+- Range each unit can draw: second 1 hour, minute 48 hours, hour 30 days, day and week under 1 year. A multiple extends it by that factor (240 hours for 5 minutes).
+- The range is trimmed from the end of the data, so tables that stopped receiving data do not produce empty charts.
+- Candlestick charts (`ohlc`) raise the unit only when the question has both a range and a unit. Tag comparison (`tags`) only applies the range trim when the question has a unit only.
+- Multiples: tables with ROLLUP support multiples for every unit. Tables without ROLLUP and candlestick charts use `DATE_TRUNC`, which allows multiples up to one day (second up to 86400, minute up to 1440, hour up to 24; day, week, and month only 1).
+- When the unit or range is changed, a `[주의] …` notice is added to the tool result, and the chart title shows the unit actually applied. If a local model (Ollama) leaves the changed value out of its answer, one `※ 적용 기준:` ("applied basis") line is appended to the answer.
+- The chart time axis is drawn in the user's (browser) time zone.
+
+### Time Range in the Question
+
+When the question names a time range, the range read from the question is used instead of the value the model supplied. Times are server local time, and weeks start on Monday.
+
+| Kind | Examples | Meaning |
+| :--- | :--- | :--- |
+| Length from now | "최근 6개월" (last 6 months), "지난 3일" (last 3 days), "last 2 weeks" | That length counted back from now |
+| Date or calendar | "오늘" (today), "어제" (yesterday), "그제" (day before yesterday), "3일 전" (3 days ago) | That one day (today runs until now) |
+| Date or calendar | "이번 주" (this week), "지난주" (last week), "이번 달" (this month), "지난달" (last month) | That week (Monday to Sunday) or month (this week and this month run until now) |
+| Date or calendar | "올해" (this year), "작년" (last year), "재작년" (two years ago), "2025년" | That whole year (this year runs until now) |
+| Date or calendar | "2025년 3월", "2025-03", "작년 3월", "3월" (March) | That month. Without a year it means this year, or last year if that month has not come yet |
+| Date or calendar | "2025년 3월 5일", "3월 5일", "2025-03-05" | That one day |
+| Date or calendar | "3월부터 5월까지" (March to May), "어제~오늘", "2025-01-01 ~ 2025-03-01" | From the start of the first expression to the end of the second. With no end, as in "3월부터" (since March), until now |
+| English | "yesterday", "last week", "this month", "March 2025", "in 2025" | Same rules as above |
+
+When there is no data in that range, the handling depends on the kind.
+
+- Length from now: the range is moved to end at the last data timestamp with the same length, and a `[주의] …` notice is added. This keeps charts visible for tables that stopped receiving data.
+- Date or calendar: the range is not moved. If the table has no data in that range at all, no chart is made and the tool reports "기간에 데이터 없음" (no data in the range) with the table's data range. When saving, if the chart's data is 0 rows, it is not saved and the same notice is returned.
+
+The same interpretation is used for the time range hint of analysis and report requests. For example, "2025년 BITCOIN 리포트" (BITCOIN report for 2025) produces a report for 2025.
 
 ### Example: Compile and Save a Chart
 
@@ -311,6 +320,8 @@ Dashboard created: sys/GOLD/Gold_Analysis_20260910_143022.dsh (3 charts)
 
 *Syntax*: `add_chart_to_dashboard( filename, chart_title, chart_type [, table, tag, column, tql_path] )`
 
+> Available only in the general flow.
+
 Add a chart panel to an existing dashboard. The tool lays out the panel size, position, and color automatically.
 
 - `filename` *string* required, dashboard filename
@@ -348,6 +359,8 @@ add_chart_to_dashboard(
 
 *Syntax*: `remove_chart_from_dashboard( filename [, panel_id, panel_title] )`
 
+> Not open to any question flow, so the model does not use it. Delete in the Neo web console.
+
 Remove a chart panel from a dashboard by panel UUID or title.
 
 - `filename` *string* required, dashboard filename
@@ -357,6 +370,8 @@ Remove a chart panel from a dashboard by panel UUID or title.
 ## update_chart_in_dashboard()
 
 *Syntax*: `update_chart_in_dashboard( filename [, panel_id, panel_title, new_title] )`
+
+> Available only in the general flow.
 
 Update the title of an existing chart panel in a dashboard. Target the panel by UUID or title.
 
@@ -369,6 +384,8 @@ Update the title of an existing chart panel in a dashboard. Target the panel by 
 
 *Syntax*: `get_dashboard( filename )`
 
+> Available only in the general flow.
+
 Get the full configuration of a dashboard as JSON.
 
 - `filename` *string* required, dashboard filename
@@ -377,6 +394,8 @@ Get the full configuration of a dashboard as JSON.
 
 *Syntax*: `delete_dashboard( filename )`
 
+> Not open to any question flow, so the model does not use it. Delete in the Neo web console.
+
 Delete a dashboard file from Machbase Neo.
 
 - `filename` *string* required, dashboard filename to delete
@@ -384,6 +403,8 @@ Delete a dashboard file from Machbase Neo.
 ## update_dashboard_time_range()
 
 *Syntax*: `update_dashboard_time_range( filename [, time_start, time_end, refresh] )`
+
+> Available only in the general flow.
 
 Update the time range of a dashboard.
 
@@ -402,9 +423,11 @@ Get a dashboard preview and a direct Neo Web UI link.
 
 ## save_html_report()
 
-*Syntax*: `save_html_report( table [, template_id, tag_name, analysis, recommendations, rollup_unit, time_start, time_end, tag_count, data_count, time_range] )`
+*Syntax*: `save_html_report( table [, template_id, tag_name, analysis, recommendations, rollup_unit, time_start, time_end, timezone, tag_count, data_count, time_range] )`
 
 Generate an HTML analysis report with charts and deep analysis. The tool internally performs data retrieval, FFT/statistical calculations, chart generation, and HTML file creation.
+
+Trend aggregation in the finance (`R-1`), vibration (`R-2`), and driving (`R-3`) templates uses `ROLLUP` when the table has a ROLLUP table, and otherwise `DATE_TRUNC` with the same unit. Times in the report (period, statistics, chart labels, generation time) are shown in the user's time zone.
 
 - `table` *string* required, table name (for example `GOLD`)
 - `template_id` *string* report template ID. If omitted, a built-in template is auto-detected from the data
@@ -414,6 +437,7 @@ Generate an HTML analysis report with charts and deep analysis. The tool interna
 - `rollup_unit` *string* one of `sec`, `min`, `hour`, `day`, `week`, `month`
 - `time_start` *string* analysis start (epoch ms). Pass only when the user gives an explicit period
 - `time_end` *string* analysis end (epoch ms), paired with `time_start`
+- `timezone` *string* time zone for displayed times (IANA name, e.g. `UTC`). Pass only when the user asks for a specific zone; when omitted, the user's browser time zone is used
 - `tag_count` / `data_count` / `time_range` *string* optional descriptive metadata
 
 ### Report Templates
@@ -457,120 +481,24 @@ save_html_report(
 Report saved: sys/GOLD/GOLD_financial_report.html
 ```
 
-## list_timers()
+## Timer Requests
 
-*Syntax*: `list_timers()`
+LLM Chat does not register, start, stop, delete, or list timers (schedulers).
 
-List all timers or schedulers registered in Machbase Neo. It returns the name, state (`RUNNING` / `STOP`), schedule, and TQL path for each timer.
+Timer-related questions are answered from the manual. They include:
 
-### Example: List Timers
+- Questions that contain "타이머", "timer", "cron", "스케줄러", or "scheduler"
+- Questions that contain "스케줄" or "schedule" and ask for an action such as create, add, register, start, stop, delete, or list
 
-```text
-list_timers()
-```
+Based on the Neo manual, the answer explains:
 
-```json
-[
-  {
-    "name": "SENSOR_DATA",
-    "state": "RUNNING",
-    "schedule": "@every 10s",
-    "path": "SENSOR_DATA/SENSOR_DATA.tql"
-  }
-]
-```
+- How to register, start, stop, and delete timers from the Timer menu in the web console
+- Shell commands: `timer add <name> <timer_spec> <tql-path>;`, `timer list;`, `timer start|stop <name>;`, `timer del <name>;`
+- Schedule expressions (`@every 10s`, cron format, etc.) and TQL templates for timers
 
-## add_timer()
+Example questions: "Make a timer that collects sensor data every 10 seconds", "Show the timer list", "Turn off the SENSOR_DATA timer"
 
-*Syntax*: `add_timer( name, schedule, path [, auto_start] )`
-
-Create a new timer or scheduler that runs a TQL script on a schedule.
-
-- `name` *string* required, timer name (unique identifier)
-- `schedule` *string* required, execution schedule
-- `path` *string* required, path of the TQL script to run. Normalised to the account folder with the same rule as `save_tql_file`
-- `auto_start` *boolean* automatically start after server restart. Default: `false`
-
-Schedule format examples:
-
-| Expression | Description |
-| :--- | :--- |
-| `@every 10s` | Every 10 seconds |
-| `@every 1h30m` | Every 1 hour 30 minutes |
-| `@daily` | Once a day at midnight |
-| `0 30 * * * *` | Every hour at 30 minutes |
-
-> Note: Creating a timer does not start it automatically. You must call `start_timer` separately.
-
-### Example: Create and Start a Timer
-
-Recommended workflow:
-
-1. Create the target TAG table
-
-```sql
-CREATE TAG TABLE IF NOT EXISTS SENSOR_DATA (
-    name VARCHAR(80) PRIMARY KEY,
-    time DATETIME BASETIME,
-    value DOUBLE SUMMARIZED
-) WITH ROLLUP;
-```
-
-2. Create the TQL script with `save_tql_file`
-3. Register the timer
-
-```text
-add_timer(name="SENSOR_DATA", schedule="@every 10s", path="SENSOR_DATA/SENSOR_DATA.tql")
-```
-
-```text
-Timer 'SENSOR_DATA' created successfully. (schedule: @every 10s, path: SENSOR_DATA/SENSOR_DATA.tql)
-NOTE: The timer is NOT running yet. Call start_timer with name='SENSOR_DATA' to begin execution.
-```
-
-4. Start the timer
-
-```text
-start_timer(name="SENSOR_DATA")
-```
-
-```text
-Timer 'SENSOR_DATA' started.
-```
-
-## start_timer()
-
-*Syntax*: `start_timer( name )`
-
-Start an existing timer. If the timer is already running, it returns a corresponding message.
-
-- `name` *string* required, timer name to start
-
-## stop_timer()
-
-*Syntax*: `stop_timer( name )`
-
-Stop a running timer.
-
-- `name` *string* required, timer name to stop
-
-## delete_timer()
-
-*Syntax*: `delete_timer( name )`
-
-Delete a timer from Machbase Neo. If the timer is still running, it is automatically stopped before deletion.
-
-- `name` *string* required, timer name to delete
-
-To completely clean up a timer and its related resources:
-
-```text
-stop_timer(name="SENSOR_DATA")
-delete_timer(name="SENSOR_DATA")
-delete_file(filename="SENSOR_DATA/SENSOR_DATA.tql")
-delete_file(filename="SENSOR_DATA/")
-execute_sql_query(sql_query="DROP TABLE SENSOR_DATA CASCADE")
-```
+> The TQL in an answer is an example based on the manual templates and has not been executed for verification. Adjust the table and tag names to your data, check it in Neo's TQL editor, then register it with a timer.
 
 ## create_folder()
 
@@ -604,6 +532,8 @@ Files in GOLD:
 ## delete_file()
 
 *Syntax*: `delete_file( filename )`
+
+> Not open to any question flow, so the model does not use it. Delete in the Neo web console.
 
 Delete a file or empty folder from the Machbase Neo file system.
 
@@ -716,7 +646,7 @@ debug_mcp_status()
 
 ```json
 {
-  "tools_count": 32,
+  "tools_count": 27,
   "tools": ["list_tables", "list_table_tags", "describe_table", "..."],
   "runtime": "JSH",
   "machbase": "connected"

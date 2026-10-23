@@ -1,94 +1,17 @@
-// TIR (TQL Intermediate Representation) — schema + validator.
-//
-// 뉴로-심볼릭 분업의 "심볼릭 게이트키퍼":
-//   신경망(LLM)은 분석 의도를 TIR(제약된 JSON)로만 emit하고,
-//   compile.js가 그걸 결정론적으로 보장된 TQL로 번역한다.
-//   이 파일은 "구조적으로 유효한 의도란 무엇인가"를 소유한다.
-//
-// IR은 직교하는 두 축:
-//   - kind        : 데이터 의도(metrics=단일태그 집계/원시, tags=여러태그) → SQL + 기본 SCRIPT
-//   - output.sink : 출력 의도(chart / [later] csv / insert / json ...)     → 최종 싱크
-// 현재 구현된 sink는 compile.js의 SINKS 레지스트리가 결정한다(미지원이면 compile이 거절).
+// TIR (TQL Intermediate Representation) 스키마·검증기 — LLM이 낸 분석 의도(JSON)의 구조적 유효성 판정
+// · kind        : 데이터 의도(metrics·tags·ohlc·geomap·forecast) → SQL + 기본 SCRIPT
+// · output.sink : 출력 의도(chart 등) → 최종 싱크
 
 var ROLLUP_UNITS = ['sec', 'min', 'hour', 'day', 'week', 'month']; // 'ms' 불가
 var ROLLUP_AGGS = ['avg', 'sum', 'min', 'max', 'count', 'sumsq'];   // ROLLUP 지원 집계 (STDDEV 미지원)
 var CHART_TYPES = ['line', 'bar'];        // kind=metrics/tags
 var OHLC_CHART = 'candlestick';           // kind=ohlc 전용 (line/bar와 배타적)
 
-// 도구 파라미터 와이어링/문서용 JSON-schema 서술 (LLM에게 보여줄 형태)
-var IR_SCHEMA = {
-  type: 'object',
-  required: ['kind', 'table', 'timeRange'],
-  properties: {
-    // ── 데이터 의도 ──
-    kind: {
-      type: 'string', enum: ['metrics', 'tags', 'ohlc', 'forecast'],
-      description: 'metrics=단일 태그의 집계/원시 시리즈(밴드·ROLLUP통계), tags=여러 태그 비교, ohlc=OHLC 캔들차트(open/high/low/close 태그가 있는 주가/시세 데이터), forecast=단일 태그의 이후 데이터 예측(선형회귀+신뢰밴드)',
-    },
-    table: { type: 'string', description: '테이블명' },
-    timeRange: {
-      type: 'object', required: ['start', 'end'],
-      properties: {
-        start: { type: 'string', description: "TO_DATE 문자열, 예 '2026-02-01 00:00:00'" },
-        end: { type: 'string', description: 'TO_DATE 문자열' },
-      },
-    },
-    tag: { type: 'string', description: 'kind=metrics 일 때 단일 태그명' },
-    rollup: {
-      type: ['string', 'null'], enum: ROLLUP_UNITS.concat([null]),
-      description: '집계 시간버킷 단위(sec/min/hour/day/week/month). 집계(avg/max/min 등)에 필요하지만 **생략 가능 — 생략 시 서버가 데이터 범위에 맞춰 자동 선택**. ROLLUP 테이블 유무는 신경 쓸 필요 없음(서버가 ROLLUP/DATE_TRUNC로 자동 처리). 원시값만 원하면 null + agg="raw".',
-    },
-    metrics: {
-      type: 'array', description: 'kind=metrics: 각 항목이 하나의 시리즈',
-      items: {
-        type: 'object',
-        properties: {
-          agg: { type: 'string', description: ROLLUP_AGGS.join('/') + ' (rollup 필요) 또는 raw (rollup=null)' },
-          label: { type: 'string', description: '시리즈/범례 이름' },
-        },
-      },
-    },
-    tags: { type: 'array', items: { type: 'string' }, description: 'kind=tags: 비교할 태그명들 (ROLLUP과 동시 불가)' },
-    ohlc: {
-      type: 'object',
-      description: 'kind=ohlc: 시가/고가/저가/종가 태그명 {open,high,low,close}. 보통 생략 가능 — 도구가 open/high/low/close 태그를 자동 인식. rollup=캔들 버킷 단위(기본 day).',
-      properties: {
-        open: { type: 'string' }, high: { type: 'string' }, low: { type: 'string' }, close: { type: 'string' },
-      },
-    },
-    horizon: {
-      type: ['integer', 'null'],
-      description: 'kind=forecast: 예측할 미래 버킷 개수. 생략 시 학습 길이의 25%(자동). 상한=학습 버킷 수.',
-    },
-    lookback: {
-      type: ['integer', 'null'],
-      description: 'kind=forecast: 최근 추세를 추정할 최근 버킷 수(local linear trend). 생략 시 학습의 33%(최소 10). 짧을수록 최근 변화에 민감, 길수록 완만.',
-    },
-    method: {
-      type: 'string', enum: ['auto', 'linear', 'quadratic', 'holtwinters'],
-      description: 'kind=forecast: 예측 방법. auto(기본, 데이터 보고 자동 선택) / linear(선형추세) / quadratic(2차 곡률) / holtwinters(계절성). 생략 시 auto.',
-    },
-
-    // ── 출력 의도 ──
-    output: {
-      type: 'object',
-      description: '출력처. 생략 시 chart.',
-      properties: {
-        sink: { type: 'string', description: 'chart (현재 지원). later: csv/insert/json' },
-        chartType: { type: 'string', enum: CHART_TYPES.concat([OHLC_CHART]), description: '기본 line (sink=chart). candlestick은 kind=ohlc 전용.' },
-        title: { type: 'string', description: '차트 제목(생략 시 자동)' },
-        subtitle: { type: 'string', description: '부제(단위 등). y축 이름 대신 여기에.' },
-        yWide: { type: 'boolean', description: '6자리 이상 큰 값이면 true → grid.left 확대' },
-      },
-    },
-  },
-};
-
 function push(list, msg) { list.push(msg); }
 
 // validate(spec) → { ok, errors:[string] }
-// 데이터 의도 + chart 옵션의 구조적 유효성만 본다. sink 구현 여부는 compile.js가 판정.
-// errors는 LLM에게 그대로 돌려줄 수 있는 actionable 메시지(JSON 수정은 TQL 재작성보다 훨씬 싸다).
+// · 데이터 의도 + chart 옵션의 구조적 유효성만 검사(sink 지원 여부는 compile.js 판정)
+// · errors는 LLM에 그대로 돌려주는 수정 지시문
 function validate(spec) {
   var errors = [];
   if (!spec || typeof spec !== 'object') {
@@ -107,6 +30,9 @@ function validate(spec) {
   }
   if (spec.rollup != null && ROLLUP_UNITS.indexOf(spec.rollup) < 0) {
     push(errors, 'rollup 단위는 ' + ROLLUP_UNITS.join(' / ') + ' 만 가능합니다(ms 불가). ROLLUP 없는 테이블이면 rollup=null(원시 조회).');
+  }
+  if (spec.rollupN != null && !(/^\d+$/.test(String(spec.rollupN)) && parseInt(spec.rollupN, 10) >= 1)) {
+    push(errors, 'rollupN(버킷 배수)은 1 이상의 정수입니다. 예: 5분 평균 = rollup:"min", rollupN:5.');
   }
 
   // 출력 의도(chart 옵션) — output은 선택, chartType만 검증 (kind=ohlc는 candlestick 전용)
@@ -171,8 +97,7 @@ function validate(spec) {
   } else if (spec.kind === 'forecast') {
     // 단일 태그 예측. 여러 태그는 도구(forecast_table)가 태그별로 분해해 각각 forecast로 호출.
     if (!spec.tag) push(errors, 'kind="forecast"는 tag(예측할 단일 태그명)가 필수입니다. 여러 태그를 예측하려면 도구가 태그별로 나눠 처리합니다.');
-    // method는 별칭("계절성","선형","2차","hw")·순위("2위","rank2")도 허용 — 도구(forecast_algo.fcNormMethod)가 정규화하고
-    // 해석 불가면 자동선택으로 폴백하므로 여기서 거절하지 않는다(과잉차단 방지).
+    // method는 검증 안 함 — 별칭·순위는 fcNormMethod가 정규화, 해석 불가면 자동선택 폴백(과잉차단 방지)
     if (spec.horizon != null) {
       var hz = parseInt(spec.horizon, 10);
       if (isNaN(hz) || hz < 1) push(errors, 'kind="forecast"의 horizon은 1 이상의 정수(예측할 미래 버킷 수)여야 합니다. 생략하면 학습 길이의 10%가 자동 적용됩니다.');
@@ -182,4 +107,4 @@ function validate(spec) {
   return { ok: errors.length === 0, errors: errors };
 }
 
-module.exports = { validate, IR_SCHEMA, ROLLUP_UNITS, ROLLUP_AGGS, CHART_TYPES, OHLC_CHART };
+module.exports = { validate };

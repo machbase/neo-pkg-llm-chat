@@ -1,26 +1,17 @@
-// forecast_table — 특정 테이블 태그의 "이후 데이터" 예측 도구. **산출물은 HTML 리포트.**
-//
-// 흐름: 태그별 버킷 이력 조회 → forecast_algo 엔진이 후보 모델을 **전부 적합·홀드아웃 검증**(allModels)
-//       → 태그×모델 전체 예측 곡선을 담은 **HTML 리포트** 생성/저장 → 채팅엔 요약표 + 리포트 링크.
-//
-// 왜 리포트인가: 채팅 마크다운 표는 태그 5개 × 모델 10개를 못 담는다(눌리고, 모델이 자기 말로 다시 쓴다).
-//   리포트는 **태그 드롭다운 × 모델 드롭다운**으로 계산해둔 걸 전부 열람시킨다 — 리더보드에서 점수만 매기고
-//   버리는 나머지 모델들의 예측 곡선까지 볼 수 있다.
-//
-// filename을 주면 **추가로** 대시보드용 .tql도 저장한다(tql_path 참조 → 열 때마다 라이브 재계산).
-// 태그 미지정(테이블만): 1개→자동 / 2~5개→전부 / 5개 초과→**데이터 많은 순 상위 5개 자동 + 안내**(되묻지 않음).
-//
-// ⚠️ 이 빌드 SCRIPT의 Time 객체엔 .UnixNano()/.Unix()가 없음 →
-//    .tql SCRIPT는 시각 문자열을 Date.UTC로 파싱(compile.js). 워커는 timeformat='ms'라 무관.
+// forecast_table — 테이블 태그의 이후 데이터 예측 도구, 산출물은 HTML 리포트
+// · 태그별 버킷 이력 → 후보 모델 전부 적합·홀드아웃 검증(allModels) → 태그×모델 예측 곡선 리포트 저장 → 채팅엔 요약표 + 링크
+// · filename 있으면 대시보드용 .tql도 추가 저장(열 때마다 라이브 재계산)
+// · 태그 미지정: 1개 자동 / 2~5개 전부 / 5개 초과면 데이터 많은 순 상위 5개 + 안내
 
 var { compileSafe, buildSource, forecastUnit } = require('./tir/compile');
-var { resolveTableRef } = require('./table_access');
+var { resolveTableRef, parseTableRef, statViewName } = require('./table_access');
 var { argStr } = require('./registry');
+var { zoneName } = require('../machbase/timezone');
 var tqlSpec = require('./tql_spec');
 var { fcRun } = require('./forecast_algo');
 var fcReport = require('./forecast_report');
 
-var CAP = 5;             // 동시 예측 상한(초과 시 자동실행 금지 → 되묻기)
+var CAP = 5;             // 동시 예측 상한(지정 초과는 거절, 미지정 초과는 상위 자동 선정)
 var MIN_BUCKETS = 10;    // 최소 학습 버킷(미만이면 거절/데이터 부족)
 var R2_STRONG = 0.7, R2_WEAK = 0.3;
 
@@ -56,18 +47,15 @@ function fmtN(x) {
   if (a === 0) return '0';
   return x.toExponential(2);
 }
-// ── 지표 2종: 둘 다 필요하지만 **재는 대상이 다르다**. 라벨만 보고 헷갈리지 않게 매번 한 줄 설명을 붙인다.
-//    (R²를 "신뢰도"라고만 적었더니 모델이 "검증 정확도 0.78 — 좋은 수준"이라 답한 적 있음. 같은 데이터 MAPE는 27.6%.)
+// 지표 범례 — R²(과거 적합)와 MAPE(예측 정확도) 혼동 방지
 var METRIC_LEGEND =
   '**지표 읽는 법** — `R²`: 모델이 **과거** 데이터를 얼마나 잘 설명하는지 (1에 가까울수록 잘 맞음, 미래 정확도 아님) · ' +
   '`MAPE`: 홀드아웃 구간에서 **실제로 빗나간 평균 오차율** (낮을수록 정확, **이게 진짜 예측 정확도**)';
-// ⚠️는 붙이지 않는다 — 표의 ⚠️는 "R²↑인데 MAPE↑(추세 지속 보장 없음)" **한 가지 뜻**으로 고정해야 각주가 성립한다.
-// (R²가 낮은 건 그 자체로 경고가 아니다: 보합 데이터는 R² 0이어도 예측이 정확하다.)
+// R² 강도 라벨 — ⚠️ 없음(표의 ⚠️는 "R²↑인데 MAPE↑" 한 뜻 전용, 낮은 R²는 경고 아님)
 function r2label(r2) { return r2 >= R2_STRONG ? '강함' : (r2 >= R2_WEAK ? '보통' : '약함'); }
-// 이 모델들은 엔진이 R²를 계산하지 않고 0을 반환(fcSES/fcHolt/fcAR) → "0.00 (약함)"으로 표시하면
-// 과거 적합이 나쁘다는 오독을 유발한다 → 표시는 '—'.
+// R² 미계산 모델(엔진이 0 반환) — '—'로 표시해 "0.00 (약함)" 오독 방지
 var NO_R2 = { ses: 1, holt: 1, ar: 1 };
-// 모델 한 줄 설명(리포트 리더보드용). 모델명은 **영어 그대로** — 그대로 복사해 오버라이드에 쓸 수 있게.
+// 모델 한 줄 설명(리포트 리더보드용)
 function methodDesc(m) {
   if (m === 'ses') return '무변화 기준선 — 단순지수평활(이걸 못 이기면 예측 무의미)';
   if (m === 'linear') return '최소제곱 추세선(최근 구간)';
@@ -82,7 +70,7 @@ function methodDesc(m) {
   return m;
 }
 
-// 리포트 링크 블록. 예측의 **본체는 리포트**다(태그 × 모델 전부 열람) — 채팅은 요약과 진입점 역할만.
+// 리포트 링크 블록 — 채팅 요약표 뒤의 리포트 진입점
 function REPORT_BLOCK(rep, nTags) {
   return '\n\n---\n\n### 📄 예측 리포트 생성됨\n' +
     '**[리포트 열기](' + rep.url + ')** — `' + rep.filename + '` (' + rep.sizeKB + 'KB)\n\n' +
@@ -91,20 +79,25 @@ function REPORT_BLOCK(rep, nTags) {
     '\n[지시·답변에 옮기지 말 것] 위 요약표와 리포트 링크를 그대로 전달하고, 링크를 지어내지 마세요.';
 }
 
-// 태그가 CAP 초과 + 미지정 → **되묻지 않고** 데이터 많은 순 상위 CAP개를 도구가 직접 골라 진행한다.
-// 되묻기는 사용자가 답할 수 없는 질문이다(태그 500개면 사용자도 뭐가 있는지 모른다 — 앞 20개 나열은 선택 근거가 못 됨).
-// 모델 선택과 같은 철학: 합리적 기본값으로 즉시 결과 + 무엇을 골랐는지 명시 + 한마디로 정정("X, Y 예측해줘").
-// 데이터 많은 순 = 배울 재료가 많은 태그 = 예측 가치 있는 태그.
+// 태그 미지정 + CAP 초과 → 데이터 많은 순 상위 CAP개 선정(되묻지 않음)
+// · 건수는 통계 뷰 ROW_COUNT(전체 스캔 회피), 실패 시 GROUP BY 집계
 function pickTopTags(mc, spec, cb) {
-  var sql = 'SELECT ' + spec.nameCol + ', COUNT(*) FROM ' + String(spec.table).toUpperCase() +
+  var statSQL = 'SELECT NAME, ROW_COUNT FROM ' + statViewName(parseTableRef(spec.table)) +
+    ' ORDER BY ROW_COUNT DESC LIMIT ' + CAP;
+  var groupSQL = 'SELECT ' + spec.nameCol + ', COUNT(*) FROM ' + String(spec.table).toUpperCase() +
     ' GROUP BY ' + spec.nameCol + ' ORDER BY COUNT(*) DESC LIMIT ' + CAP;
-  mc.querySQL(sql, '', '', '', function (err, res) {
-    if (err) return cb([]);
+  function names(err, res) {
+    if (err) return [];
     try {
       var p = JSON.parse(res);
       var rows = (p && p.success !== false && p.data && p.data.rows) ? p.data.rows : [];
-      cb(rows.map(function (r) { return String(r[0]); }));
-    } catch (e) { cb([]); }
+      return rows.map(function (r) { return String(r[0]); });
+    } catch (e) { return []; }
+  }
+  mc.querySQL(statSQL, '', '', '', function (errS, resS) {
+    var top = names(errS, resS);
+    if (top.length) return cb(top);
+    mc.querySQL(groupSQL, '', '', '', function (err, res) { cb(names(err, res)); });
   });
 }
 function tooMany(table, want) {
@@ -178,6 +171,7 @@ function register(registry, mc) {
     },
     fn: function (args, cb) {
       var spec = assemble(args);
+      spec._tz = zoneName(mc); // 차트 시간축 = 사용자 시간대
       var filename = argStr(args, 'filename', '') || (spec.filename ? String(spec.filename) : '');
       delete spec.filename;
       if (!spec.table) {
@@ -189,10 +183,10 @@ function register(registry, mc) {
         else if (parts.length === 1) { spec.tag = parts[0]; }
       }
 
-      // 이름을 소유자·database 까지 해석해 둔다 — 태그 목록·시간범위 조회가 이 값을 쓴다.
-      // 접두 없이 두면 남의 소유 테이블에서 태그가 조용히 비어 예측이 통째로 건너뛰어진다.
+      // 테이블 이름 정규화(DB.유저.테이블) — 태그 목록·시간범위 조회가 공용, 없음·모호는 오류 반환
       resolveTableRef(mc, spec.table, function (refErr, ref) {
-      if (!refErr && ref) spec.table = ref.qualified;
+      if (refErr) return cb(null, 'Error: ' + refErr.message);
+      spec.table = ref.qualified;
       tqlSpec.detectColumns(mc, spec.table, function (c) {
         spec.nameCol = c.n; spec.timeCol = c.t; spec.valueCol = c.v;
         tqlSpec.resolveTimeRange(mc, spec, function () {
@@ -227,13 +221,12 @@ function register(registry, mc) {
         if (s.rank != null && parseInt(s.rank, 10) >= 1) opts.rank = parseInt(s.rank, 10);
         if (s.horizon != null) opts.horizon = parseInt(s.horizon, 10);
         if (s.lookback != null) opts.lookback = parseInt(s.lookback, 10);
-        if (allModels) opts.allModels = true; // 후보 전 모델의 미래 곡선까지(리포트 드롭다운용, +~30ms/태그)
+        if (allModels) opts.allModels = true; // 후보 전 모델의 미래 곡선까지(리포트 드롭다운용)
         return fcRun(parsed.ts, parsed.ys, opts);
       }
 
-      // ── 전 태그 예측 → **HTML 리포트** (단일/다중 동일 경로) ──
-      // 채팅 마크다운은 태그 5개 × 모델 10개를 담지 못한다(눌리고, 모델이 자기 말로 다시 쓴다).
-      // → 계산은 전부 하고(allModels), **리포트에서 태그·모델 드롭다운으로 열람**시킨다. 채팅엔 요약표 + 링크만.
+      // ── 전 태그 예측 → HTML 리포트 (단일/다중 동일 경로) ──
+      // · 전 모델 계산(allModels) 후 리포트에서 태그·모델 드롭다운 열람, 채팅엔 요약표 + 링크만
       function runAll(base, tags) {
         var items = [], idx = 0;
         (function next() {
@@ -263,7 +256,7 @@ function register(registry, mc) {
           });
         })();
 
-        // CAP 초과 자동 선정 안내 — **무엇을 골랐는지 + 한마디 정정 경로**를 요약표 위에 명시(빈손 되묻기 대체).
+        // CAP 초과 자동 선정 안내 — 고른 태그 + 정정 방법을 요약표 위에 명시
         function topNote() {
           var tn = base._topNote;
           if (!tn) return '';
@@ -276,8 +269,7 @@ function register(registry, mc) {
           var okItems = [], i;
           for (i = 0; i < items.length; i++) if (items[i].row.ok) okItems.push(items[i]);
           var rows = items.map(function (it) { return it.row; });
-          // 전 태그 데이터 부족: 버킷 단위는 이미 구간에 맞춰 최소(sec까지)로 잡은 결과다 — rollup을 바꿔도 안 는다.
-          // 약한 모델이 rollup만 바꿔가며 재시도하는 루프를 막기 위해 지시를 명시(+agent의 부족 스트릭 차단이 결정론 백스톱).
+          // 전 태그 데이터 부족 — 버킷 단위가 이미 최소라 rollup 변경 무의미 → 재시도 금지 지시(재시도 루프 방지)
           if (!okItems.length) {
             return cb(null, topNote() + summarizeMulti(base.table, base.rollup, rows) +
               '\n\n이 테이블은 예측에 필요한 데이터가 부족합니다(학습 최소 10버킷). ' +
@@ -309,7 +301,7 @@ function register(registry, mc) {
             var head = topNote() + summarizeMulti(base.table, base.rollup, rows);
             saveTqlIfAsked(function (tqlNote) {
               if (rerr || !rep) {
-                // 리포트 실패해도 요약표는 반드시 준다(빈손 금지).
+                // 리포트 실패해도 요약표는 반환
                 return cb(null, head + '\n\n⚠️ 리포트 생성 실패: ' + (rerr ? rerr.message : '데이터 없음') + tqlNote);
               }
               cb(null, head + REPORT_BLOCK(rep, okItems.length) + tqlNote);
@@ -337,19 +329,18 @@ function queryHistory(mc, spec, cb) {
 
 function summarizeMulti(table, unit, rows) {
   var head = '**' + String(table).toUpperCase() + ' 태그별 예측 요약** (모델 자동 선택, ' + unit + ' 버킷 · 추세 = ' + unit + '당 변화량)\n\n';
-  // 셀 안에는 **숫자만** — 문장을 셀에 넣으면 열이 벌어져 헤더까지 줄바꿈돼 표가 깨진다.
-  // 경고는 ⚠️ 기호로만 표시하고, 그 뜻은 **표 아래 한 줄**로 설명한다. 헤더도 짧게(단위는 캡션으로).
+  // 셀엔 숫자만(문장은 열 폭 확장으로 표 깨짐), 경고는 ⚠️ 기호 + 표 아래 한 줄 설명
   var tbl = '| 태그 | 모델 | 추세 | 최근값 | R² | MAPE |\n|---|---|---|---|---|---|\n';
   var anyDiverge = false, anyNoR2 = false;
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i];
     if (!r.ok) { tbl += '| ' + r.tag + ' | — | — | — | — | ' + r.reason + ' |\n'; continue; }
     var mp = (r.mape >= 0) ? r.mape.toFixed(1) + '%' + (r.mape >= 20 ? ' ⚠️' : '') : '—';
-    // ⚠️는 **"과거는 잘 맞는데 미래는 빗나감"(R²↑ + MAPE↑)** 일 때만. R²가 낮아도 예측이 정확하면(보합) 경고 아님.
+    // ⚠️는 R²↑ + MAPE↑(과거는 맞는데 미래는 빗나감)일 때만
     var dv = (r.r2 >= R2_STRONG && r.mape >= 20) ? ' ⚠️' : '';
     if (dv) anyDiverge = true;
-    // 강/보통/약 라벨을 셀에 **직접** 박는다 — 라벨을 안 주면 모델이 "R² 0.78(약함)"처럼 제멋대로 붙인다(0.78은 강함).
-    // R² 미계산 모델(ses/holt/ar)은 '—' — 0.00으로 내면 "과거 적합이 최악"으로 오독된다.
+    // 강/보통/약 라벨 직접 표기 — 모델의 임의 라벨링 방지
+    // · R² 미계산 모델(ses/holt/ar)은 '—'
     var r2txt = r.r2na ? '—' : r.r2.toFixed(2) + ' (' + r2label(r.r2) + ')' + dv;
     if (r.r2na) anyNoR2 = true;
     tbl += '| ' + r.tag + ' | `' + r.method + '` | ' + r.arrow + ' ' + fmtN(r.slope) +
@@ -358,7 +349,6 @@ function summarizeMulti(table, unit, rows) {
   var foot = '\n' + METRIC_LEGEND;
   if (anyNoR2) foot += '\n\n`—` = 평활·자기회귀 계열 모델(ses/holt/ar)은 R²를 계산하지 않습니다.';
   if (anyDiverge) foot += '\n\n⚠️ = **과거는 잘 설명하지만(R²↑) 미래로 뻗으면 크게 빗나갑니다(MAPE↑)** — 추세가 계속된다는 보장이 없다는 뜻.';
-  // (인라인 차트 안내는 없다 — 차트는 리포트 안에 있고, 태그·모델 전환도 리포트 드롭다운으로 한다.)
   return head + tbl + foot;
 }
 

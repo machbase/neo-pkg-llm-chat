@@ -1,20 +1,8 @@
-// forecast_algo — 순수 ES5 예측 엔진. **워커(요약)와 .tql SCRIPT(라이브 차트)가 동일 코드로 실행**된다.
-//
-// 핵심 트릭: 런타임 함수들을 ES5로 작성하고 algoSource()가 그 소스(toString)를 돌려준다 →
-//   compile.js가 SCRIPT 블록에 그대로 구워넣어, 차트가 렌더될 때마다 워커와 **바이트 동일한 로직**으로
-//   회귀를 다시 돈다. 중복 구현/불일치가 구조적으로 불가능.
-//
-// 모델(전부 마지막 실측값에 앵커링 → 끊김 0):
-//   - linear      : 최근 L개 버킷 1차 회귀(추세선)
-//   - quadratic   : 최근 L개 버킷 2차 회귀(가속/감속 → 곡선)
-//   - holtwinters : 가법 삼중지수평활(추세+계절성 → 예측이 주기대로 출렁임)
-//   - auto        : 자기상관으로 주기 탐지 → 후보(linear/quadratic[/holtwinters]) 중 **홀드아웃 MAE 최소** 선택
-//
-// 모든 x는 "버킷 인덱스"(균등 간격 가정 — ROLLUP 버킷은 실시간 간격이 불균등해도 버킷 단위 예측엔 인덱스가 맞다).
-// 미래 시각은 lastT + h·step·DAY (step=평균 일 간격)으로 배치.
-//
-// ⚠️ 여기 함수는 SCRIPT에 통째로 구워지므로 **반드시 ES5**(var/function만, 화살표·const·let·템플릿 금지)이고
-//    모듈 스코프 변수에 의존하면 안 된다(서로의 이름 + Math + 인자만 참조). 새 함수 추가 시 RUNTIME 배열에도 등록.
+// forecast_algo — 순수 ES5 예측 엔진, 워커와 .tql SCRIPT(라이브 차트)가 동일 코드로 실행
+// · algoSource()가 런타임 함수 소스(toString) 반환 → compile.js가 SCRIPT에 구워 넣음
+// · 모든 x는 버킷 인덱스(균등 간격 가정), 미래 시각은 lastT + h·step·DAY(step=평균 일 간격)
+// · 예측은 전부 마지막 실측값에 앵커링
+// ⚠️ 런타임 함수는 반드시 ES5(var/function만, 화살표·const·let·템플릿 금지), 모듈 스코프 변수 참조 금지(서로의 이름 + Math + 인자만)
 
 // 선형방정식 Ax=b (가우스 소거, n×n)
 function fcSolve(A, b) {
@@ -103,7 +91,7 @@ function fcHW(ys, m, h, a, b, g) {
   return { fc: fc, fcTrend: fcT, fcSeason: fcS, sd: sd, r2: r2, slopePerStep: trend, period: m, name: 'holtwinters' };
 }
 
-// 자기상관 기반 주기 탐지. **선형 추세를 빼고**(차분 아님) ACF 피크 → 차분은 저주파를 눌러 장주기(예: 30)를 놓침.
+// 자기상관 기반 주기 탐지 — 선형 추세 제거 후 ACF 피크(차분은 장주기를 놓침)
 function fcPeriod(ys, minLag, maxLag) {
   var n = ys.length, i;
   if (n < 2 * minLag + 4) return 0;
@@ -122,7 +110,6 @@ function fcPeriod(ys, minLag, maxLag) {
   return (bestAcf >= 0.3) ? best : 0;
 }
 
-// 메인: ts(ms)/ys 배열 + opts → { method, period, points:[{t,v,lo,hi}], stats }
 // 일반 최소제곱(임의 설계행렬). X=행벡터 배열, y=관측. 정규방정식 + 가우스소거.
 function fcOLS(X, y) {
   var n = X.length, p = X[0].length, i, j, k;
@@ -136,9 +123,8 @@ function fcOLS(X, y) {
   }
   return fcSolve(A, b);
 }
-// 설계행렬 기반 모델의 공통 마무리: 앵커링(마지막 실측에서 이어짐) + 잔차sd + R².
-// nTrend = 앞쪽 몇 개 계수가 '추세 성분'인지(나머지는 계절/Fourier) → fcTrend/fcSeason 분리 반환.
-//   fcRun이 **추세에만 댐핑**을 걸고 계절 성분은 그대로 둔다(주기 출렁임 보존 → 계절 모델이 제 실력 냄).
+// 설계행렬 기반 모델의 공통 마무리: 앵커링 + 잔차sd + R²
+// · nTrend = 앞쪽 추세 성분 계수 개수(나머지는 계절/Fourier) → fcTrend/fcSeason 분리 반환(추세에만 댐핑용)
 function fcFromDesign(ys, rowFn, coef, h, name, period, nTrend) {
   var n = ys.length, i, q;
   function part(t, from, to) { var r = rowFn(t), s = 0; for (q = from; q < to && q < r.length; q++) s += coef[q] * r[q]; return s; }
@@ -163,7 +149,7 @@ function fcFromDesign(ys, rowFn, coef, h, name, period, nTrend) {
   };
 }
 
-// SES(단순지수평활) — 추세 없음 → 예측은 마지막값에서 평평. **"아무것도 안 변한다" 기준선**(이걸 못 이기면 예측 무의미).
+// SES(단순지수평활) — 마지막값에서 평평한 무변화 기준선
 function fcSES(ys, h, a) {
   var n = ys.length, level = ys[0], errs = [], i;
   for (i = 1; i < n; i++) { errs.push(ys[i] - level); level = a * ys[i] + (1 - a) * level; }
@@ -172,7 +158,7 @@ function fcSES(ys, h, a) {
   return { fc: fc, sd: fcRmse(errs), r2: 0, slopePerStep: 0, name: 'ses' };
 }
 
-// Holt(선형추세 지수평활) — level+trend를 지수가중으로 추정(OLS 회귀와 다른 추정 방식).
+// Holt(선형추세 지수평활) — level+trend 지수가중 추정
 function fcHolt(ys, h, a, b) {
   var n = ys.length, level = ys[0], trend = (n > 1 ? ys[1] - ys[0] : 0), errs = [], i;
   for (i = 1; i < n; i++) {
@@ -186,7 +172,7 @@ function fcHolt(ys, h, a, b) {
   return { fc: fc, sd: fcRmse(errs), r2: 0, slopePerStep: trend, name: 'holt' };
 }
 
-// Theta — OLS 드리프트의 **절반**을 SES 레벨에 얹는 고전 강자(M3 우승 계열의 단순화형).
+// Theta(단순화형) — 마지막값 + OLS 드리프트의 절반, 오차는 SES 기준
 function fcTheta(ys, h, a) {
   var n = ys.length, i, x = [];
   for (i = 0; i < n; i++) x.push(i);
@@ -252,8 +238,8 @@ function fcPeriod2(ys, p1, minLag, maxLag) {
   return (bestAcf >= 0.25) ? best : 0;
 }
 
-// 하모닉(Fourier) 회귀 — 추세 + 각 주기별 sin/cos 항. **다중 주기 동시 처리**(periods 배열).
-// HW와 달리 비사인형 계절 모양도 K개 하모닉으로 표현. n이 주기 대비 충분해야 함.
+// 하모닉(Fourier) 회귀 — 추세 + 주기별 sin/cos K항, 다중 주기 동시 처리
+// · n ≥ 2×주기인 주기만 사용
 function fcHarmonic(ys, periods, h, K) {
   var n = ys.length, i, j, k, ps = [];
   for (i = 0; i < periods.length; i++) { if (periods[i] >= 2 && n >= 2 * periods[i]) ps.push(periods[i]); }
@@ -273,8 +259,8 @@ function fcHarmonic(ys, periods, h, K) {
   return fcFromDesign(ys, rowFn, c, h, 'harmonic', ps[0], 2); // nTrend=2([1,t]), 나머지는 Fourier(계절)
 }
 
-// Prophet식 — 구간별 선형추세(변화점 basis) + Fourier 계절성. 추세가 중간에 꺾이는 데이터에 강함.
-// 외삽은 **마지막 구간의 기울기**를 이어감(변화점 basis (t-cp)+ 가 선형으로 계속 커지므로).
+// Prophet식 — 구간별 선형추세(변화점 basis) + Fourier 계절성
+// · 외삽은 마지막 구간의 기울기 유지
 function fcProphetLike(ys, period, h, nCP) {
   var n = ys.length, i, j, k;
   if (n < 30) return { fc: [], invalid: true, name: 'prophet' };
@@ -294,8 +280,8 @@ function fcProphetLike(ys, period, h, nCP) {
   return fcFromDesign(ys, rowFn, c, h, 'prophet', (K > 0 ? period : 0), 2 + cps.length);
 }
 
-// AR(p) + 차분(d) — ARIMA(p,d,0). 자기상관 구조를 잡음. (MA항은 반복추정이 필요해 제외 — 실용상 AR+차분으로 충분)
-// 밴드는 **원래 스케일 1-step 잔차**로 계산(차분 스케일 sd를 쓰면 밴드가 틀림).
+// AR(p) + 차분(d) — ARIMA(p,d,0), MA항 없음
+// · sd는 원래 스케일 1-step 잔차로 계산(차분 스케일 sd는 밴드 왜곡)
 function fcAR(ys, p, d, h) {
   var n = ys.length, i, j;
   if (!(p >= 1)) p = 2;
@@ -359,13 +345,13 @@ function fcParseRank(m) {
   return r ? parseInt(r[1], 10) : 0;
 }
 
-// opts: { method(별칭/순위 가능), rank(1-based), horizon, lookback, period, alpha,beta,gamma, board:false=리더보드 생략 }
-// 반환에 leaderboard(후보별 홀드아웃 MAPE 순위) 포함 → 사용자가 근거 보고 오버라이드 가능.
+// 메인: ts(ms)/ys + opts → { method, period, points:[{t,v,lo,hi}], backtest, leaderboard, note, stats }
+// · opts: { method(별칭/순위 가능), rank(1-based), horizon, lookback, period, alpha,beta,gamma, board:false=리더보드 생략, allModels }
+// · leaderboard = 후보별 홀드아웃 MAPE 순위
 function fcRun(ts, ys, opts) {
   opts = opts || {};
   var n = ys.length, DAY = 86400000, i;
-  // 기본 호라이즌 = 학습의 20%. 이 도구는 정밀 예측이 아니라 **방향성** 용도라
-  // 기본값 고정이 맞고, "이후 10일" 같은 자연어 기간 오버라이드는 일부러 안 만든다(사용자가 버킷 단위를 모름).
+  // 기본 호라이즌 = 학습의 20%
   var H = opts.horizon; if (!(H >= 1)) H = Math.max(1, Math.round(n * 0.20));
   var L = opts.lookback; if (!(L >= 2)) L = Math.max(10, Math.round(n * 0.33)); if (L > n) L = n; if (L < 2) L = n;
   var step = (n > 1) ? (ts[n - 1] - ts[0]) / (n - 1) / DAY : 1; if (!(step > 0)) step = 1;
@@ -415,9 +401,8 @@ function fcRun(ts, ys, opts) {
     return fcLinear(data, Ld, h);
   }
 
-  // ★파라미터 튜닝 — **주어진 구간(data) 안에서 다시 20%를 떼어 내부검증**하고,
-  //   실제 과제와 같은 **다단계 예측 MAPE**(댐핑까지 동일 적용)로 최적 조합을 고른다.
-  //   → 리더보드 채점용 홀드아웃은 **절대 안 봄**(누수 0) + 1-step SSE 방식의 목적함수 불일치도 없음.
+  // 파라미터 튜닝 — data 안에서 다시 20%를 떼어 다단계 예측 MAPE(댐핑 포함)로 선택
+  // · 리더보드 홀드아웃은 안 봄(누수 방지)
   function tuneFor(method, data, h, per) {
     var key = method + '|' + data.length + '|' + (per || 0) + '|' + h;
     if (tuneCache[key]) return tuneCache[key];
@@ -440,8 +425,7 @@ function fcRun(ts, ys, opts) {
         if (err < bestErr) { bestErr = err; best = G[q]; }
       }
     }
-    // 2단계: 최적 모델파라미터로 **댐핑 강도 φ**도 같은 inner-split에서 고른다(누수 0).
-    //   φ는 "추세가 얼마나 지속되는가"를 데이터가 정하게 함. 1.0 = 댐핑 없음.
+    // 2단계: 같은 inner-split에서 댐핑 강도 φ 선택(1.0 = 댐핑 없음)
     if (data.length > 12) {
       var PH = [0.80, 0.90, 0.95, 0.98, 1.0], bestPhi = null, bestPErr = Infinity, pi;
       var dn2 = data.length;
@@ -474,8 +458,8 @@ function fcRun(ts, ys, opts) {
     return r;
   }
 
-  // 댐핑(damped trend): 단계별 증분에 φ^(h-1) 가중 → 근미래는 추세 유지, 먼 미래는 점차 완만(폭주 방지·현실적).
-  // 백테스트에도 동일 적용 → 리더보드 성적이 실제 배포 모델과 일치(정직).
+  // 댐핑(damped trend): 단계별 증분에 φ^(h-1) 가중 → 먼 미래 폭주 방지
+  // · 백테스트에도 동일 적용(리더보드 성적 = 실제 예측 모델 성적)
   function dampInc(inc, phiIn) { // 누적증분 배열에 φ^j 가중 → 댐핑된 누적증분
     var H2 = inc.length, phi = (phiIn != null) ? phiIn : opts.damp, out = [], acc = 0, j;
     if (!(phi > 0 && phi <= 1)) phi = Math.max(0.90, Math.min(0.99, 1 - 1.5 / Math.max(2, H2)));
@@ -493,8 +477,8 @@ function fcRun(ts, ys, opts) {
     for (j = 0; j < d.length; j++) out.push(baseV + d[j]);
     return out;
   }
-  // ★계절 모델은 **추세 성분에만** 댐핑(계절 출렁임은 보존) → 먼 미래에도 주기가 살아있음.
-  //   φ(댐핑 강도)는 모델과 함께 **inner-split에서 튜닝된 값**(fr._phi)을 쓴다. 없으면 기본 공식.
+  // 계절 모델은 추세 성분에만 댐핑(계절 출렁임 보존)
+  // · φ 우선순위: phiOverride > 튜닝값 fr._phi > 기본 공식
   function dampFit(fr, baseV, phiOverride) {
     var phi = (phiOverride != null) ? phiOverride : fr._phi;
     if (fr.fcTrend && fr.fcSeason && fr.fcTrend.length === fr.fc.length) {
@@ -539,13 +523,11 @@ function fcRun(ts, ys, opts) {
       if (av !== 0) { sp += Math.abs((pv - av) / av); c++; }
     }
     if (e.points.length) { e.ok = true; e.mae = se / e.points.length; e.mape = c ? (sp / c * 100) : -1; }
-    // 폭발(과대외삽) 판정 — 댐핑까지 적용한 H-step 예측이 다음 중 하나면 실격 표시:
-    //   (a) 과거 값 범위를 1구간(=range) 이상 벗어남
-    //   (b) 마지막 실측값에서 **과거 전체 변동폭(range)보다 크게** 이동
+    // 폭발(과대외삽) 판정 — 댐핑 적용 H-step 예측 기준 실격 표시
     var rf; try { rf = fitOn(method, ys, H, period); } catch (e2) { rf = null; }
     if (rf && rf.fc && rf.fc.length) {
       var dc = dampFit(rf, lastV), ext = dc[dc.length - 1];
-      // 이동폭은 **추세 성분만** 본다 — 계절 모델의 정상적인 주기 출렁임을 폭주로 오판하면 안 됨.
+      // 이동폭은 추세 성분만 — 계절 출렁임의 폭주 오판 방지
       var dev;
       if (rf.fcTrend && rf.fcSeason && rf.fcTrend.length === rf.fc.length) {
         var dt = dampInc(rf.fcTrend, rf._phi);
@@ -585,8 +567,7 @@ function fcRun(ts, ys, opts) {
     else { note = forcedName + '은(는) 이 데이터에 적용 불가(주기 미검출 등) → 자동선택'; }
   }
   if (!method) {
-    // 기준선 = 가장 단순한 모델(ses=무변화, linear=추세선) 중 최고. 복잡 모델은 이보다 **30% 이상** 나을 때만 채택
-    // (후보가 많아질수록 홀드아웃 과적합·과대외삽 위험이 커지므로 보수적으로).
+    // 기준선 = 단순 모델(ses, linear) 중 최고, 복잡 모델은 MAPE가 기준선보다 20% 이상 낮을 때만 채택(과적합·과대외삽 방지)
     var SIMPLE = ['ses', 'linear'];
     var base0 = null, best = null, k, c2;
     for (k = 0; k < board.length; k++) {
@@ -602,7 +583,7 @@ function fcRun(ts, ys, opts) {
     }
     method = best ? best.method : (base0 ? base0.method : (board.length ? board[0].method : 'linear'));
     if (!note) {
-      // 1위(MAPE 최소)를 안 고른 경우 이유 명시 — "왜 1위가 아닌 걸 골랐지?" 혼란 방지
+      // 1위(MAPE 최소) 미채택 시 이유 명시
       var top = null;
       for (k = 0; k < board.length; k++) { if (!board[k].exploded && board[k].mape >= 0) { top = board[k]; break; } }
       if (top && top.method !== method && top.mape >= 0) {
@@ -615,13 +596,9 @@ function fcRun(ts, ys, opts) {
   }
 
   // ── 신뢰밴드 캘리브레이션(롤링 오리진) ──
-  // ⚠️ in-sample 잔차 sd로 밴드를 만들면 **과신**한다(최근 구간에 직선이 잘 붙으면 잔차가 작아 밴드가 좁아지지만,
-  //    먼 horizon의 실제 예측 오차는 그것과 전혀 다름).
-  // → 여러 시점을 원점으로 잡아 h-step 예측을 실제와 비교해 **horizon별 실제 오차 σ(h)** 를 측정하고 그걸로 밴드를 만든다.
-  //    관측 못한 먼 horizon은 마지막 유효 σ에서 √h 스케일로 연장. 오차는 horizon 따라 커지므로 단조증가 보정.
+  // 여러 원점에서 h-step 예측 오차를 측정해 horizon별 σ(h) 산출 — in-sample 잔차 sd의 과신 방지
   function calibrateSigma(method, per, P, Hh) {
-    // 학습 최소량을 **절반**으로 잡는다 — 너무 이른 원점(데이터 40%로 학습)의 오차가 σ를 부풀린다.
-    // 그래도 관측 가능한 최대 horizon은 n - minTrain = 0.5n 이라 H(기본 0.20n)를 충분히 덮는다.
+    // 학습 최소량 = 절반 — 너무 이른 원점의 σ 부풀림 방지, 관측 가능 horizon 0.5n이 기본 H 0.2n을 덮음
     var minTrain = Math.max(20, Math.round(n * 0.5));
     if (n - minTrain < 5) return null;
     var NORIG = 6, errByH = [], o, h2, q;
@@ -642,11 +619,8 @@ function fcRun(ts, ys, opts) {
       }
     }
 
-    // ⚠️ **horizon별 RMSE를 그대로 쓰면 안 된다.** h가 커질수록 기여하는 원점 수가 줄어(늦은 원점은 먼 미래를
-    //    관측 못 함) 표본 집합이 바뀌는 지점마다 σ가 툭툭 점프한다 → 밴드가 **계단·스파이크 모양**으로
-    //    찌그러진다. 단조증가 보정만으론 상승 점프가 그대로 남는다.
-    // → 관측된 (h, RMSE) 점들에 **멱함수 σ(h) = a·h^b** 를 표본수 가중 최소제곱(log-log)으로 적합해 **매끄러운 콘**을 만든다.
-    //    b는 [0.3, 1.2]로 클램프(0.5 = 랜덤워크의 √h, 1.0 = 추세 오차의 선형 증가). 점이 부족하면 √h 스케일 폴백.
+    // 관측 (h, RMSE) 점에 멱함수 σ(h) = a·h^b를 표본수 가중 log-log 최소제곱으로 적합 — horizon별 표본 수 변화로 인한 계단형 밴드 방지
+    // · b는 [0.3, 1.2]로 클램프, 점이 4개 미만이면 √h 고정
     var pts = [];
     for (h2 = 0; h2 < Hh; h2++) {
       var arr = errByH[h2];
@@ -691,12 +665,12 @@ function fcRun(ts, ys, opts) {
   }
   var sd = fr.sd || 0;
   fr.fc = dampFit(fr, lastV);
-  // 앵커점: 예측선·밴드가 **마지막 실측점에서 정확히 출발**(밴드 폭 0 → cone). 실측선과 빈틈없이 연결.
+  // 앵커점: 예측선·밴드가 마지막 실측점에서 출발(밴드 폭 0)
   var sigma = fixed ? null : calibrateSigma(method, period, tuneFor(method, ys, H, period), H);
   var pts = [{ t: lastT, v: lastV, lo: lastV, hi: lastV }];
   for (i = 1; i <= H; i++) {
     var v = fr.fc[i - 1]; if (!isFinite(v)) v = lastV;
-    // 밴드 = 1.96 × **실측된 h-step 예측오차 σ(h)**. 캘리브레이션 실패 시에만 in-sample 잔차로 폴백.
+    // 밴드 = 1.96 × σ(h), 캘리브레이션 실패 시 in-sample 잔차 폴백
     var sg = (sigma && isFinite(sigma[i - 1])) ? sigma[i - 1] : (sd * Math.sqrt(1 + i / n));
     var band = 1.96 * sg, t = Math.round(lastT + i * step * DAY);
     pts.push({ t: t, v: v, lo: v - band, hi: v + band });
@@ -707,10 +681,8 @@ function fcRun(ts, ys, opts) {
   for (i = 0; i < board.length; i++) { if (board[i].method === method) { chosen = board[i]; break; } }
   if (!chosen) chosen = backtestOf(method);
 
-  // ── opts.allModels: **후보 전 모델의 미래 곡선**(밴드 포함)을 함께 반환 ──
-  // 리더보드의 e.points는 **백테스트**(홀드아웃 예측)라 미래 곡선이 아니다. HTML 리포트의 모델 드롭다운이
-  // "이 모델로 예측하면 어떻게 되는가"를 보여주려면 모델마다 전체 데이터 재적합 + σ(h) 캘리브레이션이 필요.
-  // 튜닝은 tuneCache로 공유되므로 추가 비용은 적합·캘리브레이션뿐(실격 모델도 포함 — 사용자가 폭주를 눈으로 봐야 함).
+  // ── opts.allModels: 후보 전 모델의 미래 곡선(밴드 포함)도 반환 ──
+  // · e.points는 백테스트라 모델마다 전체 데이터 재적합 + σ(h) 캘리브레이션, 실격 모델도 포함
   if (opts.allModels) {
     for (i = 0; i < board.length; i++) {
       var bm = board[i].method, bfr;
@@ -748,7 +720,7 @@ function fcRun(ts, ys, opts) {
   };
 }
 
-// SCRIPT에 구워질 런타임 함수 집합(서로만 참조 + Math). 새 함수 추가 시 여기에도 등록!
+// SCRIPT에 구워질 런타임 함수 집합(서로만 참조 + Math), 새 런타임 함수는 여기 등록 필수
 var RUNTIME = [
   fcSolve, fcFitPoly, fcPoly, fcResidSd, fcR2, fcRmse, fcOLS, fcFromDesign,
   fcLinear, fcQuad, fcSES, fcHolt, fcTheta, fcHW, fcHWmult, fcHarmonic, fcProphetLike, fcAR,
@@ -759,4 +731,4 @@ function algoSource() {
   return out.join('\n');
 }
 
-module.exports = { fcRun: fcRun, fcPeriod: fcPeriod, fcNormMethod: fcNormMethod, fcParseRank: fcParseRank, algoSource: algoSource };
+module.exports = { fcRun: fcRun, fcNormMethod: fcNormMethod, algoSource: algoSource };

@@ -1,26 +1,20 @@
-// 채팅 마크다운 렌더 회귀 테스트 — 브라우저 없이 즉시 끝난다.
-//
-// 무엇을 재나: 두 가지를 한 파이프라인에서 함께 본다.
-//   1) 채팅에 흘러드는 텍스트(모델 답변·DB 행·문서 본문)가 innerHTML에 닿기 전에
-//      실행 가능한 것을 남기지 않는지
-//   2) 정상 마크다운이 살아남는지 — 과잉 차단도, CJK 강조 보정이 어긋나는 것도 실패다
-// 왜 필요한가: 두 성질 모두 marked의 동작에 기대고 있어, marked를 올리면 조용히 어긋날 수 있다.
-//   그때 사용자가 아니라 이 테스트가 먼저 깨져야 한다.
-//
+// 채팅 마크다운 렌더 회귀 테스트 — 브라우저 불필요
+// · 공격 차단: 모델 답변·DB 행·문서 본문이 innerHTML 전에 실행 가능한 것을 남기지 않는지
+// · 정상 마크다운 보존: 과잉 차단·CJK 강조 보정 어긋남 검사
+// · 대시보드 링크 주소 변환
 // 사용: npm run test:render  (frontend/)
 import createDOMPurify from 'dompurify';
 import { JSDOM } from 'jsdom';
-import { renderMarkdown, PURIFY_CONFIG } from '../src/components/chat/markdown.ts';
+import { renderMarkdown, PURIFY_CONFIG, boardLinkToOrigin } from '../src/components/chat/markdown.ts';
 
-// 앱과 같은 파이프라인. 다른 점은 DOMPurify에 줄 window뿐이다(브라우저에는 이미 있다).
+// 앱과 같은 파이프라인 — DOMPurify용 window만 JSDOM으로 제공
 const DOMPurify = createDOMPurify(new JSDOM('').window);
 if (!DOMPurify.isSupported) { console.error('FAIL: DOMPurify가 이 환경을 지원하지 않아 검사가 무의미합니다.'); process.exit(1); }
-// 두 층을 따로 잰다. 최종만 재면 DOMPurify가 다 막아주는 바람에 1차 방어가 썩어도 모른다.
+// 두 층 따로 검사 — 최종만 보면 DOMPurify에 가려 1차 방어 손상을 놓침
 const renderA = (md) => renderMarkdown(md);                                    // 1차: markdown.ts 렌더러만
 const render = (md) => DOMPurify.sanitize(renderMarkdown(md), PURIFY_CONFIG);  // 최종: 앱과 동일
 
-// 렌더 결과에 실행 가능한 것이 남았는가 — 문자열이 아니라 파싱된 DOM에서 본다.
-//   (이스케이프된 "&lt;img onerror=…&gt;"는 글자일 뿐이라 문자열 검사로는 오탐이 난다)
+// 렌더 결과의 실행 가능한 것 잔존 여부 — 파싱된 DOM 기준(이스케이프된 "&lt;img onerror=…&gt;" 글자 오탐 방지)
 const EXEC_SCHEME = /^(javascript|vbscript|data):/i;
 const URL_ATTRS = ['href', 'src', 'xlink:href', 'action', 'formaction', 'data'];
 const BAD_TAGS = ['script', 'iframe', 'object', 'embed', 'form'];
@@ -34,7 +28,7 @@ function findDanger(html) {
             if (/^on/.test(name)) return at.name + ' 이벤트 핸들러 (' + tag + ')';
             if (name === 'srcdoc') return 'srcdoc 속성 (' + tag + ')';
             if (!URL_ATTRS.includes(name)) continue;
-            // 제어문자·공백을 걷어낸 뒤 판정 — 브라우저도 그렇게 읽는다
+            // 제어문자·공백 제거 후 판정 — 브라우저 해석과 동일
             const v = at.value.replace(/[\u0000-\u0020]/g, '');
             if (EXEC_SCHEME.test(v) && !/^data:image\//i.test(v)) return at.name + '="' + at.value.slice(0, 40) + '" (' + tag + ')';
         }
@@ -59,9 +53,8 @@ const ATTACKS = [
     ['개행 섞은 스킴', '[a](java\nscript:alert(12))'],
 ];
 
-// 정상 마크다운은 살아남아야 한다 — 과잉 차단도 실패다.
-// CJK 항목들은 marked가 한글 경계·공백 낀 강조를 놓치는 것을 normalizeMarkdown이 보정하는 부분이라,
-// marked를 올렸을 때 보정이 어긋나면 여기서 먼저 드러난다.
+// 정상 마크다운 보존 — 과잉 차단도 실패
+// · CJK 항목: normalizeMarkdown의 한글 경계·공백 낀 강조 보정 검사
 const KEEPS = [
     ['링크', '[문서](https://docs.machbase.com/neo)', /<a [^>]*href="https:\/\/docs\.machbase\.com\/neo"/],
     ['굵게', '**굵게**', /<strong>굵게<\/strong>/],
@@ -98,6 +91,24 @@ for (const [name, md, expect] of KEEPS) {
     else { console.log('  ✗ ' + name + ' 깨짐: ' + out.trim().slice(0, 120)); fail++; }
 }
 
-const total = ATTACKS.length + KEEPS.length;
+// 대시보드 링크 — 백엔드가 설정 호스트로 만든 링크를 접속 주소로, 그 밖의 링크는 그대로
+const UI = 'http://192.168.0.10:5654';
+const LINKS = [
+    ['대시보드 링크 → 접속 주소', 'http://127.0.0.1:5654/web/ui/board/alpha/T/d_20261023?x=1#top', UI + '/web/ui/board/alpha/T/d_20261023?x=1#top'],
+    ['접속 주소와 같은 링크 → 그대로', UI + '/web/ui/board/alpha/T/d', UI + '/web/ui/board/alpha/T/d'],
+    ['리포트 링크 → 그대로', 'http://127.0.0.1:5654/db/tql/alpha/T/r.html', 'http://127.0.0.1:5654/db/tql/alpha/T/r.html'],
+    ['다른 호스트의 대시보드 경로 → 접속 주소', 'https://neo.example.com/web/ui/board/x', UI + '/web/ui/board/x'],
+    ['외부 사이트 → 그대로', 'https://example.com/docs/web', 'https://example.com/docs/web'],
+    ['상대 경로 → 그대로', '/web/ui/board/alpha/T/d', '/web/ui/board/alpha/T/d'],
+    ['mailto → 그대로', 'mailto:a@b.c', 'mailto:a@b.c'],
+];
+console.log('── 대시보드 링크 주소 ──');
+for (const [name, href, expect] of LINKS) {
+    const got = boardLinkToOrigin(href, UI);
+    if (got === expect) console.log('  ✓ ' + name);
+    else { console.log('  ✗ ' + name + ' → ' + got); fail++; }
+}
+
+const total = ATTACKS.length + KEEPS.length + LINKS.length;
 console.log('\n===== ' + (total - fail) + '/' + total + ' 통과 =====');
 process.exit(fail ? 1 : 0);

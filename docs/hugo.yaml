@@ -16,6 +16,11 @@ languages:
     languageCode: ko-KR
     title: MACHBASE NEO LLM CHAT
     weight: 2
+  ja:
+    languageName: 日本語
+    languageCode: ja-JP
+    title: MACHBASE NEO LLM CHAT
+    weight: 3
 
 module:
   imports:

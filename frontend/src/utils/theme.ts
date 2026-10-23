@@ -1,13 +1,9 @@
 import { useSyncExternalStore } from "react";
 
 /**
- * Light/dark theme, held in a module-level store rather than React context.
- *
- * RenderMd mounts ChatExecResult through its own createRoot(), and context does
- * not cross root boundaries — a module store is readable from every root.
- *
- * The class lives on <html> so the portaled popovers (model dropdown, prompt /
- * favorites panels, toast) are covered as well.
+ * 라이트·다크 테마 — 모듈 레벨 store
+ * · 별도 createRoot로 마운트된 트리에서도 읽기용 — context는 root 경계 미통과
+ * · 클래스는 <html>에 — 포털 팝오버(모델 드롭다운·프롬프트/즐겨찾기 패널·토스트)까지 적용
  */
 
 export type Theme = "light" | "dark";
@@ -30,18 +26,18 @@ function apply(theme: Theme): void {
 let current: Theme = read();
 const listeners = new Set<() => void>();
 
-export function getTheme(): Theme {
+function getTheme(): Theme {
     return current;
 }
 
-export function setTheme(theme: Theme): void {
+function setTheme(theme: Theme): void {
     if (theme === current) return;
     current = theme;
     apply(theme);
     try {
         localStorage.setItem(STORAGE_KEY, theme);
     } catch {
-        // Private mode / storage disabled — the theme still applies for this session.
+        // 저장 불가 환경 — 이번 세션엔 테마 적용 유지
     }
     for (const listener of listeners) listener();
 }
@@ -62,9 +58,7 @@ export function useTheme(): Theme {
 }
 
 /**
- * Reconcile <html> with the stored value. The HTML entry files run the same
- * check inline to avoid a dark flash before the bundle loads; this covers the
- * case where that script is absent or storage changed since.
+ * <html> 클래스를 저장값에 맞춤 — HTML 진입 파일의 인라인 검사가 없거나 그 뒤 저장값이 바뀐 경우 대비
  */
 export function initTheme(): void {
     apply(current);

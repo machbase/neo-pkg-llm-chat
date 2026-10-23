@@ -1,8 +1,7 @@
-var { rePrompt } = require('./guard');
+var { rePrompt, turnStart } = require('./guard');
 
-// 대시보드 마무리 단계 도구. URL이 나온 뒤(=완성)의 추가 호출은 이미 만든 대시보드에 안 들어가고
-// 고아(orphan) 파일만 양산하므로 차단(생성 전 저장들은 URL이 없어 통과 — 정상 흐름 방해 안 함).
-var FINALIZE_TOOLS = { create_dashboard_with_charts: true, preview_dashboard: true, save_tql_file: true, compile_tql_from_spec: true };
+// 대시보드 마무리 단계 도구 — URL 나온 뒤(=완성) 반복 호출은 최종 답변으로 재유도(고아 파일 양산 방지)
+var FINALIZE_TOOLS = { create_dashboard_with_charts: true, preview_dashboard: true, compile_tql_from_spec: true };
 
 var RedundantFinalizeGuard = {
   name: 'redundant_finalize',
@@ -10,8 +9,7 @@ var RedundantFinalizeGuard = {
     if (!msg.toolCalls || msg.toolCalls.length === 0) return msg;
 
     // ── 중복 create_dashboard_with_charts 하드 차단 ──
-    // 약한 모델이 같은 턴에 대시보드를 2번 생성(예: 만든 뒤 "시간범위 넣어 재생성")해 .dsh 파일을 2개 만드는 것 방지.
-    // 소프트 재유도는 고집 센 모델이 무시하므로, 첫 1개만 남기고 나머지 create 호출을 toolCalls에서 제거(실행 자체 차단).
+    // 턴당 첫 1개만 남기고 나머지 create 호출 제거 — 같은 턴 .dsh 중복 생성 방지(재유도는 무시됨)
     var createdThisTurn = dashboardUrlThisTurn(agent.messages);
     var seenCreate = createdThisTurn, dropped = false, kept = [];
     for (var i = 0; i < msg.toolCalls.length; i++) {
@@ -45,10 +43,8 @@ var RedundantFinalizeGuard = {
 
 // 이번 턴(마지막 user 메시지 이후)에 대시보드 생성 성공(URL) 흔적이 있는지 — 이전 턴 대시보드는 제외.
 function dashboardUrlThisTurn(msgs) {
-  var start = 0;
-  // 마지막 "진짜" user 메시지 기준(가드 재유도 hint는 건너뜀 — 재유도가 턴 경계를 깨지 않게).
-  for (var i = msgs.length - 1; i >= 0; i--) { if (msgs[i].role === 'user' && !msgs[i]._guardHint) { start = i; break; } }
-  for (var k = start; k < msgs.length; k++) {
+  // 마지막 실제 사용자 메시지 기준(가드 힌트·에이전트 넛지는 턴 경계 아님)
+  for (var k = turnStart(msgs); k < msgs.length; k++) {
     var m = msgs[k];
     if (m.role === 'tool' && m.content && m.content.indexOf('대시보드 열기') >= 0) return true;
   }

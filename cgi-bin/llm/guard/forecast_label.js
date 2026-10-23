@@ -1,16 +1,10 @@
 var { createMessage } = require('../llm/types');
+var { turnStart } = require('./guard');
 
-// save_html_report(일반 분석 리포트)를 만들어놓고 답변에서 **"예측 리포트"라고 부르는 것**을 막는다.
-//
-// 사용자가 "예측 리포트 만들어줘"라고 하면 정책상 Report 스킬 → save_html_report(일반 분석)로 간다.
-// 그런데 모델은 사용자 표현을 그대로 되받아 "✅ SILVER 예측 분석 리포트가 완성되었습니다"라고 답한다.
-// 이건 **검증(백테스트·MAPE)도 신뢰구간도 없는 과거 분석을 예측으로 위장**하는 것이다.
-// (실제로 "차기 목표 95 / 중기 100~110" 같은 지어낸 목표가까지 붙었다 — 금융 템플릿 guide가 "시장 전망"을
-//  요구해서 나온 정성 의견인데, 답변에서 예측처럼 옮겨지면 사용자가 검증된 수치로 오해한다.)
-//
-// 프롬프트로도 금지했지만 약한 모델은 무시한다 → **하네스가 결정론적으로 라벨을 교정**하고,
-// 사용자가 예측을 원했던 정황이면 진짜 예측 경로("<테이블> 예측해줘")를 안내한다.
-// forecast_table이 호출된 턴(=진짜 예측 리포트)에는 절대 발동하지 않는다.
+// save_html_report(일반 분석 리포트)를 답변에서 "예측 리포트"로 부르는 것 결정론 교정
+// · 검증(백테스트·MAPE)·신뢰구간 없는 과거 분석의 예측 위장 방지
+// · 사용자가 예측을 원했으면 진짜 예측 경로("<테이블> 예측해줘") 안내
+// · forecast_table 호출 턴(진짜 예측 리포트)은 대상 아님
 var ForecastLabelGuard = {
   name: 'forecast_label',
   check: function (agent, msg) {
@@ -47,10 +41,7 @@ var ForecastLabelGuard = {
 
 // 이번 턴(마지막 user 메시지 이후)에 어떤 리포트 계열 도구가 불렸나 + 대상 테이블.
 function toolNamesSince(msgs) {
-  var start = 0, i;
-  for (i = msgs.length - 1; i >= 0; i--) {
-    if (msgs[i].role === 'user' && !msgs[i]._guardHint) { start = i; break; }
-  }
+  var start = turnStart(msgs), i;
   var out = { report: false, forecast: false, table: '' };
   for (i = start; i < msgs.length; i++) {
     var m = msgs[i];
@@ -61,7 +52,7 @@ function toolNamesSince(msgs) {
       if (fn.name === 'forecast_table') out.forecast = true;
       if (fn.name === 'save_html_report') {
         out.report = true;
-        // 안내문에 쓸 테이블명은 **도구 인자에서** 가져온다 — 질문이 "실버 테이블"처럼 한글이면 질문 파싱은 실패한다.
+        // 안내문 테이블명은 도구 인자에서 — 한글 질문("실버 테이블")은 질문 파싱 불가
         var a = fn.arguments;
         if (typeof a === 'string') { try { a = JSON.parse(a); } catch (e) { a = null; } }
         if (a && a.table && !out.table) out.table = String(a.table).toUpperCase();

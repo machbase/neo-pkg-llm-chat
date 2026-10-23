@@ -1,8 +1,6 @@
 // Parameter alias normalization - maps common LLM mistakes to correct param names
 
 var aliasMap = {
-  save_tql_file: { path: 'filename', file_path: 'filename', name: 'filename', file_name: 'filename', tql_path: 'filename', script: 'tql_content', content: 'tql_content', code: 'tql_content' },
-  execute_tql_script: { script: 'tql_content', content: 'tql_content', code: 'tql_content' },
   execute_sql_query: { sql: 'sql_query', query: 'sql_query' },
   list_table_tags: { table: 'table_name', name: 'table_name', table_id: 'table_name' },
   get_full_document_content: { file_path: 'file_identifier', doc_name: 'file_identifier', path: 'file_identifier', document_path: 'file_identifier', doc_path: 'file_identifier', section_filter: 'section', section_name: 'section', header: 'section' },
@@ -17,8 +15,6 @@ var aliasMap = {
   preview_dashboard: { name: 'filename', file_path: 'filename', dashboard_name: 'filename' },
   delete_dashboard: { name: 'filename', file_path: 'filename', dashboard_name: 'filename' },
 };
-
-var knownParams = ['format', 'timeformat', 'timezone', 'timeout_seconds', 'limit', 'auto_start', 'schedule', 'section_filter', 'language'];
 
 function normalizeArgs(toolName, args) {
   var mapping = aliasMap[toolName];

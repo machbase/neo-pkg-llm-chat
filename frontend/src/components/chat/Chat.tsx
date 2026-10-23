@@ -3,9 +3,10 @@ import { ChatView } from './ChatView';
 
 interface ChatProps {
     onOpenSettings?: () => void;
+    accountName?: string | null;
 }
 
-export const Chat = ({ onOpenSettings }: ChatProps) => {
+export const Chat = ({ onOpenSettings, accountName }: ChatProps) => {
     const chatLogic = usePkgChat();
-    return <ChatView {...chatLogic} onOpenSettings={onOpenSettings} />;
+    return <ChatView {...chatLogic} onOpenSettings={onOpenSettings} accountName={accountName} />;
 };

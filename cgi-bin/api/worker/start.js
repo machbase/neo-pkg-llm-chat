@@ -1,7 +1,7 @@
 'use strict';
 
 // CGI: POST /api/worker/start?session_id=xxx
-// Reads workers/{session_id}.json for worker config, then service.install + start
+// 워커 서비스 install + start — 세션 설정 workers/{session_id}.json 은 워커가 직접 읽음
 
 var process = require('process');
 var path = require('path');
@@ -10,7 +10,6 @@ var service = require('service');
 
 var ROOT = process.argv[1].slice(0, process.argv[1].lastIndexOf('/cgi-bin/') + '/cgi-bin'.length);
 var LLM_DIR = path.join(ROOT, 'llm');
-var WORKERS_DIR = path.join(LLM_DIR, 'workers');
 var WORKER_SCRIPT = path.join(LLM_DIR, 'worker.js');
 var WORKER_PREFIX = 'llm-w-';
 

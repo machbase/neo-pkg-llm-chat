@@ -18,31 +18,33 @@ All configuration responses use a `{ success, reason, data }` JSON envelope. To 
 | Method | Path | Description |
 | :---: | :--- | :--- |
 | GET | `/health` | Health check. Returns `{ "ok": true }` |
-| GET | `/api/info` | Server info. Returns `{ ok, data: { port } }` |
-| GET | `/api/debug` | Diagnostics: configs directory, config files, active worker count |
+| GET | `/api/debug` | Diagnostics: configs directory and file list, active worker count. Requires an API token |
 
-### Main (Server) Configuration
-
-| Method | Path | Description |
-| :---: | :--- | :--- |
-| GET | `/api/config` | Get the main/server config |
-| PUT | `/api/config` | Update the main/server config (for example the server port) |
+The service port is set by `server.port` in `configs/sys.json` (default `8884`). The launcher reads it at startup.
 
 ### User Configurations
 
 A configuration is stored per user (`configs/{user}.json`). The config name is the Machbase user.
 
-Every request to the config and preference APIs below **requires an `Authorization: Bearer {accessToken}` header** (the token from a Machbase Neo login). The server verifies it to establish the user, and refuses any name that is not theirs.
+Every request to the token check, config, and preference APIs below **requires an `Authorization: Bearer {API token}` header** (a token starting with `nt_`, issued in the Neo web console). The server verifies it with Machbase Neo's `POST /db/token/validate` to establish the account, and refuses any name that is not theirs. Account names are handled in lowercase (e.g. `SYS` → `sys`).
 
 | Situation | Response |
 | :--- | :--- |
-| Missing / expired / forged token | `401` `{"success": false, "reason": "authentication required"}` |
+| Missing / invalid / deleted or expired token | `401` `{"success": false, "reason": "authentication required"}` |
 | Asking for another user's config | `403` `{"success": false, "reason": "forbidden"}` |
+
+### Token Check
+
+| Method | Path | Description |
+| :---: | :--- | :--- |
+| GET | `/api/token/validate` | Verify the API token in the header and return the account name. Success `200` `{"success": true, "data": {"user": "sys"}}`, failure `401` `{"success": false, "reason": "invalid token"}` |
+
+The **검증** (Verify) button on the Settings screen calls this API. Whether the account matches the console login account is checked separately in the browser.
 
 | Method | Path | Description |
 | :---: | :--- | :--- |
 | GET | `/api/configs` | List saved config names (**yours only**). With `?name={name}`, return that config |
-| POST | `/api/configs` | Save a config. The file name and the body's `machbase.user` are **forced to the token's user** (a different account in the body is ignored) |
+| POST | `/api/configs` | Save a config. The file name and the body's `machbase.user` are **forced to the token's user** (a different account in the body is ignored). `machbase.token` and `machbase.password` in the body are **removed, never saved** |
 | PUT | `/api/configs?name={name}` | Update a config |
 | DELETE | `/api/configs?name={name}` | Delete a config |
 | GET | `/api/configs/{name}` | Get a specific config |
@@ -63,8 +65,7 @@ The target user comes from the token — there is no name parameter.
 
 | Method | Path | Description |
 | :---: | :--- | :--- |
-| GET | `/ws` | Browser chat WebSocket. The user is established by **verifying `auth_token` on the first message** |
-| GET | `/{user_id}/ws` | Old path wired to the same handler. **The name in the URL is not used as identity** |
+| GET | `/ws` | Browser chat WebSocket. The user is established by **verifying `auth_token` on every message** |
 | GET | `/internal/ws` | Internal gateway ↔ worker channel (not for clients) |
 
 ### Relay Routes
@@ -73,10 +74,9 @@ These routes proxy directly to the connected Machbase Neo server (used by the UI
 
 | Method | Path | Description |
 | :---: | :--- | :--- |
-| POST | `/db/tql` | Relay a TQL execution request. **Requires an `Authorization` header**; the caller's token is passed through to Neo (`401` without one) |
-| GET / POST | `/web/*path` | Relay to the Machbase Neo web API. **Only the caller's token** is forwarded (the service account never authenticates on their behalf) |
+| POST | `/db/tql` | Relay a TQL execution request to Neo's `/db/tql`. **Requires an `Authorization: Bearer {API token}` header**; the caller's token is passed through (`401` without one). Before relaying, unprefixed table names after `FROM` and `JOIN` are filled in as `DB.OWNER.TABLE`, based on the tables the token's account can see. If the same name exists under several accounts, the request is not executed and `400` is returned with the candidates |
 
-Relayed calls run as the caller, so Machbase refuses tables they may not read.
+Relayed calls run as the account of the caller's token, so Machbase refuses tables they may not read.
 
 ### Example: Health Check
 
@@ -86,6 +86,17 @@ curl http://localhost:8884/health
 
 ```json
 {"ok": true}
+```
+
+### Example: Token Check
+
+```bash
+TOKEN=nt_a_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8884/api/token/validate
+```
+
+```json
+{"success": true, "reason": "success", "data": {"user": "sys"}}
 ```
 
 ### Example: List Saved Configs
@@ -104,18 +115,24 @@ Calling without a token returns `401`.
 
 The chat UI communicates with the service over WebSocket. The connection URL is `ws://{host}:{port}/ws`. The gateway routes each session to a worker process and relays the worker's streaming messages back to the browser.
 
-**Every client message must carry `auth_token`** (a Machbase Neo accessToken). The gateway verifies it once per connection to establish the user, then applies that user to every message on the connection. The `user_id` field is not used to decide identity. When verification fails the gateway replies:
+**Every client message must carry `auth_token`** (a Machbase Neo API token). The gateway verifies it on every message to establish the user, so changing the token or deleting it in Neo takes effect from the next message. The `user_id` field is not used to decide identity.
+
+The gateway passes the verified token to the worker only inside the `chat` message; it is never written to the worker config files (`workers/*.json`) or to user config files.
+
+When verification fails the gateway replies:
 
 ```json
-{"type": "error", "code": "auth_required", "msg": "로그인 정보가 확인되지 않았습니다. 페이지를 새로고침한 뒤 다시 시도하세요."}
+{"type": "error", "code": "auth_required", "msg": "API 토큰이 확인되지 않았습니다. 설정에서 토큰을 확인한 뒤 다시 시도하세요."}
 ```
+
+A message that uses a session ID created by another account is refused with `code: "auth_required"` and `msg: "다른 계정의 세션입니다."` (session of another account).
 
 ### Client to Server Messages
 
 **get_models** — request the available LLM providers and models:
 
 ```json
-{"type": "get_models", "user_id": "sys", "auth_token": "eyJhbGciOi..."}
+{"type": "get_models", "auth_token": "nt_a_xxxx..."}
 ```
 
 **chat** — send a chat message (`provider` and `model` are required):
@@ -123,14 +140,16 @@ The chat UI communicates with the service over WebSocket. The connection URL is 
 ```json
 {
   "type": "chat",
-  "user_id": "sys",
-  "auth_token": "eyJhbGciOi...",
+  "auth_token": "nt_a_xxxx...",
   "session_id": "sess-1234567890",
   "provider": "claude",
   "model": "claude-sonnet-4-6",
-  "query": "Analyze the GOLD table"
+  "query": "Analyze the GOLD table",
+  "tz": "Asia/Seoul"
 }
 ```
+
+`tz` is optional: the browser time zone (IANA name). It sets the zone for times in query results, charts, and reports, and for the current time given to the model; when omitted, the server time zone is used.
 
 **stop** — stop the current generation:
 
@@ -150,6 +169,12 @@ The chat UI communicates with the service over WebSocket. The connection URL is 
 
 ```json
 {"type": "models", "providers": [ { "provider": "claude", "models": ["..."] } ]}
+```
+
+If this account has no saved settings yet, the following is returned instead of `providers`:
+
+```json
+{"type": "models", "msg": "No providers configured. Please set API keys in Settings."}
 ```
 
 **msg** — streaming envelope. Progress narration and the final answer are both delivered as `msg` events. The inner `message.type` marks the phase, and text arrives in `body.ofStreamBlockDelta`:
@@ -177,6 +202,12 @@ Inner `message.type` phases, in order:
 - `stream_block_start` / `stream_block_delta` / `stream_block_stop` — progress narration (tool steps are described here as markdown text)
 - `stream_msg_start` / `stream_msg_delta` / `stream_msg_stop` — the final answer text
 - `answer_stop` — the response is complete
+
+**followups** — suggested follow-up questions after an answer (not sent if none could be generated):
+
+```json
+{"type": "followups", "session_id": "sess-1234567890", "items": ["..."]}
+```
 
 **error** — an error occurred (may include a `code`, for example `config_required`):
 

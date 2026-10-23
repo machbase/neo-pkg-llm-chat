@@ -2,13 +2,12 @@ import Icon from "./Icon";
 import { toggleTheme, useTheme } from "../../utils/theme";
 
 interface Props {
-    /** Host decides the shape — the settings header uses .btn, chat uses the round icon button. */
+    /** 버튼 모양 클래스 — 호출부 지정 */
     className?: string;
-    iconClassName?: string;
 }
 
-/** Light/dark switch. The icon shows the mode the click switches TO. */
-export default function ThemeToggle({ className = "", iconClassName = "icon-sm" }: Props) {
+/** 라이트·다크 전환 버튼 — 아이콘은 클릭 시 바뀔 모드 표시 */
+export default function ThemeToggle({ className = "" }: Props) {
     const theme = useTheme();
     const toLight = theme === "dark";
     return (
@@ -19,7 +18,7 @@ export default function ThemeToggle({ className = "", iconClassName = "icon-sm" 
             title={toLight ? "Light mode" : "Dark mode"}
             aria-label={toLight ? "Switch to light mode" : "Switch to dark mode"}
         >
-            <Icon name={toLight ? "light_mode" : "dark_mode"} className={iconClassName} />
+            <Icon name={toLight ? "light_mode" : "dark_mode"} className="icon-sm" />
         </button>
     );
 }

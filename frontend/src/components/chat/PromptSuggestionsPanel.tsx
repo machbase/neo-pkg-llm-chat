@@ -5,10 +5,9 @@ import Icon from '../common/Icon';
 
 interface PromptSuggestionsPanelProps {
     onPick: (prompt: string) => void;
-    visible: boolean;
 }
 
-export function PromptSuggestionsPanel({ onPick, visible }: PromptSuggestionsPanelProps) {
+export function PromptSuggestionsPanel({ onPick }: PromptSuggestionsPanelProps) {
     const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
 
     const toggleCategory = useCallback((categoryId: string) => {
@@ -22,10 +21,6 @@ export function PromptSuggestionsPanel({ onPick, visible }: PromptSuggestionsPan
             return next;
         });
     }, []);
-
-    if (!visible) {
-        return null;
-    }
 
     return (
         <div className="chat-prompt-panel">

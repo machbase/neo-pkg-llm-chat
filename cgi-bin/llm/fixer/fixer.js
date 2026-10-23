@@ -1,7 +1,7 @@
 var { normalizeArgs } = require('./normalize');
 var { fixTimeFloats, fixTimeValues, captureDataTimeRange, isAllDigits, msToDatetime } = require('./time_fix');
-var { fixTQLContent, fixEscapedNewlines } = require('./tql_fix');
-var { captureKnownTags, validateTagInArgs } = require('./tag_validate');
+var { fixEscapedNewlines } = require('./tql_fix');
+var { captureKnownTags } = require('./tag_validate');
 var { jsonMarshal, jsonUnmarshal } = require('./json_helper');
 
 var DASHBOARD_TOOLS = {
@@ -23,6 +23,8 @@ function createFixerContext() {
     advanced: false,
     skillName: '',
     isOllama: false,
+    questionTime: null,
+    question: '',
   };
 }
 
@@ -66,6 +68,14 @@ function fix(msg, fctx) {
       console.println('  [fix] save_html_report time injected: ' + fctx.timeStartDt + ' ~ ' + fctx.timeEndDt);
     }
 
+    // Step 3.5: compile_tql_from_spec ← 질문의 기간·단위·원문(사용자 질문 기준, 모델이 넣은 값은 덮어씀)
+    if (name === 'compile_tql_from_spec') {
+      if (fctx.questionTime) args.question_time = fctx.questionTime;
+      else delete args.question_time;
+      if (fctx.question) args.question = fctx.question;
+      else delete args.question;
+    }
+
     // Step 4: time_start/time_end float → string
     fixTimeFloats(args);
 
@@ -78,15 +88,12 @@ function fix(msg, fctx) {
     // Step 7: time_start/time_end normalize to epoch ms
     fixTimeValues(args);
 
-    // Step 8: save_tql_file / delete_file folder merge
+    // Step 8: delete_file folder merge
     fixFolderMerge(name, args);
 
     // Step 9: Dashboard filename/title auto-fix
     fixDashboardFilename(name, args);
     fixDashboardTitle(name, args, fctx);
-
-    // Step 10: TQL content fixes (template expansion, line breaks)
-    fixTQLContent(name, args, fctx);
   }
   return msg;
 }
@@ -232,7 +239,7 @@ function fixCharts(args, fctx) {
 }
 
 function fixFolderMerge(name, args) {
-  if (name === 'save_tql_file' || name === 'delete_file') {
+  if (name === 'delete_file') {
     var fn = args.filename || '';
     var folder = args.folder_name || '';
     if (fn && folder && fn.indexOf('/') < 0) {
@@ -285,8 +292,8 @@ function fixDashboardTitle(name, args, fctx) {
   }
 }
 
-// 모델이 지어낸 시간 센티널('auto' 등) — epoch ms로 해석 불가하고 Neo 라이브 표현('now', 'now-1d')도 아님.
-// 빈 값 검사만으로는 fixer·스냅을 둘 다 통과해 .dsh에 그대로 박혀 Time Range가 Invalid date로 깨진다.
+// 모델이 지어낸 시간 센티널('auto' 등) 판별 — epoch ms도 Neo 라이브 표현('now', 'now-1d')도 아닌 값
+// · .dsh에 그대로 박혀 Time Range "Invalid date" 되는 것 방지
 function isBogusTimeArg(v) {
   return typeof v === 'string' && v !== '' && !/^now([+-]|$)/.test(v) && !(parseInt(v, 10) > 0);
 }
@@ -295,7 +302,7 @@ function fixDashboardTime(tc, fctx) {
   if (!DASHBOARD_TOOLS[tc.function.name]) return;
   var args = tc.function.arguments;
 
-  // 해석 불가 값의 결측 취급은 ollama 한정 — 강한 모델은 기존 "빈 값만 채움" 유지.
+  // 해석 불가 값의 결측 취급은 ollama 한정 · 그 외 모델은 빈 값만 채움
   var needsStart = !args.time_start || typeof args.time_start !== 'string' || args.time_start === '' ||
     (fctx.isOllama && isBogusTimeArg(args.time_start));
   var needsEnd = !args.time_end || typeof args.time_end !== 'string' || args.time_end === '' ||
@@ -385,6 +392,5 @@ module.exports = {
   fix,
   fixDashboardTime,
   captureResults,
-  validateTagInArgs,
   DASHBOARD_TOOLS,
 };

@@ -207,9 +207,6 @@ html.theme-light body {
 }
 
 /* ─── Overlays ─── */
-.theme-light .modal-overlay {
-    background-color: rgba(35, 38, 46, 0.32);
-}
 
 .theme-light .spinner {
     border-color: rgba(35, 38, 46, 0.18);

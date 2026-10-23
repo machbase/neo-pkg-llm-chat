@@ -3,12 +3,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import DOMPurify from 'dompurify';
 import { renderMarkdown, PURIFY_CONFIG } from './markdown';
 import { ChatExecResult } from './ChatExecResult';
+import { openReport, reportPathOf } from '../../utils/reportLink';
 
 interface RenderMdProps {
     content: string;
     isInterrupt: boolean;
-    isProcess?: boolean;
-    disableExec?: boolean;
 }
 
 type ExecLang = 'tql' | 'sql' | 'sh';
@@ -22,7 +21,7 @@ const LANG_NORMALIZE_MAP: Record<string, ExecLang> = {
     mysql: 'sql',
     pgsql: 'sql',
     psql: 'sql',
-    // sh/shell/bash/zsh — 백엔드 응답 형식 정형화 전까지 비활성화. 일반 코드블록으로만 표시.
+    // sh/shell/bash/zsh 비활성 — 일반 코드블록으로만 표시
 };
 
 const normalizeLang = (raw: string | undefined): ExecLang | null => {
@@ -44,24 +43,22 @@ interface ActiveRoot {
     container: HTMLDivElement;
 }
 
-export const RenderMd = ({ content, isInterrupt, isProcess = false, disableExec = false }: RenderMdProps) => {
+export const RenderMd = ({ content, isInterrupt }: RenderMdProps) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const activeRoots = useRef<Map<HTMLElement, ActiveRoot>>(new Map());
 
     const html = useMemo(() => {
         if (isInterrupt || !content) return '';
-        // 경계 방어 — markdown.ts의 렌더러를 빠져나온 것이 있어도 innerHTML에 닿기 전에 걷어낸다.
-        // (marked를 올려 싱크가 늘어도 여기서 막힌다)
+        // 경계 방어 — 렌더러를 빠져나온 위험 마크업도 innerHTML 전에 제거
         return DOMPurify.sanitize(renderMarkdown(content), PURIFY_CONFIG);
     }, [content, isInterrupt]);
 
-    // fill=currentColor — the button carries the themed colour, so the glyph
-    // follows light/dark without a second palette here.
+    // fill=currentColor — 버튼 색을 따라 라이트·다크 자동 대응
     const COPY_ICON = `<svg viewBox="0 0 24 24" fill="currentColor" height="100%" width="100%">
         <path d="M20 2H10c-1.103 0-2 .897-2 2v4H4c-1.103 0-2 .897-2 2v10c0 1.103.897 2 2 2h10c1.103 0 2-.897 2-2v-4h4c1.103 0 2-.897 2-2V4c0-1.103-.897-2-2-2zM4 20V10h10l.002 10H4zm16-6h-4v-4c0-1.103-.897-2-2-2h-4V4h10v10z"/>
     </svg>`;
 
-    // wrapperEl 안에 ChatExecResult를 createRoot으로 마운트. 같은 wrapper에 이미 root가 있으면 skip.
+    // wrapperEl 안에 ChatExecResult를 createRoot로 마운트 — 같은 wrapper에 root 있으면 skip
     const handleRun = useCallback((wrapperEl: HTMLElement, code: string, lang: ExecLang) => {
         if (activeRoots.current.has(wrapperEl)) return;
         wrapperEl.classList.add('swapped');
@@ -77,10 +74,9 @@ export const RenderMd = ({ content, isInterrupt, isProcess = false, disableExec 
         const container = containerRef.current;
         if (!container || !html) return;
 
-        // html 재생성 시:
-        //  (a) wrapper element 자체가 새로 만들어지면 이전 wrapper는 !isConnected
-        //  (b) wrapper는 같은 reference인데 innerHTML re-set으로 자식 container만 wiped — wrapper.contains(container) === false
-        // 둘 다 cleanup 후 재마운트 필요.
+        // html 재생성 시 끊긴 root 정리(아래에서 재마운트)
+        // · wrapper 자체가 새로 생김 → 이전 wrapper !isConnected
+        // · wrapper는 그대로, innerHTML 재설정으로 자식 container만 제거됨
         for (const [wrapper, entry] of activeRoots.current) {
             const isWrapperGone = !wrapper.isConnected;
             const isContainerDetached = !wrapper.contains(entry.container);
@@ -164,22 +160,20 @@ export const RenderMd = ({ content, isInterrupt, isProcess = false, disableExec 
                 normalizedLang = detectLangFromCode(code);
             }
 
-            const shouldMountRun =
-                (normalizedLang === 'tql' || normalizedLang === 'sql') &&
-                !disableExec &&
-                isProcess === false;
+            const shouldMountRun = normalizedLang === 'tql' || normalizedLang === 'sql';
 
-            // 자동 mount — DOM 상태 기반 idempotent. wrapper의 container가 detached/없으면 cleanup + 재마운트.
+            // 자동 mount — 이미 마운트된 wrapper는 skip(idempotent)
             if (shouldMountRun && normalizedLang) {
                 handleRun(wrapperEl, code, normalizedLang);
             }
         });
-    }); // 의존성 array 없음 — 매 render마다 sync. dangerouslySetInnerHTML re-set으로 인한 자식 wipe도 즉시 감지.
+    }); // 의존성 배열 없음 — 매 render 동기화(innerHTML 재설정으로 지워진 자식 즉시 감지)
 
-    // dangerouslySetInnerHTML 객체 reference 안정화 — html string 동일이면 React가 innerHTML re-set skip.
+    // dangerouslySetInnerHTML 객체 참조 안정화 — html 동일 시 React의 innerHTML 재설정 skip
     const dangerousHTML = useMemo(() => ({ __html: html }), [html]);
 
-    // 패키지 UI는 iframe 안에서 뜨므로 링크를 최상위 창으로 연다. 인라인 onclick을 대신하는 위임 핸들러.
+    // 링크 클릭 위임 핸들러 — 패키지 UI 는 iframe 안이라 최상위 창으로 열기(인라인 onclick 대체)
+    // · 리포트 링크는 API 토큰으로 받아 새 창에 표시
     useEffect(() => {
         const el = containerRef.current;
         if (!el) return;
@@ -187,6 +181,11 @@ export const RenderMd = ({ content, isInterrupt, isProcess = false, disableExec 
             const a = (e.target as HTMLElement | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
             if (!a || !el.contains(a)) return;
             e.preventDefault();
+            const reportPath = reportPathOf(a.href);
+            if (reportPath) {
+                openReport(reportPath);
+                return;
+            }
             try {
                 (window.top || window).open(a.href, '_blank', 'noopener');
             } catch {

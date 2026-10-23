@@ -4,18 +4,15 @@ import { authHeaders } from "../utils/auth";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-/**
- * LLM 중계 서버의 root-level path 빌드 — `${apiBaseOrigin}/db/...`.
- * (LLM relay가 /db/tql, /db/query를 instance prefix 없이 forward하도록 backend 처리됨)
- */
+/** LLM 중계 서버의 root-level 경로 빌드 — `${apiBaseOrigin}/db/...` */
 async function buildUrl(suffix: string): Promise<string> {
   const apiBase = await getApiBaseOrigin();
   return `${apiBase}${suffix}`;
 }
 
 /**
- * fetch 응답을 ExecResult로 정규화. 중계 서버는 이 토큰을 그대로 neo 로 넘긴다.
- * AbortController 시그널 throw / TypeError → kind 분류는 useTqlExec에서.
+ * TQL 실행 → ExecResult 정규화 — 인증 헤더는 중계 서버가 neo로 그대로 전달
+ * abort·네트워크 오류(TypeError)는 throw — 호출부에서 분류
  */
 export async function executeTql(
   code: string,
@@ -30,8 +27,7 @@ export async function executeTql(
   });
   if (!res.ok) return classifyHttpError(res, await safeText(res));
 
-  // x-chart-type 헤더는 cross-origin 응답에서 Access-Control-Expose-Headers 미설정 시
-  // 읽을 수 없으므로 body shape이 ground truth. chart → table → text 순으로 판별.
+  // 응답 종류는 body 형태로 판별(chart → table → text) — x-chart-type 헤더는 cross-origin에서 읽기 불가할 수 있음
   const text = await res.text();
   const contentType = res.headers.get("content-type") ?? "";
 
@@ -45,8 +41,14 @@ export async function executeTql(
     if (isChartShape(data)) {
       return { kind: "chart", payload: data as TqlChartPayload };
     }
-    if (isTableShape(data)) {
-      return { kind: "table", payload: applyTruncate(data as TablePayload, text) };
+    const table = toTablePayload(data);
+    if (table) {
+      return { kind: "table", payload: applyTruncate(table, text) };
+    }
+    // SQL 오류는 HTTP 200 + {"success":false,"reason":...}로 옴
+    if (data && typeof data === "object" && (data as Record<string, unknown>).success === false) {
+      const reason = (data as Record<string, unknown>).reason;
+      return { kind: "error", payload: { kind: "INVALID_SQL", message: String(reason ?? text) } };
     }
   } catch { /* not JSON → text */ }
 
@@ -54,10 +56,9 @@ export async function executeTql(
 }
 
 /**
- * SQL 코드를 TQL boilerplate로 감싸 /db/tql로 전송.
- * 모든 실행 요청은 단일 TQL endpoint로 통일.
+ * SQL 코드를 TQL boilerplate로 감싸 /db/tql로 전송 — 결과는 표로 표시
  *   SQL(`<query>`)
- *   CSV()
+ *   JSON(timeformat("Default"), tz("Local"))
  */
 export async function executeSql(
   query: string,
@@ -67,7 +68,7 @@ export async function executeSql(
 }
 
 /**
- * Shell 코드를 TQL boilerplate로 감싸 /db/tql로 전송.
+ * Shell 코드를 TQL boilerplate로 감싸 /db/tql로 전송
  *   FAKE(once(1))
  *   SHELL(`<cmd>`)
  *   JSON(rowsFlatten(true))
@@ -79,15 +80,13 @@ export async function executeSh(
   return executeTql(wrapShAsTql(cmd), opts);
 }
 
-/**
- * TQL backtick string에 안전하게 임베드하기 위해 코드 내 backtick은 single quote로 치환.
- */
+/** 코드 내 backtick → single quote 치환 — TQL backtick 문자열 임베드용 */
 function escapeBacktick(code: string): string {
   return code.replace(/`/g, "'");
 }
 
 function wrapSqlAsTql(query: string): string {
-  return `SQL(\`${escapeBacktick(query.trim())}\`)\nCSV()`;
+  return `SQL(\`${escapeBacktick(query.trim())}\`)\nJSON(timeformat("Default"), tz("Local"))`;
 }
 
 function wrapShAsTql(cmd: string): string {
@@ -101,7 +100,10 @@ function classifyHttpError(res: Response, body: string): ExecResult {
   else if (status === 502 || status === 503 || status === 504) kind = "MACHBASE_UNAVAILABLE";
   else if (status >= 400 && status < 600) kind = "INVALID_SQL";
   else kind = "unknown";
-  const message = body || `HTTP ${status} ${res.statusText}`;
+  // {"success":false,"reason":...} 형태면 reason만 표시
+  let reason = "";
+  try { reason = String(JSON.parse(body)?.reason ?? ""); } catch { /* 텍스트 본문 */ }
+  const message = reason || body || `HTTP ${status} ${res.statusText}`;
   return { kind: "error", payload: { kind, message } };
 }
 
@@ -116,10 +118,18 @@ function isChartShape(d: unknown): boolean {
   return hasMountId && Array.isArray(o.jsAssets);
 }
 
-function isTableShape(d: unknown): boolean {
-  if (!d || typeof d !== "object") return false;
-  const o = d as Record<string, unknown>;
-  return Array.isArray(o.columns) && Array.isArray(o.rows);
+// Neo JSON() 결과 {data:{columns:[이름], types:[타입], rows}} → 표. 아니면 null
+function toTablePayload(d: unknown): TablePayload | null {
+  if (!d || typeof d !== "object") return null;
+  const inner = (d as Record<string, unknown>).data;
+  if (!inner || typeof inner !== "object") return null;
+  const o = inner as Record<string, unknown>;
+  if (!Array.isArray(o.columns) || !Array.isArray(o.rows)) return null;
+  const types = Array.isArray(o.types) ? o.types : [];
+  return {
+    columns: o.columns.map((name, i) => ({ name: String(name), type: types[i] === undefined ? undefined : String(types[i]) })),
+    rows: o.rows as unknown[][],
+  };
 }
 
 function applyTruncate(t: TablePayload, raw: string): TablePayload {

@@ -1,7 +1,6 @@
 const segments = require('./segments');
 const segmentsOllama = require('./segments_ollama');
 const { ToolPrompts } = require('./tool_prompts');
-const { formatCatalog } = require('./catalog');
 
 function createBuilder() {
   var parts = [];
@@ -46,10 +45,6 @@ function createBuilder() {
   function addToolPrompts() {
     for (var i = 0; i < arguments.length; i++) {
       var group = arguments[i];
-      if (isOllama && group === 'tql_tools') {
-        parts.push(segmentsOllama.OllamaSegTQLRules);
-        continue;
-      }
       if (ToolPrompts[group]) {
         parts.push(ToolPrompts[group]);
       }
@@ -75,24 +70,18 @@ function createBuilder() {
       var ollamaMap = {
         'Role': segmentsOllama.OllamaSegRole,
         'QueryClassification': segmentsOllama.OllamaSegQueryClassification,
-        'TableSchema': segmentsOllama.OllamaSegTableSchema,
         'AdvancedWorkflow': segmentsOllama.OllamaSegAdvancedWorkflow,
         'BasicWorkflow': segmentsOllama.OllamaSegBasicWorkflow,
         'HTMLReportWorkflow': segmentsOllama.OllamaSegHTMLReportWorkflow,
-        'TimerWorkflow': segmentsOllama.OllamaSegTimerWorkflow,
-        'ErrorHandling': segmentsOllama.OllamaSegErrorHandling,
       };
       if (ollamaMap[name]) return ollamaMap[name];
     }
     var standardMap = {
       'Role': segments.SegRole,
       'QueryClassification': segments.SegQueryClassification || '',
-      'TableSchema': segments.SegTableSchema,
       'AdvancedWorkflow': segments.SegAdvancedWorkflow || '',
       'BasicWorkflow': segments.SegBasicWorkflow || '',
       'HTMLReportWorkflow': segments.SegHTMLReportWorkflow || '',
-      'TimerWorkflow': segments.SegTimerWorkflow || '',
-      'ErrorHandling': segments.SegErrorHandling,
     };
     return standardMap[name] || '';
   }
@@ -110,4 +99,4 @@ function createBuilder() {
   return builder;
 }
 
-module.exports = { createBuilder, formatCatalog };
+module.exports = { createBuilder };

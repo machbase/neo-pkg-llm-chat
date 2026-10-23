@@ -6,7 +6,6 @@ export type ExecErrorKind =
   | 'TIMEOUT'
   | 'INVALID_SQL'
   | 'NETWORK'
-  | 'aborted'
   | 'unknown';
 
 export interface TqlChartPayload {
@@ -29,7 +28,7 @@ export interface TablePayload {
   truncated?: boolean;
 }
 
-export interface TextPayload { text: string; }
+interface TextPayload { text: string; }
 export interface HtmlPayload { html: string; }
 export interface ErrorPayload { kind: ExecErrorKind; message: string; }
 
@@ -39,5 +38,3 @@ export type ExecResult =
   | { kind: 'text'; payload: TextPayload }
   | { kind: 'html'; payload: HtmlPayload }
   | { kind: 'error'; payload: ErrorPayload };
-
-export interface TqlExecResponse { kind: ExecResult['kind']; payload: ExecResult['payload']; chartType?: string; }

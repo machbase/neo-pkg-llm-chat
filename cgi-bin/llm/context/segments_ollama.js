@@ -10,8 +10,8 @@ var OllamaSegRole = '## Role\n' +
   '- TQL = Transforming Query Language.\n' +
   '- Machbase knowledge: use provided tools/docs only, not pretrained knowledge.\n';
 
-// 분석/리포트 답변 전용 형식 — OllamaSegRole(전역)에서 빼서 분석 워크플로에만 붙인다(B안).
-// 문서/개념/일반/조회 답변은 이 형식 없이 서술형으로.
+// 분석/리포트 답변 전용 형식 — 분석 워크플로에만 붙임
+// · 문서/개념/일반/조회 답변은 서술형 유지용
 var OllamaSegAnswerFormat = '\n## Analysis answer format\n' +
   '- When listing items use: `1. **Title**` then sub-items `- 설명:`, `- 권장:`, `- 기대효과:`.\n' +
   '- Use tables for data comparison. Never put everything in one sentence.\n';
@@ -78,7 +78,7 @@ var OllamaSegAdvancedWorkflow = '## Advanced Analysis (deep analysis dashboard)\
   '   - kind="tags" (compare multiple tags): {table, tags:["a","b"], timeRange}\n' +
   '   - kind="ohlc" (OHLC candlestick, price/quote): {table, timeRange, rollup(candle bucket, default day)}. If open/high/low/close tags exist, use this (tool auto-detects them, no agg needed).\n' +
   '   - output (optional): {chartType:"line"|"bar", title, subtitle}\n' +
-  '   - timeRange MUST be THIS table\'s range from step1 (never reuse another table\'s range). On error, fix ONLY the spec JSON and call again — NEVER write raw TQL or call save_tql_file. Once a chart saves, go to the next.\n' +
+  '   - timeRange MUST be THIS table\'s range from step1 (never reuse another table\'s range). On error, fix ONLY the spec JSON and call again — NEVER write raw TQL. Once a chart saves, go to the next.\n' +
   '3. create_dashboard_with_charts — reference EVERY compiled .tql as {title, tql_path} (include a title for each). Candlestick/OHLC and all compiled charts MUST use tql_path, NOT inline tag (an inline OHLC panel will not render). Call EXACTLY ONCE. filename="TABLE/TABLE_Dashboard.dsh" base name (system auto-appends the timestamp). After this, do NOT add charts or re-create.\n' +
   '4. preview_dashboard\n' +
   '5. Report with stats + dashboard URL as [대시보드 열기](URL) markdown link\n' + OllamaSegAnswerFormat;
@@ -105,22 +105,6 @@ var OllamaSegHTMLReportWorkflow = '## HTML Report ("리포트","보고서")\n' +
   'Priority: matching custom (C-*) > builtin (R-*) > R-0-general if none match.\n' +
   'ONLY if the user explicitly states a period, pass time_start·time_end (epoch ms). Otherwise DO NOT pass them — never guess a window (full data).\n' + OllamaSegAnswerFormat;
 
-var OllamaSegTimerWorkflow = '## Timer ("타이머","스케줄","주기적","수집")\n' +
-  'Use tools directly! Never show code as text.\n' +
-  'NAMING: same name for timer, table, TQL folder. e.g. NAME=SENSOR_DATA\n\n' +
-  '1. get_full_document_content("utilities/timer-templates.md") REQUIRED!\n' +
-  '2. SQL: CREATE TAG TABLE IF NOT EXISTS NAME\n' +
-  '   (name VARCHAR(80) PRIMARY KEY, time DATETIME BASETIME, value DOUBLE SUMMARIZED) WITH ROLLUP\n' +
-  '3. save_tql_file: NAME/NAME.tql (use doc patterns)\n' +
-  '4. add_timer(name=NAME, schedule="@every 5s", path="NAME/NAME.tql")\n' +
-  '5. start_timer(name=NAME) — must start after create!\n\n' +
-  'Cleanup: stop_timer → delete_timer → delete_file(TQL) → delete_file(folder). For table deletion, do NOT run it yourself — guide the user to run DROP TABLE name CASCADE; in the SQL console.\n';
-
-var OllamaSegTQLRules = '## TQL Rules\n' +
-  'SQL() inside TQL: GROUP BY required. Backticks only. No ROLLUP alias.\n' +
-  'One SQL() per file. English filenames only.\n' +
-  'Write raw TQL directly (NO TEMPLATE syntax exists). Copy a skeleton from tql/tql-chart-conventions.md and change only TABLE/TAG/period.\n';
-
 var OllamaSegSqlTools = '## SQL Tools\n' +
   'execute_sql_query: direct SQL. No GROUP BY needed.\n' +
   'Row count: report the "(N rows)" footer in the result. NEVER use the LIMIT number as the count.\n' +
@@ -131,7 +115,7 @@ var OllamaSegSqlTools = '## SQL Tools\n' +
   'On query error: do NOT invent a "feature/version limitation" excuse. Fix the alias/syntax and retry. NEVER hand-compute aggregates from raw rows (values will be wrong).\n' +
   'Time-bucket aggregation — ROLLUP FIRST: ROLLUP(\'hour\',1,TIME) with GROUP BY (fast). If ROLLUP is unavailable (LOG table) or the aggregate is unsupported by ROLLUP (STDDEV/VARIANCE), use DATE_TRUNC(\'hour\', TIME) — unit FIRST. No PostgreSQL syntax (EXTRACT(EPOCH ...), etc.). e.g. hourly avg = ROLLUP(\'hour\',1,TIME); hourly stddev = GROUP BY DATE_TRUNC(\'hour\',TIME) with STDDEV(VALUE).\n' +
   'Stat phrase → SQL: 변동폭/range = MAX(VALUE)-MIN(VALUE); 주 단위/weekly = ROLLUP(\'week\',1,TIME); 일별=day, 시간별=hour; 표준편차/stddev = STDDEV(VALUE) via GROUP BY DATE_TRUNC. Do NOT split "주 단위"(weekly) into daily buckets.\n' +
-  '**Anchor date is MANDATORY when the question names one.** If the question says "<날짜> 기준으로"/"기준일"/"starting from <date>" together with a week/month bucket, you MUST pass that date as the 4th ROLLUP argument: ROLLUP(\'week\',1,TIME,\'2024-01-01\'). DATE_TRUNC CANNOT honor an anchor date (it always snaps weeks to Monday) — using it there silently returns buckets the user did not ask for. Do NOT answer with a note explaining that the boundary differs from what was asked; use the anchor argument so it matches.\n' +
+  '**Anchor date is MANDATORY when the question names one.** If the question says "<날짜> 기준으로"/"기준일"/"starting from <date>" together with a week/month bucket, you MUST pass that date as the 4th ROLLUP argument: ROLLUP(\'week\',1,TIME,\'2024-01-01\'). DATE_TRUNC CANNOT honor an anchor date — using it there silently returns buckets the user did not ask for. Do NOT answer with a note explaining that the boundary differs from what was asked; use the anchor argument so it matches.\n' +
   'If the question gives NO time range, query the WHOLE range — do NOT add "WHERE TIME >= today/recent" on your own (it silently drops older data). Add a date filter ONLY when the user states a period.\n' +
   'If the question names a specific tag (e.g. "TAG01의 …"), the query MUST filter it with WHERE NAME=\'TAG01\'. Omitting it makes aggregates (MAX-MIN 변동폭, AVG, STDDEV …) mix ALL tags → wrong result with no error. Always include the tag filter when a tag is named.\n' +
   'No UPDATE statements.\n';
@@ -155,8 +139,6 @@ module.exports = {
   OllamaSegAdvancedWorkflow,
   OllamaSegBasicWorkflow,
   OllamaSegHTMLReportWorkflow,
-  OllamaSegTimerWorkflow,
-  OllamaSegTQLRules,
   OllamaSegSqlTools,
   OllamaSegCommonProhibitions,
 };

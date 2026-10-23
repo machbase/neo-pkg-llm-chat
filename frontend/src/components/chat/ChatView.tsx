@@ -54,13 +54,13 @@ interface ChatViewProps {
     isProcessingAnswer: boolean;
     getListModels: () => void;
     setInputValue: (value: string) => void;
-    setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
     setSelectedModel: (model: PkgSelectedModel) => void;
     handleSendMessage: () => void;
     handleInterruptMessage: () => void;
     handleClearSession: () => void;
     handleEditUserMessage: (messageId: string, newContent: string) => void;
     onOpenSettings?: () => void;
+    accountName?: string | null;
 }
 
 export const ChatView = ({
@@ -77,13 +77,13 @@ export const ChatView = ({
     isProcessingAnswer,
     getListModels,
     setInputValue,
-    setMessages: _setMessages,
     setSelectedModel,
     handleSendMessage,
     handleInterruptMessage,
     handleClearSession,
     handleEditUserMessage,
     onOpenSettings,
+    accountName,
 }: ChatViewProps) => {
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -113,8 +113,7 @@ export const ChatView = ({
 
     const { favorites, addFavorite, removeFavorite, reorderFavorites } = useFavorites();
 
-    // Re-rolled whenever the welcome screen comes back, so a cleared session
-    // gets a fresh line without the greeting flickering on mount.
+    // 환영 화면이 다시 뜰 때마다 새로 뽑음 — 초기화한 세션은 새 문구, 마운트 시 깜빡임 없음
     const [greeting, setGreeting] = useState(pickGreeting);
     const rerollGreeting = useCallback(() => {
         setGreeting((current) => pickGreeting(new Date(), current));
@@ -175,7 +174,7 @@ export const ChatView = ({
         };
     }, [isFavPanelOpen]);
 
-    // Keep an open popover aligned to the input box when the window is resized.
+    // 창 크기 변경 시 열린 팝오버를 입력창에 다시 맞춤
     useEffect(() => {
         if (!isPromptPanelOpen && !isFavPanelOpen) return;
         const reposition = () => {
@@ -192,8 +191,7 @@ export const ChatView = ({
         return () => window.removeEventListener('resize', reposition);
     }, [isPromptPanelOpen, isFavPanelOpen]);
 
-    // Position a toolbar popover above its trigger button, aligned to the visible
-    // input box (not the wrapper, which also spans the gap + settings gear on the right).
+    // 툴바 팝오버를 버튼 위·보이는 입력창 기준으로 배치
     const computePanelPos = (btn: HTMLElement | null) => {
         const box = inputContainerRef.current ?? inputWrapRef.current;
         if (!box || !btn) return null;
@@ -388,7 +386,7 @@ export const ChatView = ({
                         <div className="chat-welcome-icon-wrap">
                             <img src={neoLogo} alt="Neo" className="chat-welcome-logo" />
                         </div>
-                        {/* No "pick a model" line — the model chip pulses until one is chosen. */}
+                        {/* "모델 선택" 안내 문구 없음 — 선택 전까지 모델 칩이 깜빡임 */}
                         <h2 className="chat-welcome-title">
                             <TypedGreeting text={greeting} onCycle={rerollGreeting} onClick={rerollGreeting} />
                         </h2>
@@ -434,10 +432,7 @@ export const ChatView = ({
                                 ['--chat-prompt-max-height' as string]: `${promptPanelPos.maxHeight}px`,
                             }}
                         >
-                            <PromptSuggestionsPanel
-                                visible
-                                onPick={handlePickPrompt}
-                            />
+                            <PromptSuggestionsPanel onPick={handlePickPrompt} />
                         </div>,
                         document.body
                     )}
@@ -569,6 +564,7 @@ export const ChatView = ({
                                 <div className={`chat-conn-badge ${isConnected ? 'chat-conn-badge--on' : 'chat-conn-badge--off'}`}>
                                     <span className="chat-conn-dot" />
                                     <span className="chat-toolbar-mono">{isConnected ? 'Connected' : 'Disconnected'}</span>
+                                    {accountName && <span className="chat-toolbar-mono" title="API 토큰 계정">· {accountName.toUpperCase()}</span>}
                                 </div>
                                 {!isConnected && (
                                     <button
@@ -606,8 +602,7 @@ export const ChatView = ({
                             </div>
                         </div>
                     </div>
-                    {/* Scroll buttons ride entirely above the input's top edge —
-                        anchored to it, so they stay clear however tall the input grows. */}
+                    {/* 스크롤 버튼은 입력창 위쪽 가장자리에 고정 — 입력창이 커져도 겹치지 않음 */}
                     {messages.length > 0 && (showScrollTop || showScrollBottom) && (
                         <div className="chat-scroll-actions">
                             {showScrollTop && (

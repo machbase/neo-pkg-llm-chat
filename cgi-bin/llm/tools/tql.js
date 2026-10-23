@@ -9,12 +9,17 @@ function rowsPresent(qres) {
     return !!(qp && qp.success && qp.data && qp.data.rows && qp.data.rows.length > 0);
   } catch (e) { return (qres || '').length > 20; }
 }
-var ZERO_ROW_MSG = 'Error: 차트 쿼리가 데이터를 0건 반환했습니다 (TQL 문법은 맞지만 빈 차트가 됩니다). 시간 범위를 describe_table의 time range(ms)에 맞추고(TO_DATE에 실제 데이터 기간 사용), 태그명/테이블을 확인해 TQL을 고쳐 다시 저장하세요.';
+var KEEP_RANGE_ZERO_MSG = '기간에 데이터 없음: 질문에서 지정한 기간에 이 차트의 데이터가 0건이라 저장하지 않았습니다. 기간을 바꾸지 말고, 사용자에게 그 기간에 데이터가 없다고 알리세요.';
+var ZERO_ROW_MSG ='Error: 차트 쿼리가 데이터를 0건 반환했습니다 (TQL 문법은 맞지만 빈 차트가 됩니다). 시간 범위를 describe_table의 time range(ms)에 맞추고(TO_DATE에 실제 데이터 기간 사용), 태그명/테이블을 확인해 TQL을 고쳐 다시 저장하세요.';
 
 function register(registry, mc) {
   // execute_tql_script
+  // · 내부 전용: 모델에 노출 안 함, 모델 호출은 거절
+  // · compile_tql_from_spec이 컴파일 결과를 실행 검증할 때 fn을 직접 호출
   registry.register({
     name: 'execute_tql_script',
+    internal: true,
+    useInstead: 'compile_tql_from_spec(spec)',
     description: 'Execute a TQL (Transforming Query Language) script on Machbase Neo. Returns the execution result (chart HTML, CSV data, or error).',
     parameters: {
       type: 'object',
@@ -42,8 +47,12 @@ function register(registry, mc) {
   });
 
   // save_tql_file
+  // · 내부 전용: 모델에 노출 안 함, 모델 호출은 거절
+  // · compile_tql_from_spec·forecast_table이 저장할 때 fn을 직접 호출
   registry.register({
     name: 'save_tql_file',
+    internal: true,
+    useInstead: 'compile_tql_from_spec(spec, filename)',
     description: 'Save a TQL script to a file in Machbase Neo filesystem.',
     parameters: {
       type: 'object',
@@ -100,7 +109,7 @@ function register(registry, mc) {
         }
 
         if (!filename.toLowerCase().endsWith('.tql')) filename += '.tql';
-        // 산출물은 계정 폴더 아래로 — 같은 이름의 차트를 서로 덮어쓰지 않게 한다.
+        // 산출물은 계정 폴더 아래로 — 계정 간 같은 이름 차트 덮어쓰기 방지
         filename = withUserRoot(mc, filename);
 
         var slashIdx = filename.lastIndexOf('/');
@@ -125,19 +134,20 @@ function register(registry, mc) {
                   cb(null, 'TQL file saved: ' + filename + shiftedMsg);
                 });
               }
-              // 안전장치: TQL 문법은 맞아도 데이터 0건이면 빈 차트 → 우선 실제 데이터 범위로 자동 스냅 재시도, 그래도 0건이면 거부.
-              // (모델이 시간 범위를 틀려도 — 예: 다른 테이블 범위 재사용 — 테이블에 데이터가 있으면 자동 교정)
+              // 빈 차트 방지: 추출 SQL이 0건이면 실제 데이터 범위로 스냅 후 재검, 그래도 0건이면 거부
               var sqlM = tqlContent.match(/SQL\(\s*`([\s\S]*?)`\s*\)/);
               if (!sqlM) return writeIt();
               mc.querySQL(sqlM[1], 'ms', '', '', function (qerr, qres) {
-                // 추출 SQL을 직접 실행: CHART가 에러를 차트로 삼켜도 raw SQL이라 에러가 그대로 드러난다.
-                // 구문/GROUP BY/컬럼 에러(MACHCLI-ERR / success:false)면 거부 — qerr.message(HTTP 500 본문) 또는 qres에서 탐지.
+                // 추출 SQL 직접 실행 — CHART가 삼키는 SQL 에러 노출용
+                // · MACHCLI-ERR / success:false면 거부(qerr.message=HTTP 500 본문 또는 qres에서 탐지)
                 var qBlob = (qerr && qerr.message ? qerr.message : '') + ' ' + String(qres || '');
                 if (/MACH(?:CLI)?-ERR/i.test(qBlob) || /"success"\s*:\s*false/i.test(qBlob)) {
                   return cb(null, 'Error: TQL 실행 검증 실패(SQL): ' + qBlob.substring(0, 400) + tqlHint);
                 }
                 if (qerr) return writeIt(); // 에러 마커 없는 검증쿼리 실패(네트워크 등)는 과잉차단 방지 위해 통과
                 if (rowsPresent(qres)) return writeIt();
+                // 질문이 콕 집은 기간(compile_tql_from_spec이 keep_range 전달) — 기간을 옮기지 않고 저장하지 않음
+                if (args.keep_range) return cb(null, KEEP_RANGE_ZERO_MSG);
 
                 // 0건 → 테이블 실제 MIN/MAX(TIME)으로 TO_DATE 범위 스냅 후 재검
                 var tmF = /FROM\s+([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*){0,2})/i.exec(tqlContent);
@@ -196,7 +206,7 @@ function register(registry, mc) {
 
         // Time shift: if TQL contains TO_DATE with future times, shift to data range
         var toDateRe = /TO_DATE\s*\(\s*'([^']+)'\s*\)/g;
-        // 소유자 접두(SYS.BITCOIN)까지 한 토큰으로 — 안 그러면 SYS 만 잘려 엉뚱한 테이블을 조회한다.
+        // 소유자 접두(SYS.BITCOIN)까지 한 토큰 — SYS만 잘려 엉뚱한 테이블 조회 방지
         var fromRe = /FROM\s+([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*){0,2})/i;
         var dates = [];
         var m;

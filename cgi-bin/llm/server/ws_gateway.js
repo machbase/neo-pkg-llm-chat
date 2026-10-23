@@ -1,10 +1,6 @@
-// Gateway — non-blocking WebSocket router + worker lifecycle manager
-// Browser ←WS→ Gateway ←WS→ Worker (separate process per session)
-//
-// Service management (install/start/stop) is delegated to Neo CGI endpoints
-// (cgi-bin/api/worker/start.js, stop.js) because service callbacks cannot fire
-// inside the server.serve() event loop. CGI scripts run as separate processes
-// where service callbacks work normally — same pattern as neo-pkg-replication.
+// 게이트웨이 — 브라우저 WS 라우터 + 세션별 워커 수명 관리
+// · Browser ←WS→ Gateway ←WS→ Worker(세션마다 별도 프로세스)
+// · 워커 서비스 등록·시작·종료는 Neo CGI(cgi-bin/api/worker/*.js)에 위임 — serve() 안에서는 service 콜백이 안 불림
 
 var fs = require('fs');
 var pathMod = require('path');
@@ -16,12 +12,9 @@ var WORKER_PREFIX = 'llm-w-';
 
 function createGateway(cfg, serverPort) {
   var routes = {};       // sessionID → { browserConn, workerConn, serviceName, ... }
-  var workerMap = {};    // connId → sessionID (reverse lookup for worker disconnect)
-  var workerIdSeq = 0;
 
   // Paths
   var LLM_DIR = pathMod.resolve('.');
-  var WORKER_SCRIPT = pathMod.join(LLM_DIR, 'worker.js');
   var CONFIGS_DIR = pathMod.join(LLM_DIR, 'configs');
   var WORKERS_DIR = pathMod.join(LLM_DIR, 'workers');
 
@@ -52,38 +45,35 @@ function createGateway(cfg, serverPort) {
   }
 
   // --- Per-user config ---
-  function freshCfg(userID) {
-    if (!cfg || !cfg._path) return cfg;
-    var absSysPath = pathMod.resolve(cfg._path);
-    var configsDir = pathMod.dirname(absSysPath);
-    var name = (userID || cfg.machbase.user || 'sys') + '.json';
-    var userPath = pathMod.join(configsDir, name);
+  // 본인 설정 파일 — 없으면 null(sys.json으로 대신하지 않음)
+  function userCfg(userID) {
+    if (!userID) return null;
+    var userPath = pathMod.join(CONFIGS_DIR, userID + '.json');
     try { if (fs.existsSync(userPath)) return config.loadConfig(userPath); } catch (e) {}
-    try { return config.loadConfig(absSysPath); } catch (e) { return cfg; }
+    return null;
   }
 
   // =====================================================================
   //  Browser message handling
   // =====================================================================
 
-  function handleBrowserMessage(conn, raw, authUserID) {
+  function handleBrowserMessage(conn, raw, authUserID, authToken) {
     var msg;
     try { msg = JSON.parse(raw); } catch (e) { return; }
 
-    // 검증된 신원이 없으면 처리하지 않는다. 본문 user_id 나 sys 로 폴백하면 아무나 남의
-    // 계정 설정(DB 자격증명·LLM API 키)으로 워커를 띄울 수 있다.
+    // 검증된 신원이 없으면 미처리 — 본문 user_id·sys 폴백 시 남의 설정(LLM API 키)으로 워커 기동 가능
     var userID = authUserID;
-    if (!userID) {
+    if (!userID || !authToken) {
       sendJSON(conn, {
         type: 'error', session_id: msg && msg.session_id, code: 'auth_required',
-        msg: '로그인 정보가 확인되지 않았습니다. 페이지를 새로고침한 뒤 다시 시도하세요.',
+        msg: 'API 토큰이 확인되지 않았습니다. 설정에서 토큰을 확인한 뒤 다시 시도하세요.',
       });
       return;
     }
 
     switch (msg.type) {
       case 'chat':
-        handleChat(conn, userID, msg.session_id, msg.provider, msg.model, msg.query);
+        handleChat(conn, userID, authToken, msg.session_id, msg.provider, msg.model, msg.query, String(msg.tz || '').substring(0, 64));
         break;
       case 'stop':
         handleStop(conn, msg.session_id);
@@ -97,15 +87,13 @@ function createGateway(cfg, serverPort) {
     }
   }
 
-  function handleChat(browserConn, userID, sessionID, provider, model, query) {
+  function handleChat(browserConn, userID, token, sessionID, provider, model, query, tz) {
     if (!provider || !model) {
       sendJSON(browserConn, { type: 'error', session_id: sessionID, msg: 'provider와 model은 필수입니다.' });
       return;
     }
 
-    // Per-user isolation gate: a user may only chat with their OWN saved config. If they have
-    // none yet, refuse here — never proceed to a worker that would fall back to sys.json and let
-    // them use another account's credentials / LLM API keys. They must create their config first.
+    // 사용자별 격리 — 본인 설정 파일이 없으면 거부(sys.json 폴백 워커로 남의 LLM API 키 사용 방지)
     if (!fs.existsSync(pathMod.join(CONFIGS_DIR, userID + '.json'))) {
       sendJSON(browserConn, { type: 'error', session_id: sessionID, code: 'config_required',
         msg: '설정이 없습니다. 먼저 본인 계정의 설정(LLM 제공자·API 키·접속 정보)을 저장한 뒤 채팅을 시작하세요.' });
@@ -113,6 +101,12 @@ function createGateway(cfg, serverPort) {
     }
 
     var route = routes[sessionID];
+
+    // 남의 세션 차단 — 세션 ID 만으로 다른 계정 워커에 토큰을 바꿔 넣는 것 방지
+    if (route && route.userID !== userID) {
+      sendJSON(browserConn, { type: 'error', session_id: sessionID, code: 'auth_required', msg: '다른 계정의 세션입니다.' });
+      return;
+    }
 
     if (route && (route.provider !== provider || route.model !== model)) {
       console.println('[Gateway] Model changed → kill worker ' + sessionID);
@@ -125,11 +119,12 @@ function createGateway(cfg, serverPort) {
       route = {
         browserConn: browserConn,
         workerConn: null,
-        workerConnId: null,
         serviceName: svcName,
         userID: userID,
+        token: token,
         provider: provider,
         model: model,
+        tz: tz,
         lastUsed: Date.now(),
         pendingQuery: query,
       };
@@ -138,13 +133,21 @@ function createGateway(cfg, serverPort) {
       startWorker(sessionID, route);
     } else {
       route.browserConn = browserConn;
+      route.token = token;
+      route.tz = tz;
       route.lastUsed = Date.now();
       if (route.workerConn) {
-        sendJSON(route.workerConn, { type: 'chat', session_id: sessionID, query: query });
+        sendChatToWorker(route.workerConn, sessionID, route.token, query, route.tz);
       } else {
         route.pendingQuery = query;
       }
     }
+  }
+
+  // 워커로 질문 전달 — API 토큰은 이 메시지로만 전달(workers/*.json 등 파일에 안 남김)
+  // · tz는 브라우저 시간대(시각 표시용)
+  function sendChatToWorker(workerConn, sessionID, token, query, tz) {
+    sendJSON(workerConn, { type: 'chat', session_id: sessionID, query: query, machbase_token: token, tz: tz });
   }
 
   // --- Worker lifecycle via Neo CGI (sync HTTP) ---
@@ -152,7 +155,6 @@ function createGateway(cfg, serverPort) {
   function startWorker(sessionID, route) {
     var workerCfgPath = pathMod.join(WORKERS_DIR, sessionID + '.json');
     var workerCfg = {
-      session_id: sessionID,
       user_id: route.userID,
       provider: route.provider,
       model: route.model,
@@ -176,7 +178,7 @@ function createGateway(cfg, serverPort) {
       var reason = (result && result.reason) || 'unknown error';
       console.println('[Gateway] Worker start failed: ' + reason);
       sendJSON(route.browserConn, { type: 'error', session_id: sessionID, msg: 'Worker start failed: ' + reason });
-      // 기동에 실패했으면 방금 쓴 설정 파일도 치운다 — 안 그러면 쓸모없는 파일만 남는다.
+      // 기동 실패 시 방금 쓴 세션 설정 파일 삭제
       try { fs.unlinkSync(workerCfgPath); } catch (e2) {}
       delete routes[sessionID];
     }
@@ -188,14 +190,9 @@ function createGateway(cfg, serverPort) {
 
     console.println('[Gateway] Killing worker: ' + route.serviceName);
 
-    if (route.workerConnId !== null) {
-      delete workerMap[route.workerConnId];
-    }
-
     cgiPost('/stop', 'name=' + encodeURIComponent(route.serviceName));
 
-    // 세션 설정 파일도 함께 지운다
-    // 실패는 무시한다(이미 없거나 잠긴 경우)
+    // 세션 설정 파일 삭제 — 실패(이미 없음·잠김)는 무시, 워커 종료를 막지 않음
     try { fs.unlinkSync(pathMod.join(WORKERS_DIR, sessionID + '.json')); } catch (e) {}
 
     delete routes[sessionID];
@@ -212,7 +209,11 @@ function createGateway(cfg, serverPort) {
   }
 
   function handleGetModels(conn, userID) {
-    var c = freshCfg(userID);
+    var c = userCfg(userID);
+    if (!c) {
+      sendJSON(conn, { type: 'models', msg: 'No providers configured. Please set API keys in Settings.' });
+      return;
+    }
     function namedModels(models) {
       var out = [];
       for (var i = 0; i < models.length; i++) {
@@ -244,7 +245,6 @@ function createGateway(cfg, serverPort) {
   // =====================================================================
 
   function handleWorkerConnection(conn) {
-    var connId = ++workerIdSeq;
     var boundSessionID = null;
 
     conn.on('message', function (event) {
@@ -260,12 +260,10 @@ function createGateway(cfg, serverPort) {
           return;
         }
         route.workerConn = conn;
-        route.workerConnId = connId;
-        workerMap[connId] = boundSessionID;
         console.println('[Gateway] Worker connected: ' + boundSessionID);
 
         if (route.pendingQuery) {
-          sendJSON(conn, { type: 'chat', session_id: boundSessionID, query: route.pendingQuery });
+          sendChatToWorker(conn, boundSessionID, route.token, route.pendingQuery, route.tz);
           route.pendingQuery = null;
         }
         return;
@@ -283,11 +281,7 @@ function createGateway(cfg, serverPort) {
       if (boundSessionID) {
         console.println('[Gateway] Worker disconnected: ' + boundSessionID);
         var route = routes[boundSessionID];
-        if (route) {
-          route.workerConn = null;
-          route.workerConnId = null;
-        }
-        delete workerMap[connId];
+        if (route) route.workerConn = null;
       }
     });
   }
@@ -323,10 +317,10 @@ function createGateway(cfg, serverPort) {
     }
   }
 
-  // 강제 종료로 게이트웨이가 죽으면 워커 서비스 등록(etc/services/)과 설정 파일이
-  // 함께 남는다. 등록이 남아 있으면 Neo가 종료할 때마다 그 이름으로 STOP을 찍고,
-  // 등록은 설정 파일보다 오래 살아남는다 — 그래서 파일이 아니라 등록부를 기준으로
-  // 훑는다. service API 콜백은 serve() 안에서 안 불리므로 CGI에 위임한다.
+  // 기동 시 고아 워커 정리
+  // · 대상: 강제 종료로 남은 워커 서비스 등록(etc/services/)·세션 설정 파일 — 등록이 남으면 Neo 종료마다 STOP 발생
+  // · 등록부 기준으로 훑음(등록이 설정 파일보다 오래 남음), service API 는 CGI 에 위임
+  // · 기동 시점엔 라우팅 표가 비어 있어 남은 워커 서비스는 전부 고아
   function sweepOrphanWorkers() {
     var res = cgiPost('/sweep', 'keep=');
     if (!res || !res.ok) {

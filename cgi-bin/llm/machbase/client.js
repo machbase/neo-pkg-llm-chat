@@ -2,10 +2,7 @@ var http2 = require('@jsh/http');
 
 var _client = http2.NewClient();
 
-/**
- * Sync HTTP helper using @jsh/http.Client.do() — blocking call.
- * cb(err, bodyText) is called synchronously before httpDo returns.
- */
+// 동기 HTTP 호출(@jsh/http Client.do) — cb(err, 본문)은 반환 전에 호출됨
 function httpDo(method, url, headers, body, cb) {
   try {
     var req = http2.NewRequest(method, url);
@@ -30,109 +27,89 @@ function httpDo(method, url, headers, body, cb) {
   }
 }
 
+var NO_TOKEN_MSG = 'Machbase API 토큰이 없습니다. 설정에서 토큰을 입력하세요.';
+var BAD_TOKEN_MSG = 'Machbase API 토큰이 유효하지 않습니다(HTTP 401). 설정에서 토큰을 확인하세요.';
+
+// neo /db/* 클라이언트 — 인증은 API 토큰(nt_) 하나
+// · cfg.token 은 CLI 용, 워커는 게이트웨이가 넘긴 토큰을 setToken 으로 주입
 function createClient(cfg) {
   var baseURL = 'http://' + cfg.host + ':' + cfg.port;
-  var jwtToken = '';
-  var jwtExp = 0;
-  var TOKEN_TTL_MS = 4 * 60 * 1000;
+  var token = cfg.token || '';
 
   function querySQL(sql, timeformat, tz, format, cb) {
     var params = ['q=' + encodeURIComponent(sql)];
     if (timeformat) params.push('timeformat=' + encodeURIComponent(timeformat));
     if (tz) params.push('tz=' + encodeURIComponent(tz));
     if (format) params.push('format=' + encodeURIComponent(format));
-    // /web/machbase 는 /db/query 와 동작·응답이 같고 JWT 로 사용자를 검증한다. 이 호출은
-    // config 계정의 권한으로 실행되므로 권한 밖 테이블은 DB 가 거부한다.
-    authRequest('GET', '/web/machbase?' + params.join('&'), null, null, cb);
+    request('GET', '/db/query?' + params.join('&'), null, null, cb);
   }
-
-  // X-Console-Id 가 있어야 TQL 이 토큰의 사용자로 실행된다. 없으면 서버 자체 커넥션(SYS)으로
-  // 돌아 권한 밖 테이블까지 읽힌다. 값 자체는 식별용이라 고정 문자열로 충분하고,
-  // 로그 레벨을 NONE 으로 두어 콘솔 스트림을 만들지 않는다.
-  var TQL_CONSOLE_HEADERS = {
-    'Content-Type': 'text/plain',
-    'X-Console-Id': 'neo-pkg-llm-chat, console-log-level=NONE',
-    'X-Console-Log-Level': 'NONE',
-  };
 
   function executeTQL(tqlContent, cb) {
-    authRequest('POST', '/web/api/tql', TQL_CONSOLE_HEADERS, tqlContent, cb);
+    request('POST', '/db/tql', { 'Content-Type': 'text/plain' }, tqlContent, cb);
   }
 
-  function login(cb) {
-    var payload = JSON.stringify({ loginName: cfg.user, password: cfg.password });
-    httpDo('POST', baseURL + '/web/api/login', { 'Content-Type': 'application/json' }, payload, function (err, body) {
-      if (err) return cb(err);
-      try {
-        var result = JSON.parse(body);
-        if (!result.success) return cb(new Error('Login failed: ' + result.reason));
-        jwtToken = result.accessToken;
-        // 서버의 accessToken 수명은 300초. 전송 지연·시계 오차로 경계에서 401 이 나지
-        // 않도록 로컬 만료를 60초 앞당겨 둔다.
-        jwtExp = Date.now() + TOKEN_TTL_MS;
-        cb(null, jwtToken);
-      } catch (e) { cb(new Error('Login parse error: ' + e.message)); }
+  // neo 호출 단일 관문 — 토큰 없으면 미전송(헤더 없는 요청은 서버 설정에 따라 기본 신원으로 통과)
+  function request(method, path, extraHeaders, body, cb) {
+    if (!token) return cb(new Error(NO_TOKEN_MSG));
+    var headers = { 'Authorization': 'Bearer ' + token };
+    if (extraHeaders) {
+      var keys = Object.keys(extraHeaders);
+      for (var i = 0; i < keys.length; i++) headers[keys[i]] = extraHeaders[keys[i]];
+    }
+    httpDo(method, baseURL + path, headers, body, function (err, text) {
+      if (err && err.status === 401) {
+        var authErr = new Error(BAD_TOKEN_MSG);
+        authErr.status = 401;
+        return cb(authErr);
+      }
+      cb(err, text);
     });
   }
 
-  function getToken(cb) {
-    if (jwtToken && Date.now() < jwtExp) return cb(null, jwtToken);
-    login(cb);
+  function setToken(t) { token = t || ''; }
+
+  // 시각 표시 시간대(IANA 이름) — 브라우저 시간대를 워커가 주입, 없으면 서버 시간대
+  // · offset은 그 시간대의 UTC 대비 분(주입 시점 기준), 서버 시간대면 null
+  var tz = '', tzOffsetMin = null;
+  function setTimezone(z, offsetMin) { tz = z || ''; tzOffsetMin = tz && offsetMin != null ? offsetMin : null; }
+  function timezone() { return tz || 'Local'; }
+  function timezoneOffset() { return tzOffsetMin; }
+
+  // Neo가 아는 시간대 이름인지 + 그 시간대의 지금 UTC 대비 분 → cb(ok, offsetMin)
+  // · 모르는 이름이면 쿼리가 "unknown time zone"으로 실패
+  function checkTimezone(z, cb) {
+    if (!/^[A-Za-z][A-Za-z0-9_+\-]*(\/[A-Za-z0-9_+\-]+)*$/.test(String(z || ''))) return cb(false);
+    querySQL('SELECT SYSDATE FROM M$SYS_USERS LIMIT 1', '2006-01-02 15:04:05', z, '', function (err, text) {
+      var wall = '';
+      try { var p = JSON.parse(text); if (!err && p.success) wall = String(p.data.rows[0][0]); } catch (e) {}
+      var m = wall.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})/);
+      if (!m) return cb(false);
+      var off = (Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) - Date.now()) / 60000;
+      cb(true, Math.round(off / 15) * 15);
+    });
   }
 
-  // 인증 요청 공통. 401(만료·폐기)이면 캐시된 토큰을 버리고 재로그인해 한 번만 재시도한다.
-  // 재시도를 1회로 묶는 이유: 계정 잠금·비밀번호 변경처럼 재로그인해도 계속 401 인 상황에서
-  // 무한 재시도로 도는 것을 막기 위해서다.
-  function authRequest(method, path, extraHeaders, body, cb) {
-    var retried = false;
-    function attempt() {
-      getToken(function (err, token) {
-        if (err) return cb(err);
-        var headers = { 'Authorization': 'Bearer ' + token };
-        if (extraHeaders) {
-          var keys = Object.keys(extraHeaders);
-          for (var i = 0; i < keys.length; i++) headers[keys[i]] = extraHeaders[keys[i]];
-        }
-        httpDo(method, baseURL + path, headers, body, function (reqErr, text) {
-          if (reqErr && reqErr.status === 401 && !retried) {
-            retried = true;
-            jwtToken = '';
-            jwtExp = 0;
-            return attempt();
-          }
-          cb(reqErr, text);
-        });
-      });
-    }
-    attempt();
+  // 토큰의 계정 이름(소문자), 무효면 에러
+  function whoami(cb) {
+    request('POST', '/db/token/validate', null, null, function (err, text) {
+      if (err) return cb(err);
+      try {
+        var body = JSON.parse(text);
+        if (!body || body.valid !== true || !body.user) return cb(new Error(BAD_TOKEN_MSG));
+        cb(null, String(body.user).toLowerCase());
+      } catch (e) { cb(e); }
+    });
   }
 
-  function webGet(path, cb) {
-    authRequest('GET', path, null, null, cb);
-  }
-
-  function webPost(path, payload, cb) {
-    authRequest('POST', path, { 'Content-Type': 'application/json' }, payload ? JSON.stringify(payload) : undefined, cb);
-  }
-
-  function webPostRaw(path, contentType, data, cb) {
-    authRequest('POST', path, { 'Content-Type': contentType }, data, cb);
-  }
-
-  function webDelete(path, cb) {
-    authRequest('DELETE', path, null, null, cb);
-  }
-
-  function webPut(path, payload, cb) {
-    authRequest('PUT', path, { 'Content-Type': 'application/json' }, payload ? JSON.stringify(payload) : undefined, cb);
-  }
+  // 출력 가림용 비밀 목록
+  function secrets() { return token ? [token] : []; }
 
   function escapePath(p) {
     return p.split('/').map(function (seg) { return encodeURIComponent(seg); }).join('/');
   }
 
   function createFolder(folderPath, cb) {
-    webPost('/web/api/files/' + escapePath(folderPath) + '/', null, function (err, body) {
+    request('POST', '/db/files/' + escapePath(folderPath) + '/', { 'Content-Type': 'application/json' }, undefined, function (err, body) {
       if (err) return cb(err);
       try {
         var parsed = JSON.parse(body);
@@ -146,19 +123,19 @@ function createClient(cfg) {
   }
 
   function writeFile(relPath, data, cb) {
-    webPostRaw('/web/api/files/' + escapePath(relPath), 'application/octet-stream', data, function (err) { cb(err); });
+    request('POST', '/db/files/' + escapePath(relPath), { 'Content-Type': 'application/octet-stream' }, data, function (err) { cb(err); });
   }
 
   function readFile(relPath, cb) {
-    webGet('/web/api/files/' + escapePath(relPath), cb);
+    request('GET', '/db/files/' + escapePath(relPath), null, null, cb);
   }
 
   function deleteFile(relPath, cb) {
-    webDelete('/web/api/files/' + escapePath(relPath), function (err) { cb(err); });
+    request('DELETE', '/db/files/' + escapePath(relPath), null, null, function (err) { cb(err); });
   }
 
   function listDir(relPath, cb) {
-    webGet('/web/api/files/' + escapePath(relPath), function (err, data) {
+    request('GET', '/db/files/' + escapePath(relPath), null, null, function (err, data) {
       if (err) return cb(err);
       try {
         var parsed = JSON.parse(data);
@@ -174,8 +151,9 @@ function createClient(cfg) {
 
   return {
     querySQL: querySQL, executeTQL: executeTQL,
-    webGet: webGet, webPost: webPost, webPostRaw: webPostRaw, webDelete: webDelete, webPut: webPut,
     createFolder: createFolder, writeFile: writeFile, readFile: readFile, deleteFile: deleteFile, listDir: listDir,
+    setToken: setToken, secrets: secrets, whoami: whoami,
+    setTimezone: setTimezone, timezone: timezone, timezoneOffset: timezoneOffset, checkTimezone: checkTimezone,
     escapePath: escapePath, baseURL: baseURL, user: cfg.user,
   };
 }

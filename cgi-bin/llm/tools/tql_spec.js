@@ -1,36 +1,29 @@
-// compile_tql_from_spec — TIR(의도 JSON) → 검증된 TQL 도구.
-//
-// 하나의 컴파일러(tir/compile)를 두 소비자에게 노출:
-//   ① 대시보드 경로 (filename 있음) → 컴파일 → save_tql_file 백스톱으로 저장 → charts의 tql_path
-//   ② "TQL 알려줘" 답변 경로 (filename 없음) → 컴파일 → execute_tql_script로 실행 검증 → TQL 텍스트 반환
-//
-// 양쪽 다 실행 검증을 거치므로 "실행 안 되는 TQL"이 나갈 수 없다(커버된 의도 한정).
-// raw TQL 작성/문법 함정은 컴파일러가 보장 → LLM은 의도(JSON)만 책임.
+// compile_tql_from_spec — TIR(의도 JSON) → 실행 검증된 TQL 도구
+// · filename 있음(대시보드): 컴파일 → save_tql_file로 검증·저장 → charts의 tql_path
+// · filename 없음(답변): 컴파일 → execute_tql_script로 실행 검증 → TQL 텍스트 반환
 
-var { compileSafe, toDateLiteral } = require('./tir/compile');
-var { parseTableRef, resolveTableRef } = require('./table_access');
+var { compileSafe, toDateLiteral, fitBucket, metricsBucket, ohlcBucket, bucketLabel, rangeMs, UNIT_WINDOW_H } = require('./tir/compile');
+var { parseTableRef, resolveTableRef, readTagNames, statViewName, countRollups } = require('./table_access');
 var { argStr } = require('./registry');
+var { zoneName } = require('../machbase/timezone');
 var rangeCache = require('./range_cache');
 
-// 같은 차트(동일 TQL, 이름만 다름)를 반복 생성하는 것 차단 → 다양성 유도. TTL 자동 리셋(턴 경계 추적 불필요).
-var _seenTQL = {};
+// 같은 차트(동일 TQL, 이름만 다름) 반복 저장 차단용 기록, TTL로 자동 리셋
+// · 저장 성공 TQL만 기록 — 컴파일만·저장 실패 뒤의 저장 재시도 차단 방지
+var _savedTQL = {};
 var SEEN_TTL = 3 * 60 * 1000;
 var _dupeStreak = 0; // 연속 중복 횟수(약한 모델 중복 루프 차단용). 고유 차트 통과 시 리셋.
-function seenRecentlyTQL(tql) {
-  var now = Date.now(), k = String(tql).replace(/\s+/g, ' ').trim();
-  for (var key in _seenTQL) { if (now - _seenTQL[key] > SEEN_TTL) delete _seenTQL[key]; }
-  if (_seenTQL[k] && (now - _seenTQL[k]) <= SEEN_TTL) return true;
-  _seenTQL[k] = now;
-  return false;
+function tqlKey(tql) { return String(tql).replace(/\s+/g, ' ').trim(); }
+function savedRecently(tql) {
+  var now = Date.now(), k = tqlKey(tql);
+  for (var key in _savedTQL) { if (now - _savedTQL[key] > SEEN_TTL) delete _savedTQL[key]; }
+  return !!_savedTQL[k];
 }
+function markSaved(tql) { _savedTQL[tqlKey(tql)] = Date.now(); }
 
 var POINT_BUCKET_THRESHOLD = 50000; // 실제 점 개수가 이보다 많으면 적응형 버킷, 이하면 raw(+lttb 렌더)
 
-// 약한 모델이 긴 spec 문자열에서 흔히 내는 JSON 오류를 보정해 살린다(strict 파싱 실패 시에만 → 유효 JSON은 불변).
-// 대표 오류: 따옴표 없는 키(예: `,tag:` → "invalid character 't' looking for beginning of object key string").
-// 보정은 best-effort 폴백 — 잘못 고쳐도 validator/컴파일러가 다시 잡으므로 순손해 없음(원래 실패하던 입력만 대상).
-// 잘린(EOF) JSON 살리기: 문자열을 스캔해 마지막 완전한 최상위 필드까지 자르고 열린 브래킷을 닫는다.
-// 모델이 긴 spec 문자열을 중간에 끊어 보내는 경우(Unexpected end of JSON input) 부분 복구.
+// 잘린(EOF) JSON 부분 복구: 마지막 완전한 최상위 필드까지 자르고 열린 브래킷 닫음
 function salvageTruncatedJSON(s) {
   s = String(s);
   if (s.charAt(0) !== '{') return null;
@@ -45,7 +38,7 @@ function salvageTruncatedJSON(s) {
   }
   if (lastSafe < 0) return null;
   var head = s.substring(0, lastSafe);
-  // head 안의 열린 브래킷을 계산해 닫는다(문자열 내부 무시).
+  // head 안의 열린 브래킷 닫기(문자열 내부 무시)
   var st = [], inS = false, es = false, j, ch;
   for (j = 0; j < head.length; j++) {
     ch = head.charAt(j);
@@ -61,6 +54,7 @@ function salvageTruncatedJSON(s) {
   }
 }
 
+// spec JSON 관대 파싱 — strict 파싱 실패 시에만 보정(유효 JSON은 불변), 잘못 고쳐도 validator가 다시 거름
 function parseSpecLenient(s) {
   try { return { spec: JSON.parse(s) }; } catch (e0) {
     var t = String(s)
@@ -74,9 +68,8 @@ function parseSpecLenient(s) {
   }
 }
 
-// 모델이 spec을 (a)객체 (b)문자열 (c)잘린문자열 (d)필드를 최상위 인자로 쪼개서 — 다양하게 넘긴다.
-// 어떤 형태든 하나의 spec 객체로 재조립. 잘린 spec 문자열은 부분복구 + 최상위 인자로 보충.
-var SPEC_FIELDS = ['table', 'kind', 'tag', 'tags', 'rollup', 'timeRange', 'metrics', 'agg',
+// 최상위 인자로 쪼개 들어올 수 있는 spec 필드 — 객체·문자열·잘린 문자열 spec과 합쳐 하나로 재조립
+var SPEC_FIELDS = ['table', 'kind', 'tag', 'tags', 'rollup', 'rollupN', 'timeRange', 'metrics', 'agg',
   'ohlc', 'nameCol', 'valueCol', 'timeCol', 'output', 'title', 'subtitle', 'chartType', 'bucket'];
 
 function maybeJSON(v) {
@@ -89,7 +82,7 @@ function maybeJSON(v) {
   return v;
 }
 
-// 최후 폴백: 심하게 깨진/잘린 JSON에서도 정규식으로 핵심 필드를 긁어낸다(table/kind/tag/tags/timeRange).
+// 최후 폴백: 심하게 깨진/잘린 JSON에서 정규식으로 핵심 필드 추출
 function extractFieldsRegex(s) {
   var out = {};
   if (typeof s !== 'string') return out;
@@ -131,28 +124,47 @@ function assembleSpec(args) {
   return out;
 }
 
-// raw 차트(tags / metrics+rollup=null)의 실제 점 개수를 COUNT로 추정 → 5만 초과면 spec.bucket=true.
-// (범위만으론 부정확 — 밀도가 다르므로. 실제 점 수가 진짜 기준.)
+// raw 차트(tags / metrics+rollup=null)의 점 개수 추정 → 5만 초과면 spec.bucket=true.
+// · 통계 뷰 태그별 ROW_COUNT × 요청 기간 겹침 비율(균등 밀도 가정, 전체 스캔 회피)
+// · 통계 뷰 실패 시 COUNT 집계
 function detectPointCount(mc, spec, cb) {
   var nameCol = spec.nameCol || 'NAME', timeCol = spec.timeCol || 'TIME';
   var tags = (spec.kind === 'tags') ? (spec.tags || []) : (spec.tag != null ? [spec.tag] : []);
   if (tags.length === 0) return cb(0);
   var inList = tags.map(function (t) { return "'" + String(t).replace(/'/g, "''") + "'"; }).join(', ');
-  var sql = 'SELECT COUNT(*) FROM ' + String(spec.table).toUpperCase() + ' WHERE ' + nameCol + ' IN (' + inList + ')';
   var tr = spec.timeRange || {};
-  if (tr.start && tr.end) sql += ' AND ' + timeCol + ' BETWEEN ' + toDateLiteral(tr.start) + ' AND ' + toDateLiteral(tr.end);
-  mc.querySQL(sql, '', '', '', function (err, res) {
-    if (err) return cb(0); // 못 세면 raw 유지(과잉버킷 방지)
-    var n = 0;
-    try { var p = JSON.parse(res); if (p && p.success && p.data && p.data.rows && p.data.rows.length) n = parseInt(String(p.data.rows[0][0]), 10) || 0; } catch (e) {}
-    cb(n);
+  var statSQL = 'SELECT ROW_COUNT, MIN_TIME, MAX_TIME FROM ' + statViewName(parseTableRef(spec.table)) + ' WHERE NAME IN (' + inList + ')';
+  mc.querySQL(statSQL, 'ms', '', '', function (errS, resS) {
+    var rows = null;
+    if (!errS) {
+      try { var ps = JSON.parse(resS); if (ps && ps.success && ps.data && ps.data.rows && ps.data.rows.length) rows = ps.data.rows; } catch (e) {}
+    }
+    if (!rows) return countByScan();
+    var s = trMs(tr.start), e = trMs(tr.end), n = 0;
+    for (var i = 0; i < rows.length; i++) {
+      var c = parseInt(String(rows[i][0]), 10) || 0;
+      var mn = parseInt(String(rows[i][1]), 10), mx = parseInt(String(rows[i][2]), 10);
+      if (!(s > 0 && e > 0) || !(mx > mn)) { n += c; continue; }
+      var lo = Math.max(s, mn), hi = Math.min(e, mx);
+      if (hi > lo) n += c * (hi - lo) / (mx - mn);
+    }
+    cb(Math.round(n));
   });
+  function countByScan() {
+    var sql = 'SELECT COUNT(*) FROM ' + String(spec.table).toUpperCase() + ' WHERE ' + nameCol + ' IN (' + inList + ')';
+    if (tr.start && tr.end) sql += ' AND ' + timeCol + ' BETWEEN ' + toDateLiteral(tr.start) + ' AND ' + toDateLiteral(tr.end);
+    mc.querySQL(sql, '', '', '', function (err, res) {
+      if (err) return cb(0); // 못 세면 raw 유지(과잉버킷 방지)
+      var n = 0;
+      try { var p = JSON.parse(res); if (p && p.success && p.data && p.data.rows && p.data.rows.length) n = parseInt(String(p.data.rows[0][0]), 10) || 0; } catch (e) {}
+      cb(n);
+    });
+  }
 }
 
-// 테이블의 실제 컬럼명 탐지 (PK/BASETIME/SUMMARIZED). cb({n,t,v}). describe_table와 동일 로직.
-// 모델은 컬럼명을 몰라도 됨 — 커스텀 컬럼(NAME/TIME/VALUE 아닌) 테이블 자동 대응.
+// 테이블의 실제 컬럼명 탐지 (PK/BASETIME/SUMMARIZED) → cb({n,t,v}), 커스텀 컬럼 테이블 대응
 function detectColumns(mc, table, cb) {
-  // M$SYS_TABLES 의 NAME 은 소유자를 뺀 테이블 이름이다. 'SYS.BITCOIN' 을 그대로 넣으면 못 찾는다.
+  // M$SYS_TABLES.NAME은 소유자 없는 테이블 이름 — 'SYS.BITCOIN' 그대로면 못 찾음
   var u = parseTableRef(table).table;
   var sql = "SELECT m2.NAME, m2.FLAG FROM M$SYS_TABLES m1, M$SYS_COLUMNS m2 " +
     "WHERE m1.ID = m2.TABLE_ID AND m1.DATABASE_ID = m2.DATABASE_ID AND m1.NAME = '" + u + "' AND m1.FLAG = 0";
@@ -176,15 +188,26 @@ function detectColumns(mc, table, cb) {
   });
 }
 
-// 입력 정규화: 모델이 tag에 쉼표로 여러 태그를 넣으면("a,b,c") 다중태그 비교 의도 → kind="tags"로 변환.
-// (table-based 차트의 "high,low" 쉼표 관례를 IR에도 쓰는 약한 모델 대응 — 의도는 명확하니 컴파일러가 수용)
+// 입력 정규화(normalizeSpec): 쉼표 tag("a,b,c") → kind="tags", rollup 별칭("5min" 등) → 표준 단위
+var ROLLUP_ALIAS = { s: 'sec', sec: 'sec', secs: 'sec', second: 'sec', seconds: 'sec', m: 'min', min: 'min', mins: 'min', minute: 'min', minutes: 'min',
+  h: 'hour', hr: 'hour', hour: 'hour', hours: 'hour', d: 'day', day: 'day', days: 'day', w: 'week', week: 'week', weeks: 'week', month: 'month', months: 'month' };
+
 function normalizeSpec(spec) {
   if (!spec || typeof spec !== 'object') return spec;
+  delete spec.unitPinned; // 버킷 확정은 도구만 함
+  // rollup "5min"·"10s"·"minute" → rollup + rollupN
+  if (typeof spec.rollup === 'string') {
+    var _rm = /^\s*(\d+)?\s*([a-z]+)\s*$/i.exec(spec.rollup);
+    if (_rm && ROLLUP_ALIAS[_rm[2].toLowerCase()]) {
+      spec.rollup = ROLLUP_ALIAS[_rm[2].toLowerCase()];
+      if (_rm[1] && parseInt(_rm[1], 10) > 1 && spec.rollupN == null) spec.rollupN = parseInt(_rm[1], 10);
+    }
+  }
   if (typeof spec.tag === 'string' && spec.tag.indexOf(',') >= 0) {
     var parts = spec.tag.split(',').map(function (s) { return String(s).trim(); }).filter(Boolean);
     if (parts.length > 1) {
       spec.kind = 'tags'; spec.tags = parts;
-      delete spec.tag; delete spec.rollup; delete spec.metrics; // tags는 raw 비교
+      delete spec.tag; delete spec.rollup; delete spec.metrics; // tags는 ROLLUP 불가
     } else if (parts.length === 1) {
       spec.tag = parts[0];
     }
@@ -196,23 +219,20 @@ function normalizeSpec(spec) {
     }
     spec.tags = flat;
   }
-  // kind=metrics(또는 tag만 준 경우)인데 metrics 배열 누락/빈 경우 → 단일 시리즈 기본값 자동 채움.
-  // 의도("이 태그를 차트로")는 명확하니 컴파일러가 합리적 기본을 채운다(rollup 있으면 avg, 없으면 raw).
-  // → 약한 모델이 metrics를 빠뜨려도 검증 거부 무한루프에 빠지지 않는다.
+  // metrics 누락(kind=metrics 또는 tag만) → 단일 시리즈 기본값(rollup 있으면 avg, 없으면 raw) — 검증 거부 루프 방지
   if ((spec.kind === 'metrics' || (!spec.kind && spec.tag && !spec.tags)) && spec.tag &&
       (!Array.isArray(spec.metrics) || spec.metrics.length === 0)) {
     spec.kind = 'metrics';
     spec.metrics = [{ agg: (spec.rollup != null ? 'avg' : 'raw'), label: String(spec.tag) }];
   }
-  // raw/rollup 모순 자동 해소: rollup이 지정되면 raw(원시)는 불가 → avg로 강등.
-  // 이로써 "raw는 rollup=null만" + "raw는 단일 시리즈만" 두 위반이 동시에 해소됨(avg는 다중 시리즈/rollup 허용).
+  // rollup 지정 시 raw는 불가 → avg로 강등
   if (spec.kind === 'metrics' && spec.rollup != null && Array.isArray(spec.metrics)) {
     for (var _mi = 0; _mi < spec.metrics.length; _mi++) {
       var _mm = spec.metrics[_mi];
       if (_mm && String(_mm.agg).toLowerCase() === 'raw') _mm.agg = 'avg';
     }
   }
-  // output.chartType 그레이스풀 보정: 미지원 값은 거절 대신 강등(scatter/area/pie 등도 막히지 않게).
+  // output.chartType 미지원 값은 거절 없이 강등(bar 계열 → bar, 그 외 → line)
   if (spec.output && spec.output.chartType != null) {
     var _ct = String(spec.output.chartType).toLowerCase();
     if (spec.kind === 'ohlc') spec.output.chartType = 'candlestick';
@@ -222,19 +242,35 @@ function normalizeSpec(spec) {
   return spec;
 }
 
-// 테이블의 실제 태그 목록 탐지 (_table_meta의 태그명 컬럼). cb([tags]).
+// 테이블의 실제 태그 목록 탐지 — 메타 우선·실패 시 통계 뷰(readTagNames). 못 얻으면 []. cb([tags]).
 function detectTags(mc, table, nameCol, cb) {
-  // 태그 목록은 부속 테이블 _<t>_meta 에 있고, 그 이름에도 소유자·database 접두가 붙는다.
-  // 이름을 통째로 소문자화해 붙이면 'MACHBASEDB.SYS.BITCOIN' 이 '_machbasedb.sys.bitcoin_meta' 가 된다.
-  var ref = parseTableRef(table);
-  var meta = (ref.prefix ? ref.prefix + '.' : '') + '_' + ref.table.toLowerCase() + '_meta';
-  mc.querySQL('SELECT ' + nameCol + ' FROM ' + meta, '', '', '', function (err, res) {
-    var tags = [];
-    if (!err) {
-      try { var p = JSON.parse(res); if (p && p.success && p.data && p.data.rows) { for (var i = 0; i < p.data.rows.length; i++) tags.push(String(p.data.rows[i][0])); } } catch (e) {}
-    }
-    cb(tags);
-  });
+  readTagNames(mc, parseTableRef(table), nameCol, function (err, tags) { cb(err ? [] : tags); });
+}
+
+// 태그 자리에 컬럼 이름(이름·시간·값 컬럼)을 넣었으면 실제 태그로 바꿔 컴파일 — 같은 실수 반복 방지
+// · 단일 태그(metrics·forecast): 첫 태그, 여러 태그(tags): 컬럼 이름만 빼고 비면 앞 COLUMN_TAG_FALLBACK개
+// · 실제 태그 목록에 있는 이름은 그대로
+// · columns: [이름 컬럼, 시간 컬럼, 값 컬럼]
+var COLUMN_TAG_FALLBACK = 5;
+function applyColumnTag(spec, allTags, columns, notes) {
+  if (!allTags || allTags.length === 0) return;
+  var colSet = {};
+  (columns || []).forEach(function (c) { if (c) colSet[String(c).toLowerCase()] = true; });
+  function isColumn(t) { return t != null && allTags.indexOf(String(t)) < 0 && !!colSet[String(t).toLowerCase()]; }
+  var valueNote = columns && columns[2] ? '(값은 ' + columns[2] + ' 컬럼에서 읽음)' : '';
+  if (spec.kind === 'tags' && Array.isArray(spec.tags)) {
+    var dropped = spec.tags.filter(isColumn);
+    if (!dropped.length) return;
+    var kept = spec.tags.filter(function (t) { return !isColumn(t); });
+    spec.tags = kept.length ? kept : allTags.slice(0, COLUMN_TAG_FALLBACK);
+    notes.push('[주의] ' + dropped.join(', ') + '은(는) 태그가 아니라 컬럼 이름이라 태그 ' + spec.tags.join(', ') + '(으)로 만들었습니다' + valueNote + '.');
+    return;
+  }
+  if (!isColumn(spec.tag)) return;
+  var was = spec.tag;
+  spec.tag = allTags[0];
+  notes.push('[주의] ' + was + '은(는) 태그가 아니라 컬럼 이름이라 첫 태그 ' + allTags[0] + '(으)로 만들었습니다' + valueNote + '.' +
+    (allTags.length > 1 ? ' 다른 태그: ' + allTags.slice(1, 6).join(', ') + (allTags.length > 6 ? ' …' : '') : ''));
 }
 
 // spec의 태그가 실제 존재하는지 검증. 없으면 유사 태그 제안 메시지 반환(있으면 null).
@@ -300,16 +336,10 @@ function resolveOHLC(spec, allTags) {
     (allTags.length ? ' 사용 가능 태그: ' + allTags.slice(0, 12).join(', ') + (allTags.length > 12 ? ' …' : '') : '');
 }
 
-// 테이블에 ROLLUP 테이블이 있는지 탐지 (describe_table와 동일 쿼리). cb(boolean).
-// 탐지 실패 시 false(DATE_TRUNC) — DATE_TRUNC는 ROLLUP 테이블에서도 동작하므로 안전한 기본값.
+// 테이블에 ROLLUP 테이블이 있는지 탐지 → cb(boolean)
+// · 탐지 실패 시 false(DATE_TRUNC) — ROLLUP 테이블에서도 동작하는 안전한 기본값
 function detectRollupAvailable(mc, table, cb) {
-  var u = parseTableRef(table).table;
-  mc.querySQL("SELECT COUNT(*) FROM M$SYS_TABLES WHERE NAME LIKE '_" + u + "_ROLLUP_%' AND FLAG = 2", '', '', '', function (err, res) {
-    if (err) return cb(false);
-    var n = 0;
-    try { var p = JSON.parse(res); if (p && p.success && p.data && p.data.rows && p.data.rows.length) n = parseInt(String(p.data.rows[0][0]), 10); } catch (e) {}
-    cb(n > 0);
-  });
+  countRollups(mc, table, function (n) { cb(n > 0); });
 }
 
 // timeRange 값(ms 숫자/날짜문자열/TO_DATE) → ms
@@ -321,7 +351,7 @@ function trMs(v) {
   var t = new Date(s).getTime(); return isNaN(t) ? 0 : t;
 }
 
-// 범위(ms) → 집계 시간버킷 단위 (compile.js pickUnit과 동일 기준; 점 수를 수백~수천으로 유지). 범위 모르면 'hour'.
+// 범위(ms) → 집계 시간버킷 단위(점 수 수백~수천 유지), 범위 모르면 'hour'
 function pickRollupUnit(spec) {
   var tr = spec.timeRange || {};
   var a = trMs(tr.start), b = trMs(tr.end);
@@ -335,9 +365,9 @@ function pickRollupUnit(spec) {
   return 'month';
 }
 
-// 집계 metric인데 rollup이 누락된 경우 → 범위 기반 기본 단위를 자동 주입(검증 거부 없이 첫 호출 통과).
-// normalizeSpec의 자동보정 철학 연장 — 서버는 어차피 ROLLUP/DATE_TRUNC로 자동 집계하니 "단위만" 정하면 됨.
-// 단, raw가 섞였으면(=실제 모델 실수) 건드리지 않고 validator가 표면화하게 둔다. timeRange 해소 후 호출(범위 기반 단위 선택).
+// 집계 metric인데 rollup 누락 → 범위 기반 단위 자동 주입(검증 거부 방지)
+// · raw가 섞이면 그대로 둠(validator가 거절)
+// · timeRange 확정 후 호출
 function defaultRollupIfNeeded(spec) {
   if (!spec || spec.kind !== 'metrics' || spec.rollup != null || !Array.isArray(spec.metrics)) return;
   var hasAgg = false, hasRaw = false;
@@ -352,17 +382,167 @@ function defaultRollupIfNeeded(spec) {
   }
 }
 
-// spec.timeRange를 테이블 실제 데이터 경계로 보정(0건 방지). describe_table가 채운 range_cache 우선(조회 0회), 미스면 1회 조회.
-//  - timeRange 누락 → 데이터 전체 범위로 자동 채움
-//  - 요청 끝이 데이터 밖(미래꼬리/완전과거) → 데이터 끝 기준 기간유지 시프트(dashboard B 규칙과 동일)
-//  - 그 외(범위 안) → 그대로 존중
+// ── 기간·단위 우선순위 (기간 > 단위) ──
+// question_time = 사용자 질문에서 뽑은 {period, unit, n} (fixer 주입, 모델 값 아님)
+// · 단위만   → 그 단위·배수 유지, 데이터 끝에서 단위 허용 범위만큼 기간을 자름
+// · 기간+단위 → 기간 유지, 단위가 기간에 비해 잘면 올림(finalizeBucket)
+// · 기간만·없음 → 모델 단위를 범위에 맞게 자동 조절
+// 대상: metrics(집계)·ohlc는 단위+기간, tags는 기간 자르기만
+var UNIT_MS = { sec: 1000, min: 60000, hour: 3600000, day: 86400000, week: 604800000, month: 2592000000 };
+
+function readQuestionTime(v) {
+  if (typeof v === 'string') { try { v = JSON.parse(v); } catch (e) { return null; } }
+  if (!v || typeof v !== 'object') return null;
+  var unit = UNIT_MS[v.unit] ? v.unit : null;
+  var n = parseInt(v.n, 10);
+  var out = { period: !!v.period, unit: unit, n: unit && n > 1 ? n : 1 };
+  var s = Number(v.start), e = Number(v.end);
+  if (s > 0 && e > s) { out.start = s; out.end = e; out.kind = v.kind === 'relative' ? 'relative' : 'calendar'; out.label = String(v.label || ''); }
+  return out;
+}
+
+// 질문에 그대로 적힌 테이블의 실제 태그 — 대소문자 무시, 앞뒤가 태그 글자(영숫자·_·-·.·:)가 아닐 때만
+// · 한 글자·숫자뿐인 태그는 제외("1분 평균"의 "1" 오인 방지)
+var TAG_CHAR = /[a-z0-9_.:\-]/;
+function mentionedTags(question, allTags) {
+  var q = String(question || '').toLowerCase(), out = [];
+  (allTags || []).forEach(function (t) {
+    var k = String(t).toLowerCase();
+    if (k.length < 2 || /^\d+$/.test(k)) return;
+    for (var at = q.indexOf(k); at >= 0; at = q.indexOf(k, at + 1)) {
+      if (!TAG_CHAR.test(q.charAt(at - 1) || ' ') && !TAG_CHAR.test(q.charAt(at + k.length) || ' ')) { out.push(String(t)); break; }
+    }
+  });
+  return out;
+}
+
+// 질문에 적힌 태그가 있으면 모델이 고른 태그 대신 그 태그를 씀
+// · metrics: 질문에 적힌 태그가 하나이고 모델 태그가 그게 아닐 때
+// · tags: 질문에 둘 이상 적혀 있고 모델 태그와 하나도 안 겹칠 때
+function applyQuestionTags(spec, allTags, question, notes) {
+  var m = mentionedTags(question, allTags);
+  if (!m.length) return;
+  if (spec.kind === 'metrics') {
+    if (m.length !== 1 || String(spec.tag) === m[0]) return;
+    if (spec.tag && String(spec.tag).toLowerCase() !== m[0].toLowerCase()) {
+      notes.push('[주의] 질문에 적힌 태그 ' + m[0] + '(으)로 만들었습니다(모델이 고른 태그: ' + spec.tag + ').');
+    }
+    spec.tag = m[0];
+  } else if (spec.kind === 'tags') {
+    var cur = Array.isArray(spec.tags) ? spec.tags.map(String) : [];
+    if (m.length < 2 || cur.some(function (t) { return m.indexOf(t) >= 0; })) return;
+    notes.push('[주의] 질문에 적힌 태그 ' + m.join(', ') + '(으)로 만들었습니다(모델이 고른 태그: ' + cur.join(', ') + ').');
+    spec.tags = m;
+  }
+}
+
+// 질문에서 해석된 기간이 있으면 모델이 넣은 기간 대신 사용 — 데이터가 없을 때 처리는 checkQuestionPeriod
+function applyQuestionPeriod(spec, qt) {
+  if (!qt || !qt.start || !qt.end || !spec) return;
+  if (spec.kind !== 'metrics' && spec.kind !== 'tags' && spec.kind !== 'ohlc') return;
+  spec.timeRange = { start: qt.start, end: qt.end };
+  spec._period = { kind: qt.kind, label: qt.label, start: qt.start, end: qt.end };
+}
+
+// 질문 기간 사후 점검(resolveTimeRange 뒤). 반환 문자열이 있으면 컴파일하지 않고 그대로 결과로
+// · calendar: 데이터와 전혀 안 겹치면 안내만(기간을 옮기지 않음), 겹치면 그대로 + 저장 시 0건 스냅 금지(_keepRange)
+// · relative: 데이터 끝으로 옮겨졌으면 안내
+function checkQuestionPeriod(spec, notes) {
+  var p = spec._period, b = spec._bounds;
+  delete spec._period; delete spec._bounds;
+  if (!p) return '';
+  var tr = spec.timeRange || {}, s = trMs(tr.start), e = trMs(tr.end);
+  var asked = '"' + p.label + '"(' + fmtTime(p.start) + ' ~ ' + fmtTime(p.end) + ')';
+  if (p.kind === 'calendar') {
+    spec._keepRange = true;
+    if (b && (e < b.min || s > b.max)) {
+      return '기간에 데이터 없음: 질문의 기간 ' + asked + '에 이 테이블 데이터가 없습니다(데이터 기간: ' +
+        fmtTime(b.min) + ' ~ ' + fmtTime(b.max) + '). 다른 기간으로 바꾸지 말고, 차트를 만들지 않은 채 사용자에게 그 기간에 데이터가 없다고 알리세요.';
+    }
+    return '';
+  }
+  if (b && (s !== p.start || e !== p.end)) {
+    notes.push('[주의] ' + asked + '은(는) 지금 기준인데 데이터가 ' + fmtTime(b.max) + '까지라, 데이터 마지막 ' +
+      fmtDur(e - s) + '(' + fmtTime(s) + ' ~ ' + fmtTime(e) + ')로 옮겼습니다.');
+  }
+  return '';
+}
+
+function fmtDur(ms) {
+  var h = ms / 3600000;
+  if (h < 1) return Math.round(ms / 60000) + '분';
+  if (h < 72) return Math.round(h) + '시간';
+  if (h < 24 * 60) return Math.round(h / 24) + '일';
+  return '약 ' + Math.round(h / 24 / 30) + '개월';
+}
+function fmtTime(v) { return toDateLiteral(v).replace(/^TO_DATE\('|'\)$/g, ''); }
+
+function applyQuestionTime(spec, qt, notes) {
+  if (!qt || !qt.unit || !spec) return;
+  if (spec.kind === 'metrics') {
+    if (!Array.isArray(spec.metrics)) return;
+    for (var i = 0; i < spec.metrics.length; i++) { // 단위를 말했으면 원시값 대신 그 단위 평균
+      if (spec.metrics[i] && String(spec.metrics[i].agg).toLowerCase() === 'raw') spec.metrics[i].agg = 'avg';
+    }
+  }
+  if (spec.kind === 'metrics' || spec.kind === 'ohlc') {
+    spec.rollup = qt.unit;
+    if (qt.n > 1) spec.rollupN = qt.n; else delete spec.rollupN;
+  } else if (spec.kind !== 'tags') {
+    return;
+  }
+  if (qt.period) return;
+  if (spec.kind !== 'tags') spec.unitPinned = true;
+  var winMs = UNIT_WINDOW_H[qt.unit] * qt.n * 3600000;
+  if (!isFinite(winMs)) return;
+  var bounds = rangeCache.get(spec.table);
+  var tr = spec.timeRange || {};
+  var end = bounds ? bounds.max : trMs(tr.end);
+  var min = bounds ? bounds.min : trMs(tr.start);
+  if (!(end > 0) || !(min > 0) || end - min < winMs) return; // 데이터 전체가 창보다 짧으면 그대로
+  spec.timeRange = { start: end - winMs + 1, end: end };
+  notes.push('[주의] 질문에 기간이 없어 ' + bucketLabel({ unit: qt.unit, n: qt.n }) + ' 단위에 맞춰 데이터 마지막 ' +
+    fmtDur(winMs) + '(' + fmtTime(spec.timeRange.start) + ' ~ ' + fmtTime(end) + ')만 사용했습니다.');
+}
+
+// 컴파일 직전 버킷 확정 — 실제 쓸 {unit, n}을 spec에 고정(unitPinned)해 SQL·제목·안내가 같은 값을 쓰게 함
+function finalizeBucket(spec, qt, notes) {
+  var req, b;
+  if (spec.kind === 'metrics' && spec.rollup != null) {
+    req = { unit: spec.rollup, n: parseInt(spec.rollupN, 10) > 1 ? parseInt(spec.rollupN, 10) : 1 };
+    b = metricsBucket(spec);
+  } else if (spec.kind === 'ohlc') {
+    req = { unit: spec.rollup || 'day', n: parseInt(spec.rollupN, 10) > 1 ? parseInt(spec.rollupN, 10) : 1 };
+    // 캔들은 질문에 기간+단위가 함께 있을 때만 범위에 맞춰 올림(그 외엔 클램프 안 함)
+    b = (qt && qt.unit && qt.period && !spec.unitPinned) ? fitBucket(rangeMs(spec), req.unit, req.n, true) : ohlcBucket(spec);
+  } else {
+    return;
+  }
+  if (b.unit !== req.unit || b.n !== req.n) {
+    var ms = rangeMs(spec);
+    var why = b.unit !== req.unit
+      ? '기간 ' + fmtDur(ms) + '에 ' + bucketLabel(req) + ' 단위면 점이 약 ' + String(Math.round(ms / (UNIT_MS[req.unit] * req.n))).replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '개'
+      : 'ROLLUP을 쓸 수 없는 경로라 하루를 넘는 배수 불가';
+    notes.push('[주의] 요청 단위 ' + bucketLabel(req) + ' → ' + bucketLabel(b) + '로 조정했습니다(' + why + ').');
+  }
+  spec.rollup = b.unit;
+  if (b.n > 1) spec.rollupN = b.n; else delete spec.rollupN;
+  spec.unitPinned = true;
+}
+
+// spec.timeRange를 테이블 실제 데이터 경계로 보정(0건 방지) — range_cache 우선, 미스면 1회 조회
+// · timeRange 누락 → 데이터 전체 범위
+// · 요청 끝이 데이터 밖 → 데이터 끝 기준으로 기간 길이 유지 시프트
+// · 질문이 지정한 달력 기간·범위 안 → 그대로
 function resolveTimeRange(mc, spec, cb) {
   if (!spec || !spec.table) return cb();
   function apply(bounds) {
     if (!bounds || !(bounds.min > 0) || !(bounds.max > 0)) return cb();
+    spec._bounds = bounds;
     var tr = spec.timeRange || {};
     var s = trMs(tr.start), e = trMs(tr.end);
     if (!(s > 0) || !(e > 0)) { spec.timeRange = { start: bounds.min, end: bounds.max }; return cb(); }
+    if (spec._period && spec._period.kind === 'calendar') return cb(); // 질문이 콕 집은 기간은 옮기지 않음
     if (e > bounds.max || e < bounds.min) {
       var dur = e - s; if (dur <= 0) dur = bounds.max - bounds.min;
       spec.timeRange = { start: Math.max(bounds.min, bounds.max - dur), end: bounds.max };
@@ -400,7 +580,7 @@ function register(registry, mc) {
           type: 'object',
           description:
             'TIR 의도 JSON. ' +
-            'kind="metrics"(단일태그): {table, tag, rollup(sec~month 또는 null), timeRange:{start,end}, metrics:[{agg,label}]} (agg: avg/max/min/sum/count/sumsq=rollup 필요, raw=rollup null). ' +
+            'kind="metrics"(단일태그): {table, tag, rollup(sec~month 또는 null), rollupN(선택, 배수 — 5분 평균이면 rollup:"min", rollupN:5), timeRange:{start,end}, metrics:[{agg,label}]} (agg: avg/max/min/sum/count/sumsq=rollup 필요, raw=rollup null). ' +
             'kind="tags"(여러태그 비교): {table, tags:[...], timeRange} (ROLLUP과 동시 불가). ' +
             'kind="ohlc"(OHLC 캔들차트, 주가/시세): {table, timeRange, rollup(캔들 버킷 단위, 기본 day)}. open/high/low/close 태그는 도구가 자동 인식(필요 시 ohlc:{open,high,low,close}로 명시). agg/metrics 불필요. ' +
             'kind="geomap"(지도/좌표): 특정 테이블 없으면 table 생략 → FAKE 좌표 예제(timeRange 불필요). 실제데이터는 {table, lat, lon[, value], markerType}. ' +
@@ -422,19 +602,25 @@ function register(registry, mc) {
           '\n→ spec을 문자열이 아니라 JSON 객체로 전달하세요. timeRange/valueCol/metrics 등을 별도 인자로 쪼개지 말고 spec 안에 넣으세요.');
       }
       spec = normalizeSpec(spec); // 쉼표 tag → kind=tags 등 입력 정규화
+      spec._tz = zoneName(mc); // 차트 시간축 = 사용자 시간대
+      var qt = readQuestionTime(args.question_time);
+      var notes = []; // 단위·기간을 바꾼 내용 — 성공 결과에 붙여 모델이 답변에 반영
 
-      // 컴파일 전 DB에서 자동 주입: ① 실제 컬럼명(커스텀 컬럼 대응) ② 집계면 ROLLUP 가용성(ROLLUP/DATE_TRUNC).
-      // 모델은 컬럼명도 ROLLUP 유무도 몰라도 됨 — 도구가 채운다.
+      // 컴파일 전 DB에서 자동 주입: 실제 컬럼명·데이터 기간·태그 보정·ROLLUP 가용성 또는 점 개수
       if (spec && typeof spec === 'object' && spec.table) {
-        // 이름을 소유자·database 까지 한 번 해석해 둔다 — 아래의 컬럼·태그·시간범위·점개수 조회가
-        // 모두 이 값을 쓴다. 접두 없이 두면 남의 소유 테이블에서 태그 목록이 조용히 비어(빈 차트)
-        // 시간범위 탐지도 실패한다. 해석 실패는 무시하고 원래 이름으로 진행(기존 오류 흐름 유지).
+        // 테이블 이름 정규화(DB.유저.테이블) — 아래 컬럼·태그·시간범위·점개수 조회가 공용
+        // · 없음·모호는 컴파일 전에 오류 반환
         resolveTableRef(mc, spec.table, function (refErr, ref) {
-        if (!refErr && ref) spec.table = ref.qualified;
+        if (refErr) return cb(null, 'Error: ' + refErr.message);
+        spec.table = ref.qualified;
         detectColumns(mc, spec.table, function (c) {
           spec.nameCol = c.n; spec.timeCol = c.t; spec.valueCol = c.v;
+          applyQuestionPeriod(spec, qt); // 질문에 기간이 있으면 모델 값 대신 그 기간
           resolveTimeRange(mc, spec, function () { // timeRange 누락/범위밖 → 캐시 경계로 자동 보정(0건 방지)
-          defaultRollupIfNeeded(spec); // 집계 metric인데 rollup 누락 → 범위 기반 단위 자동 주입(검증거부 대신 첫 호출 통과)
+          var periodMsg = checkQuestionPeriod(spec, notes);
+          if (periodMsg) return cb(null, periodMsg);
+          applyQuestionTime(spec, qt, notes); // 질문에 단위만 있으면 단위 유지 + 기간 자르기
+          defaultRollupIfNeeded(spec); // 집계 metric인데 rollup 누락 → 범위 기반 단위 자동 주입
           // 태그 존재 검증 — 잘못된 태그면 컴파일 전에 유사 태그 제안과 함께 거절(0건 헛수고 방지)
           detectTags(mc, spec.table, c.n, function (allTags) {
             // OHLC(캔들): open/high/low/close 태그 자동 확정(또는 명시값 검증). 실패 시 거절.
@@ -444,6 +630,8 @@ function register(registry, mc) {
               if (oerr) return cb(null, 'Error: ' + oerr);
               return proceed();
             }
+            applyQuestionTags(spec, allTags, args.question, notes); // 질문에 적힌 실제 태그가 있으면 그 태그로
+            applyColumnTag(spec, allTags, [c.n, c.t, c.v], notes); // 태그 자리의 컬럼 이름 → 실제 태그
             var tagErr = validateTags(spec, allTags);
             if (tagErr) return cb(null, 'Error: ' + tagErr);
             if (spec.kind === 'metrics' && spec.rollup != null) {
@@ -466,32 +654,45 @@ function register(registry, mc) {
         proceed();
       }
 
+      // 성공 결과에만 단위·기간 조정 안내를 붙임
+      // · 결과 맨 앞에 둠 — 약한 모델은 긴 결과(TQL 코드)의 뒷부분을 놓침
+      function withNotes(res) {
+        if (!notes.length) return res;
+        return notes.join('\n') + '\n→ 답변에는 위의 실제 태그·단위·기간을 그대로 적으세요.\n\n' + String(res);
+      }
+
       function proceed() {
+        finalizeBucket(spec, qt, notes);
+        var keepRange = !!spec._keepRange; // 질문이 콕 집은 기간 — 저장 시 0건이어도 기간을 옮기지 않음
+        delete spec._keepRange;
         // ── 컴파일 (심볼릭 코어) ──
         var r = compileSafe(spec);
         if (!r.ok) {
           return cb(null, 'Error: ' + r.error + '\n→ spec(JSON)을 고쳐 다시 호출하세요(TQL을 직접 작성하지 마세요).');
         }
 
-        // 같은 차트(동일 TQL, 이름만 다름) 반복 생성 차단 → 대시보드에 동일 차트가 6개씩 들어가는 것 방지.
-        // ⚠️ 'Error:'로 시작하지 않는다 — 중복은 "컴파일 실패"가 아니라 "건너뛰기"이므로 agent의 compileFailStreak(하드캡)에
-        //    안 잡히게 한다(약한 모델이 중복 몇 번에 조기 finalize로 떠밀려 차트가 적어지는 것 방지). 반복 중복은 별도 _dupeStreak로 차단.
-        if (seenRecentlyTQL(r.tql)) {
-          _dupeStreak++;
-          if (_dupeStreak >= 3) { // 중복이 반복되면 더 끌지 말고 결정론적으로 마무리 유도
-            return cb(null, '건너뜀: 같은 차트가 계속 중복됩니다(' + _dupeStreak + '회). **더 만들지 말고**, 지금까지 저장에 성공한 .tql들로 즉시 create_dashboard_with_charts를 호출해 대시보드를 완성하세요.');
-          }
-          return cb(null, '건너뜀: 직전과 동일한 차트라 저장하지 않았습니다(중복, 에러 아님). 이 차트는 잊고 **다음 차트(다른 태그/집계/rollup/kind)로 넘어가거나**, 이미 충분하면 create_dashboard_with_charts로 대시보드를 생성하세요.');
-        }
-        _dupeStreak = 0; // 고유 차트 통과 → 중복 스트릭 리셋
-
         var filename = argStr(args, 'filename', '');
 
         if (filename) {
-          // ── ① 대시보드 경로: 기존 save_tql_file 백스톱 재사용(소유권/executeTQL/0건/레이아웃/쓰기) ──
+          // 이미 저장한 차트(동일 TQL, 이름만 다름) 반복 저장 차단 — 대시보드 동일 차트 중복 방지
+          // · 'Error:'로 시작 안 함 — 중복은 건너뛰기라 agent의 compileFailStreak(하드캡) 집계 제외
+          // · 반복 중복은 _dupeStreak로 차단
+          if (savedRecently(r.tql)) {
+            _dupeStreak++;
+            if (_dupeStreak >= 3) { // 중복이 반복되면 더 끌지 말고 결정론적으로 마무리 유도
+              return cb(null, '건너뜀: 같은 차트가 계속 중복됩니다(' + _dupeStreak + '회). **더 만들지 말고**, 지금까지 저장에 성공한 .tql들로 즉시 create_dashboard_with_charts를 호출해 대시보드를 완성하세요.');
+            }
+            return cb(null, '건너뜀: 이미 저장한 차트와 같아 저장하지 않았습니다(중복, 에러 아님). 이 차트는 잊고 **다음 차트(다른 태그/집계/rollup/kind)로 넘어가거나**, 이미 충분하면 create_dashboard_with_charts로 대시보드를 생성하세요.');
+          }
+          _dupeStreak = 0; // 고유 차트 통과 → 중복 스트릭 리셋
+          // ── ① 대시보드 경로: save_tql_file 백스톱 재사용(소유권/executeTQL/0건/레이아웃/쓰기) ──
           var saveTool = registry.get('save_tql_file');
           if (!saveTool) return cb(null, 'Error: save_tql_file 도구를 찾을 수 없습니다.');
-          return saveTool.fn({ filename: filename, tql_content: r.tql }, cb);
+          return saveTool.fn({ filename: filename, tql_content: r.tql, keep_range: keepRange }, function (serr, sres) {
+            var saved = String(sres || '').indexOf('TQL file saved') === 0;
+            if (saved) markSaved(r.tql);
+            cb(serr, saved ? withNotes(sres) : sres);
+          });
         }
 
         // ── ② 답변 경로: 저장 없이 실행 검증만 → 검증된 TQL 텍스트 반환 ──
@@ -504,9 +705,9 @@ function register(registry, mc) {
           if (s.indexOf('Error:') === 0 || s.indexOf('MACH-ERR') >= 0 ||
               low.indexOf('"success":false') >= 0 || low.indexOf('"success": false') >= 0) {
             return cb(null, 'Error: 컴파일된 TQL 실행 검증 실패: ' + s.substring(0, 300) +
-              '\n(커버된 의도가 아닐 수 있음 — spec을 단순화하거나 특수 분석은 raw 폴백)');
+              '\n(커버된 의도가 아닐 수 있음 — spec을 단순화하세요)');
           }
-          cb(null, '실행 검증됨(executeTQL 성공). 아래 TQL을 그대로 답변에 ```tql 코드블록으로 제시하세요:\n\n```tql\n' + r.tql + '```');
+          cb(null, withNotes('실행 검증됨(executeTQL 성공). 아래 TQL을 그대로 답변에 ```tql 코드블록으로 제시하세요:\n\n```tql\n' + r.tql + '```'));
         });
       }
     },
@@ -514,7 +715,22 @@ function register(registry, mc) {
 }
 
 module.exports = {
-  register, detectColumns, detectTags,
+  register,
+  detectColumns,
+  detectTags,
   // forecast_table 등 다른 도구에서 재사용하는 DB 탐지/보정 헬퍼
-  resolveTimeRange, pickRollupUnit, detectRollupAvailable, trMs,
+  resolveTimeRange,
+  pickRollupUnit,
+  detectRollupAvailable,
+  // 기간·단위 우선순위(유닛 테스트용)
+  normalizeSpec,
+  readQuestionTime,
+  applyQuestionTime,
+  finalizeBucket,
+  applyQuestionPeriod,
+  checkQuestionPeriod,
+  mentionedTags,
+  applyQuestionTags,
+  applyColumnTag,
+  validateTags,
 };

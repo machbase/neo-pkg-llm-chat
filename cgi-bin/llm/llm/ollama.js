@@ -7,9 +7,8 @@ var DEFAULT_MODEL = 'qwen3.5:9b';
 function createOllamaClient(baseURL, model) {
   return {
     baseURL: baseURL || 'http://127.0.0.1:11434', model: model || DEFAULT_MODEL, type: 'ollama',
-    // numKeep=1400: 오버플로(num_ctx 초과) 시 앞쪽 1400토큰 보존 = core 세그먼트(Role/Safety/스키마/SQL/에러/금지 ≈1300) + 마진.
-    // core는 catalog/문서와 무관하게 불변이라 고정값이 stale 안 됨. catalog는 뒤쪽이라 오버플로 시 evict 허용
-    // (라우팅용이라 지킬 가치 낮음 → 최근 도구 결과를 대신 보존). ※구 6100은 full시스템 기준이라 catalog 성장으로 stale됐던 값.
+    // numKeep=1400: num_ctx 초과 시 앞쪽 core 세그먼트(Role/Safety/스키마/SQL/에러/금지 ≈1300토큰)+마진 보존
+    // · 뒤쪽 catalog는 오버플로 시 evict 허용 — 최근 도구 결과 우선 보존
     temperature: 0, numPredict: 4096, numCtx: 40960, numGPU: 36, numKeep: 1400,
     chat: function (messages, toolDefs, cb) { ollamaChat(this, messages, toolDefs, cb); },
     chatSync: function (messages, toolDefs) { return ollamaChatSync(this, messages, toolDefs); },
@@ -20,8 +19,7 @@ function ollamaChat(client, messages, toolDefs, cb) {
   var reqBody = {
     model: client.model, messages: messagesToOllama(messages),
     tools: toolDefs && toolDefs.length > 0 ? toolDefs : undefined, stream: false,
-    // qwen3.5 등 네이티브 thinking 모델: 신버전 ollama(0.17+)는 프롬프트 /no_think을 무시하고 think 파라미터로만 제어.
-    // think:false로 thinking 비활성 → 답변 내용 동일하면서 호출당 수백 토큰+수초 절약.
+    // 네이티브 thinking 비활성(qwen3.5 등) — ollama 0.17+는 프롬프트 /no_think 무시, think 파라미터로만 제어
     think: false,
     keep_alive: '30m',
     options: { temperature: client.temperature, num_predict: client.numPredict, num_ctx: client.numCtx, num_gpu: client.numGPU, num_keep: client.numKeep },
@@ -37,7 +35,8 @@ function ollamaChat(client, messages, toolDefs, cb) {
       var errBody = ''; try { errBody = resp.string(); } catch (e) {}
       return cb(new Error('[Ollama] API error (HTTP ' + resp.statusCode + '): ' + errBody));
     }
-    var ollamaResp = resp.json();
+    // 일반 객체로 파싱 — resp.json()은 직렬화마다 키 순서가 달라져 대화 기록 캐시가 깨짐
+    var ollamaResp = JSON.parse(resp.string());
     if (ollamaResp.error) return cb(new Error('[Ollama] ' + ollamaResp.error));
     cb(null, createChatResponse(client.model, parseOllamaResponse(ollamaResp), true));
   } catch (e) { cb(new Error('[Ollama] Request failed: ' + e.message)); }
@@ -47,8 +46,8 @@ function ollamaChatSync(client, messages, toolDefs) {
   var reqBody = {
     model: client.model, messages: messagesToOllama(messages),
     tools: toolDefs && toolDefs.length > 0 ? toolDefs : undefined, stream: false,
-    think: false,          // ollamaChat 참조: 네이티브 thinking 비활성(프롬프트 /no_think은 신버전 ollama가 무시)
-    keep_alive: '30m',     // ollamaChat 참조: 기본 5분이면 유휴 후 첫 질문이 모델 재적재 비용을 문다
+    think: false,          // 네이티브 thinking 비활성(ollama 0.17+는 프롬프트 /no_think 무시)
+    keep_alive: '30m',     // 유휴 후 첫 질문의 모델 재적재 방지(기본 5분)
     options: { temperature: client.temperature, num_predict: client.numPredict, num_ctx: client.numCtx, num_gpu: client.numGPU, num_keep: client.numKeep },
   };
   var body = JSON.stringify(reqBody);
@@ -61,7 +60,7 @@ function ollamaChatSync(client, messages, toolDefs) {
     var errBody = ''; try { errBody = resp.string(); } catch (e) {}
     throw new Error('[Ollama] API error (HTTP ' + resp.statusCode + '): ' + errBody);
   }
-  var ollamaResp = resp.json();
+  var ollamaResp = JSON.parse(resp.string());
   if (ollamaResp.error) throw new Error('[Ollama] ' + ollamaResp.error);
   return createChatResponse(client.model, parseOllamaResponse(ollamaResp), true);
 }

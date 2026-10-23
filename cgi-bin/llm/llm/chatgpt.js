@@ -5,15 +5,12 @@ var _client = http2.NewClient();
 var DEFAULT_MODEL = 'gpt-4o';
 var BASE_URL = 'https://api.openai.com';
 
-// OpenAI's content/cyber policy returns HTTP 400 for adversarial security prompts (e.g. asking
-// for credentials or path traversal). Surface that as a clean refusal answer, not a raw API error.
+// OpenAI 콘텐츠/사이버 정책 HTTP 400 판별 — 원시 API 오류 대신 거절 답변으로 표시용
 function isPolicyRefusal(statusCode, errBody) {
   return statusCode === 400 && /cyber_policy|content[_\s]?policy|content_filter|flagged/i.test(errBody || '');
 }
-// NOTE: real attacks are blocked upstream by security.screenQuery before the LLM runs, so a
-// cyber_policy 400 now almost always means OpenAI flagged LEGITIMATE security/admin DOC content
-// (e.g. ALTER USER / CREATE USER / M$SYS_USERS in a password-management how-to). Do NOT label it
-// as our security refusal — that mislabels a legit question. Use a neutral model-limitation note.
+// 정책 400은 대개 정상 보안/관리 문서 내용 오탐(실제 공격은 LLM 전 security.screenQuery 차단)
+// · 보안 거절 문구 대신 중립적인 모델 제한 안내 사용
 var POLICY_REFUSAL_TEXT = '현재 선택된 모델(GPT)의 콘텐츠 정책으로 인해 이 질문에는 답변이 제한되었습니다(보안·관리 관련 문서가 포함된 질문에서 발생할 수 있습니다). 다른 모델(예: ollama)로 다시 시도해 주세요.';
 
 function createChatGPTClient(apiKey, model) {
@@ -43,7 +40,8 @@ function chatgptChat(client, messages, toolDefs, cb) {
       if (resp.statusCode === 429) return cb(new Error('[ChatGPT] API 사용량 한도 초과 (HTTP 429)'));
       return cb(new Error('[ChatGPT] API error (HTTP ' + resp.statusCode + '): ' + errBody));
     }
-    var openaiResp = resp.json();
+    // 일반 객체로 파싱 — resp.json()은 직렬화마다 키 순서가 달라져 대화 기록 캐시가 깨짐
+    var openaiResp = JSON.parse(resp.string());
     if (openaiResp.error) return cb(new Error('[ChatGPT] ' + openaiResp.error.message));
     var msg = parseOpenAIResponse(openaiResp);
     cb(null, createChatResponse(client.model, msg, true));
@@ -68,7 +66,7 @@ function chatgptChatSync(client, messages, toolDefs) {
     if (resp.statusCode === 429) throw new Error('[ChatGPT] API 사용량 한도 초과 (HTTP 429)');
     throw new Error('[ChatGPT] API error (HTTP ' + resp.statusCode + '): ' + errBody);
   }
-  var openaiResp = resp.json();
+  var openaiResp = JSON.parse(resp.string());
   if (openaiResp.error) throw new Error('[ChatGPT] ' + openaiResp.error.message);
   var msg = parseOpenAIResponse(openaiResp);
   return createChatResponse(client.model, msg, true);

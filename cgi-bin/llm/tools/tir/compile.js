@@ -1,24 +1,14 @@
-// compileTIR — TIR(의도 JSON) → 보장된 TQL.
-//
-// 이 파일이 TQL 문법/함정 "지식"을 소유한다.
-// 모든 TQL 함정이 여기 코드로 한 번씩만 박혀 있어, 출력은 항상 검증된 패턴을 따른다:
-//   - SRC→MAP→SINK 순서 (SQL → SCRIPT → 싱크)
-//   - 시간축 [timestamp, value] 페어 → column(0) (TIME 객체 직접 산술 안 함)
-//   - ROLLUP: 표현식을 GROUP BY/ORDER BY에 직접(alias 금지), STDDEV 안 씀, 단위 sec~month
-//   - ROLLUP 쿼리에 NAME 컬럼 안 넣음(MACH-ERR 2264) — 여러 태그는 raw 비교
-//   - SCRIPT 3-block 누적, $.foreach/$.yield(time,name,value) 안 씀
-//   - chart 싱크: white 테마 상속, 제목/부제 좌상단, yAxis.name 없음, 겹침 방지 레이아웃, tz
-//
-// 구조(컴파일러 프론트엔드/백엔드 분리):
-//   buildSource(spec)  → SQL          ← 싱크 무관, 공유
-//   SINKS[sink]        → script+sink  ← 플러그형 백엔드 (현재 chart만, 차후 csv/insert/json 추가)
+// compileTIR — TIR(의도 JSON) → TQL. TQL 문법·함정 처리 전담
+// · 구조: buildSource(spec) → SQL(싱크 무관) / SINKS[sink] → SCRIPT + 싱크
+// · 시간축은 [timestamp, value] 페어 (TIME 객체 직접 산술 안 함)
+// · ROLLUP: 표현식 직접 GROUP BY/ORDER BY(alias 금지)·STDDEV 불가·NAME 컬럼 불가(MACH-ERR 2264)
+// · SCRIPT는 3-block 누적, $.foreach·$.yield(time,name,value) 안 씀
 
 var validate = require('./schema').validate;
 var algoSource = require('../forecast_algo').algoSource; // forecast 예측 엔진 소스(SCRIPT에 구워넣음 → 워커와 동일 로직, 라이브 재계산)
 
-// --- 레이아웃 상수 (conventions.md 6차/8차/9차 확정값) ---
-// gridBottom은 [줌 슬라이더 → 범례 1줄 → x축 라벨] 한 벌만 담는다. 시리즈가 많으면 기본 범례는
-// 여러 줄로 접히며 위(=x축 라벨)를 침범하므로, 범례는 항상 type:"scroll"(줄바꿈 없이 페이지 화살표)로 낸다.
+// --- 레이아웃 상수 ---
+// gridBottom은 줌 슬라이더·범례 1줄·x축 라벨만 수용 → 범례는 항상 type:"scroll"(여러 줄 범례의 x축 라벨 침범 방지)
 var LAYOUT = {
   gridLeft: 72, gridLeftWide: 90, gridRight: 30, gridTop: 66, gridBottom: 78,
   legendBottom: 30, zoomBottom: 6, zoomHeight: 16,
@@ -27,13 +17,18 @@ var LAYOUT = {
 function up(s) { return String(s).toUpperCase(); }
 function q(s) { return "'" + String(s).replace(/'/g, "''") + "'"; }  // SQL 작은따옴표 + 이스케이프(O'Brien→'O''Brien')
 
-// 실제 컬럼명 — 도구(tql_spec.js)가 describe로 탐지해 주입. 미지정 시 표준 NAME/TIME/VALUE.
-// (모델은 컬럼명을 몰라도 됨 — 커스텀 컬럼 테이블도 자동 대응)
+// 실제 컬럼명 — 도구가 describe로 탐지해 주입, 미지정 시 표준 NAME/TIME/VALUE
 function colset(spec) {
   return { n: spec.nameCol || 'NAME', t: spec.timeCol || 'TIME', v: spec.valueCol || 'VALUE' };
 }
 
-// timeRange 값 → TO_DATE 리터럴 정규화. 모델이 epoch ms 숫자 / 날짜 문자열 / 이미 TO_DATE(...) 무엇을 줘도 안전.
+// 차트 시간축 시간대 — 도구가 사용자 시간대를 spec._tz로 주입, 없으면 서버 시간대
+function chartTz(spec) {
+  var z = String(spec._tz || '');
+  return /^[A-Za-z][A-Za-z0-9_+\-]*(\/[A-Za-z0-9_+\-]+)*$/.test(z) ? z : 'Local';
+}
+
+// timeRange 값 → TO_DATE 리터럴 정규화(epoch 숫자·날짜 문자열·TO_DATE(...) 모두 수용)
 function fmtDate(d) { function p(n) { return (n < 10 ? '0' : '') + n; } return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()); }
 function toDateLiteral(v) {
   var s = (v == null ? '' : String(v)).trim();
@@ -57,7 +52,7 @@ function rangeMs(spec) {
   var a = toMs(spec.timeRange && spec.timeRange.start), b = toMs(spec.timeRange && spec.timeRange.end);
   return (a && b && b > a) ? (b - a) : 0;
 }
-// 범위 길이 → 시간버킷 단위 (report.js pickRollupUnit 이식; 점 수를 ~수백~수천으로 유지). 모르면 null(미적용).
+// 범위 길이 → 시간버킷 단위(점 수 수백~수천 유지), 모르면 null
 function pickUnit(ms) {
   if (!ms || ms <= 0) return null;
   var h = ms / 1000 / 3600;
@@ -65,18 +60,33 @@ function pickUnit(ms) {
 }
 var UNIT_ORDER = { sec: 0, min: 1, hour: 2, day: 3, week: 4, month: 5 };
 function coarser(a, b) { return (UNIT_ORDER[a] || 0) >= (UNIT_ORDER[b] || 0) ? a : b; }
-// 모델이 고른 단위를 "범위가 허용하는 것보다 잘게는 못 가게" 클램프(점 폭주 방지). 더 거친 단위는 의도 존중.
-function effectiveUnit(spec) {
-  var pu = pickUnit(rangeMs(spec));
-  return pu ? coarser(spec.rollup, pu) : spec.rollup;
+// 단위별 허용 범위(시간) — 범위가 이보다 짧아야 그 단위로 그림(pickUnit 경계와 같음). 배수 n이면 n배
+var UNIT_WINDOW_H = { sec: 1, min: 48, hour: 720, day: 8760, week: 8760, month: Infinity };
+// DATE_TRUNC 배수 상한(하루 이내) — day 이상 배수는 MACHCLI-ERR-2229. ROLLUP은 전 단위 배수 가능
+var DATE_TRUNC_MAX_N = { sec: 86400, min: 1440, hour: 24, day: 1, week: 1, month: 1 };
+function posInt(v) { var n = parseInt(v, 10); return n > 0 ? n : 1; }
+
+// 버킷 {unit, n} 맞춤
+// · 범위가 단위×배수 허용 범위 이상이면 범위에 맞는 단위로 올리고 배수 1(점 폭주 방지, 더 거친 단위는 존중)
+// · DATE_TRUNC 경로에서 상한을 넘는 배수는 1
+// · ms=0(범위 모름)이면 범위 클램프 생략
+function fitBucket(ms, unit, n, useDateTrunc) {
+  if (ms && !(ms < (UNIT_WINDOW_H[unit] || 0) * n * 3600000)) { unit = coarser(unit, pickUnit(ms)); n = 1; }
+  if (useDateTrunc && n > (DATE_TRUNC_MAX_N[unit] || 1)) n = 1;
+  return { unit: unit, n: n };
 }
+// metrics 집계 버킷 — unitPinned(도구가 확정)면 범위 클램프 생략
+function metricsBucket(spec) {
+  return fitBucket(spec.unitPinned ? 0 : rangeMs(spec), spec.rollup, posInt(spec.rollupN), spec.rollupAvailable === false);
+}
+function bucketLabel(b) { return (b.n > 1 ? b.n : '') + b.unit; }
 
 // 시간버킷 집계 표현식: ROLLUP 있으면 ROLLUP(빠름), 없으면 DATE_TRUNC(범용 — 동일 단위명). timeCol은 실제 BASETIME 컬럼.
-// unit은 effectiveUnit으로 클램프된 단위. 표현식 직접 GROUP BY/ORDER BY(alias 금지).
-function aggTimeExpr(spec, unit) {
+// 표현식 직접 GROUP BY/ORDER BY(alias 금지). n은 배수(생략 시 1)
+function aggTimeExpr(spec, unit, n) {
   var t = colset(spec).t;
-  if (spec.rollupAvailable === false) return "DATE_TRUNC('" + unit + "', " + t + ")";
-  return "ROLLUP('" + unit + "', 1, " + t + ")";
+  if (spec.rollupAvailable === false) return "DATE_TRUNC('" + unit + "', " + t + (n > 1 ? ', ' + n : '') + ")";
+  return "ROLLUP('" + unit + "', " + (n > 1 ? n : 1) + ", " + t + ")";
 }
 
 // ════════════════════════════════════════════════════
@@ -87,7 +97,8 @@ function sqlMetricsRollup(spec) {
   var c = colset(spec);
   var cols = [];
   for (var i = 0; i < spec.metrics.length; i++) cols.push(up(spec.metrics[i].agg) + '(' + c.v + ')');
-  var rx = aggTimeExpr(spec, effectiveUnit(spec)); // 범위에 맞게 클램프된 단위로 ROLLUP/DATE_TRUNC
+  var b = metricsBucket(spec);
+  var rx = aggTimeExpr(spec, b.unit, b.n);
   // 집계 쿼리: SELECT엔 시간버킷 표현식 + 집계만 (태그컬럼 금지). 단일 태그는 WHERE로만 필터.
   return 'SELECT ' + rx + ', ' + cols.join(', ') +
     ' FROM ' + up(spec.table) +
@@ -109,16 +120,17 @@ function sqlMetricsRaw(spec) {
 }
 
 // ── OHLC(캔들) ──
-// FIRST(t,v)/LAST(t,v)/MIN/MAX 지원. ROLLUP은 NAME과 불가(2264)이고 FIRST/LAST는
-// ROLLUP 집계도 아니므로 **항상 DATE_TRUNC + GROUP BY NAME**. 버킷 라벨은 TO_CHAR로 SQL이 문자열 생성(category 축 →
-// 시간축 나노초 오버플로우 함정 회피). 단위별 포맷 토큰은 버킷이 유일하게 식별되도록.
+// · 항상 DATE_TRUNC + GROUP BY NAME — ROLLUP은 NAME과 불가(2264), FIRST/LAST는 ROLLUP 집계 아님
+// · 버킷 라벨은 TO_CHAR 문자열(category 축) — 시간축 나노초 오버플로우 회피
+// · 단위별 포맷은 버킷을 유일하게 식별하는 정밀도
 var OHLC_FMT = { sec: 'YYYY-MM-DD HH24:MI:SS', min: 'YYYY-MM-DD HH24:MI', hour: 'YYYY-MM-DD HH24', day: 'YYYY-MM-DD', week: 'YYYY-MM-DD', month: 'YYYY-MM' };
-function ohlcUnit(spec) { return spec.rollup || 'day'; } // 캔들 기본 일봉(점 폭주 우려 적음 — clamp 안 함)
+// 캔들 버킷 — 기본 일봉, 범위 클램프 안 함(점 폭주 우려 적음). DATE_TRUNC 고정이라 배수 상한 적용
+function ohlcBucket(spec) { return fitBucket(0, spec.rollup || 'day', posInt(spec.rollupN), true); }
 function sqlOHLC(spec) {
-  var c = colset(spec), o = spec.ohlc, unit = ohlcUnit(spec);
+  var c = colset(spec), o = spec.ohlc, b = ohlcBucket(spec), unit = b.unit;
   var inList = [q(o.open), q(o.high), q(o.low), q(o.close)];
-  // 버킷 라벨 = TO_CHAR(DATE_TRUNC(unit, t), fmt). SELECT/GROUP BY/ORDER BY 동일 표현식(2044 회피).
-  var bx = "TO_CHAR(DATE_TRUNC('" + unit + "', " + c.t + "), '" + (OHLC_FMT[unit] || OHLC_FMT.day) + "')";
+  // 버킷 라벨 = TO_CHAR(DATE_TRUNC(unit, t[, n]), fmt). SELECT/GROUP BY/ORDER BY 동일 표현식(2044 회피).
+  var bx = "TO_CHAR(DATE_TRUNC('" + unit + "', " + c.t + (b.n > 1 ? ', ' + b.n : '') + "), '" + (OHLC_FMT[unit] || OHLC_FMT.day) + "')";
   return 'SELECT ' + bx + ', ' + c.n +
     ', FIRST(' + c.t + ', ' + c.v + '), LAST(' + c.t + ', ' + c.v + '), MIN(' + c.v + '), MAX(' + c.v + ')' +
     ' FROM ' + up(spec.table) +
@@ -142,21 +154,18 @@ function sqlTags(spec) {
   return 'SELECT ' + c.t + ', ' + c.n + ', ' + c.v + ' FROM ' + up(spec.table) + whereT + ' ORDER BY ' + c.t;
 }
 
-// ── forecast(예측) ── 단일 태그의 버킷 평균 이력. SCRIPT가 이 이력으로 회귀를 라이브 재계산하므로
-// 차트를 열 때마다 현재 데이터로 예측이 갱신된다(스냅샷 아님). 버킷 단위는 범위에 맞춰 클램프.
-// 예측용 버킷 단위 — **차트용 pickUnit보다 잘게** 잡는다.
-//   차트는 점 폭주를 막으려 거칠게(2.4년 → month=30점) 잡지만, 예측은 **버킷이 많아야 모델이 배운다**
-//   (30점으론 10개 모델을 학습·검증할 수 없어 MAPE가 30~47%로 뭉갬). 목표: 대략 100~1500 버킷.
-//   사용자가 rollup을 명시하면 그대로 존중.
+// ── forecast(예측) ── 단일 태그의 버킷 평균 이력
+// 예측용 버킷 단위 — 차트용 pickUnit보다 잘게(목표 약 100~1500 버킷, 버킷이 적으면 모델 학습·검증 불가)
+// · rollup 명시 시 그대로 사용
 function forecastUnit(spec) {
   if (spec.rollup) return spec.rollup;
   var ms = rangeMs(spec);
   if (!ms) return 'day';
   var h = ms / 1000 / 3600;
-  if (h < 0.5) return 'sec';           // ~30분 미만 (BEARING 3.4분 실측 데이터 → min이면 4버킷뿐, sec이면 206버킷)
+  if (h < 0.5) return 'sec';           // ~30분 미만
   if (h < 48) return 'min';            // ~2일 미만
   if (h < 24 * 60) return 'hour';      // ~2개월 미만
-  if (h < 24 * 365 * 3) return 'day';  // ~3년 미만 (SILVER 2.4년 → 725버킷)
+  if (h < 24 * 365 * 3) return 'day';  // ~3년 미만
   return 'week';                       // 그 이상
 }
 function sqlForecast(spec) {
@@ -247,9 +256,9 @@ function seriesInfo(spec) {
 // SCRIPT 빌더 (한 시리즈=단일 라인, 여러 시리즈=3-block 누적)
 // ════════════════════════════════════════════════════
 
-// SQL 문자열 컬럼(NAME 등)은 SCRIPT(goja)에 NullString 구조체 {string, valid}로 들어온다 —
-// String()/valueOf()/==/=== 전부 "[object Object]"가 되어 키·비교가 조용히 전부 miss(빈 차트).
-// 유일한 추출 경로는 .string. 숫자 컬럼·집계값은 순수 숫자, TIME은 페어에 그대로 넣으면 직렬화됨.
+// SQL 문자열 컬럼(NAME 등)은 SCRIPT(goja)에 NullString 구조체 {string, valid}로 들어옴
+// · String()·valueOf()·==·=== 모두 "[object Object]" 기준이라 키·비교 전부 miss → .string으로만 추출
+// · 숫자 컬럼·집계값은 순수 숫자, TIME은 페어에 그대로 넣으면 직렬화됨
 var STR_HELPER = 'function _str(v){ return (v && typeof v === "object" && v.string !== undefined) ? v.string : String(v); }';
 
 function scriptSingle() {
@@ -320,22 +329,19 @@ function scriptOHLC(o) {
     '})';
 }
 
-// forecast SCRIPT — 두 모드:
-//   ① spec._forecast 있으면 **스냅샷(작음)**: SQL로 실측은 라이브로 받고 예측값만 리터럴로 박는다.
-//      → 인라인(모델이 답변에 ```tql 통째로 복사)용. 엔진(11KB)을 답변에 넣으면 모델이 잘라먹어 깨짐 → 작게 유지.
-//   ② 없으면 **라이브 엔진(큼)**: forecast_algo 엔진을 baking해 렌더마다 재적합.
-//      → 저장/대시보드(tql_path로 참조, 모델이 복사 안 함)용. 데이터 늘면 자동 갱신.
-//   공통: column(0)=실측, (1)=예측, (2)=하한(투명 base), (3)=구간폭(stack→채움). 시간축 나노초 함정 회피.
+// forecast SCRIPT — 두 모드
+// · spec._forecast 있으면 스냅샷: 실측은 SQL 라이브, 예측값은 리터럴(인라인 복사용 — 작게 유지해 모델의 잘림 방지)
+// · 없으면 라이브 엔진: forecast_algo를 구워 넣어 렌더마다 재적합(저장/대시보드용)
+// · 공통 column: (0)=실측, (1)=예측, (2)=하한(투명 base), (3)=구간폭(stack 채움), (4)=백테스트
 function fcLit(x) { if (x == null || !isFinite(x)) return 'null'; return String(parseFloat(x.toPrecision(5))); } // 5유효숫자(인라인 리터럴 길이 축소)
 function buildForecastScript(spec) {
   return spec._forecast ? buildForecastSnapshot(spec) : buildForecastLive(spec);
 }
 
-// 스냅샷(인라인): 실측은 SQL에서 누적, 예측·백테스트는 워커가 계산한 값을 리터럴로. 작아서 모델이 답변에 안전히 복사.
-//   column(0)=실측, (1)=예측, (2)=하한 base, (3)=구간폭 stack, (4)=백테스트(최근 검증 예측선).
+// 스냅샷(인라인): 실측은 SQL에서 누적, 예측·백테스트는 워커 계산값 리터럴
 function buildForecastSnapshot(spec) {
   var F = spec._forecast || [], B = spec._backtest || [], fLit = [], bLit = [], i;
-  // 타임스탬프를 절대 ms(13자리) 대신 기준시각(BT) 기준 **일 오프셋**(짧은 수)으로 → 리터럴 길이 절반↓(모델 복사 안정).
+  // 타임스탬프는 기준시각(BT) 대비 일 오프셋 — 리터럴 길이 축소(모델 복사 안정)
   var base = spec._trainEndMs || (F.length ? F[0].t : 0), DAY = 86400000;
   function off(t) { return Math.round((t - base) / DAY * 100) / 100; }
   for (i = 0; i < F.length; i++) fLit.push('[' + off(F[i].t) + ',' + fcLit(F[i].v) + ',' + fcLit(F[i].lo) + ',' + fcLit(F[i].hi) + ']');
@@ -395,13 +401,13 @@ function seriesLine(names, chartType) {
 }
 
 function defaultTitle(spec) {
-  if (spec.kind === 'ohlc') return up(spec.table) + ' OHLC (' + ohlcUnit(spec) + ' 캔들)';
+  if (spec.kind === 'ohlc') return up(spec.table) + ' OHLC (' + bucketLabel(ohlcBucket(spec)) + ' 캔들)';
   if (spec.kind === 'forecast') {
     var fm = spec.method === 'quadratic' ? '2차' : spec.method === 'holtwinters' ? '계절성' : spec.method === 'auto' ? 'auto' : '선형';
     return up(spec.table) + ' ' + spec.tag + ' 예측 (' + forecastUnit(spec) + ', ' + fm + ')';
   }
   if (spec.kind === 'tags') return up(spec.table) + ' 태그 비교';
-  return up(spec.table) + ' ' + spec.tag + (spec.rollup ? ' (' + spec.rollup + ' 집계)' : '');
+  return up(spec.table) + ' ' + spec.tag + (spec.rollup ? ' (' + bucketLabel(metricsBucket(spec)) + ' 집계)' : '');
 }
 
 function chartBlock(spec, seriesNames) {
@@ -416,7 +422,7 @@ function chartBlock(spec, seriesNames) {
     ', left: 10, top: 5 }';
 
   return 'CHART(\n' +
-    "    tz('Asia/Seoul'),\n" +
+    "    tz('" + chartTz(spec) + "'),\n" +
     '    chartOption({\n' +
     '        title: ' + titleObj + ',\n' +
     '        grid: { left: ' + gridLeft + ', right: ' + LAYOUT.gridRight + ', top: ' + LAYOUT.gridTop + ', bottom: ' + LAYOUT.gridBottom + ' },\n' +
@@ -474,7 +480,7 @@ function forecastChartBlock(spec) {
       'data: [{ xAxis: ' + spec._trainEndMs + ', label: { formatter: "예측 시작", position: "insideEndTop" } }] }';
   }
   return 'CHART(\n' +
-    "    tz('Asia/Seoul'),\n" +
+    "    tz('" + chartTz(spec) + "'),\n" +
     '    chartOption({\n' +
     '        title: ' + titleObj + ',\n' +
     '        grid: { left: ' + gridLeft + ', right: ' + LAYOUT.gridRight + ', top: ' + LAYOUT.gridTop + ', bottom: ' + LAYOUT.gridBottom + ' },\n' +
@@ -495,7 +501,7 @@ function forecastChartBlock(spec) {
 }
 
 // ════════════════════════════════════════════════════
-// SINK 레지스트리 (확장 지점) — 차후 csv/insert/json은 여기에 추가만
+// SINK 레지스트리 (확장 지점)
 // ════════════════════════════════════════════════════
 
 var SINKS = {
@@ -517,15 +523,13 @@ var SINKS = {
     buildScript: function (spec, info) { return scriptGeomap(spec); },
     buildSink: function (spec, info) { return geomapBlock(spec); },
   },
-  // csv:    { buildScript, buildSink },   ← 차후
-  // insert: { buildScript, buildSink },   ← 차후
 };
 
 // ════════════════════════════════════════════════════
 // 진입점
 // ════════════════════════════════════════════════════
 
-// compileTIR(spec) → TQL 문자열. 유효하지 않으면 Error를 던진다(결정론적, 메시지에 원인).
+// compileTIR(spec) → TQL 문자열, 무효 spec이면 Error(메시지에 원인)
 function compileTIR(spec) {
   var v = validate(spec);
   if (!v.ok) throw new Error('TIR invalid:\n- ' + v.errors.join('\n- '));
@@ -537,7 +541,7 @@ function compileTIR(spec) {
   }
 
   var info = seriesInfo(spec);
-  // SRC: geomap에 table 없으면 FAKE 좌표 예제, 그 외는 SQL(forecast 포함 — 이력 조회 후 SCRIPT가 라이브 재계산).
+  // SRC: geomap에 table 없으면 FAKE 좌표 예제, 그 외는 SQL
   var srcLine = (spec.kind === 'geomap' && !spec.table) ? fakeGeomapSource() : ('SQL(`' + buildSource(spec) + '`)');
   var script = backend.buildScript(spec, info); // MAP
   var sinkCode = backend.buildSink(spec, info); // SINK
@@ -553,4 +557,4 @@ function compileSafe(spec) {
   }
 }
 
-module.exports = { compileTIR, compileSafe, buildSource, SINKS, toDateLiteral, forecastUnit };
+module.exports = { compileSafe, buildSource, SINKS, toDateLiteral, forecastUnit, fitBucket, metricsBucket, ohlcBucket, bucketLabel, rangeMs, UNIT_WINDOW_H };

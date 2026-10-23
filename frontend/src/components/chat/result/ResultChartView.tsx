@@ -5,11 +5,11 @@ import { useTheme } from "../../../utils/theme";
 import type { TqlChartPayload } from "../../../types/exec";
 
 /**
- * TQL 차트 응답 → iframe srcdoc 격리 렌더.
- * 에셋은 서비스 프록시 경로로 재작성되므로 base href 는 현재 페이지 origin 만 있으면 된다.
+ * TQL 차트 응답 → iframe srcdoc 격리 렌더
+ * 에셋은 Neo의 /web/... 상대 주소 — base href(현재 페이지 origin)로 접속 주소에서 로드
  */
 export const ResultChartView = ({ data }: { data: TqlChartPayload }) => {
-    // 테마가 바뀌면 srcdoc을 다시 만들어 iframe이 새 테마로 재마운트된다.
+    // 테마 변경 시 srcdoc 재생성 → iframe 새 테마로 재마운트
     const theme = useTheme();
     const html = useMemo(
         () => buildChartIframeHtml(data, getChartAssetBase(), theme),

@@ -52,7 +52,8 @@ function claudeChat(client, messages, toolDefs, cb) {
       return cb(new Error('[Claude] API error (HTTP ' + resp.statusCode + '): ' + errBody));
     }
 
-    var claudeResp = resp.json();
+    // 일반 객체로 파싱 — resp.json()은 직렬화마다 키 순서가 달라져 대화 기록 캐시가 깨짐
+    var claudeResp = JSON.parse(resp.string());
     // Log cache usage
     if (claudeResp.usage) {
       var u = claudeResp.usage;
@@ -101,7 +102,7 @@ function claudeChatSync(client, messages, toolDefs) {
     throw new Error('[Claude] API error (HTTP ' + resp.statusCode + '): ' + errBody);
   }
 
-  var claudeResp = resp.json();
+  var claudeResp = JSON.parse(resp.string());
   if (claudeResp.usage) {
     var u = claudeResp.usage;
     var cached = u.cache_read_input_tokens || 0;
@@ -127,10 +128,9 @@ function buildSystemBlocks(system) {
   return [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }];
 }
 
-// tool_use ↔ tool_result 매칭을 인덱스 추론이 아니라 FIFO 큐로 보장한다.
-// assistant turn마다 tool_use에 순번 id를 부여해 큐에 넣고, 뒤따르는 tool 메시지가 순서대로 pop해 같은 id를 쓴다.
-// → 가드가 메시지를 주입('cancelled' tool)·삭제(toolCall drop)해도 짝이 안 깨진다
-//   (인덱스 추론 방식은 이때 짝이 어긋나 Claude 400 'unexpected tool_use_id'를 낸다).
+// tool_use ↔ tool_result 짝을 FIFO 큐로 매칭
+// · assistant 턴마다 tool_use에 순번 id 부여 → 뒤따르는 tool 메시지가 순서대로 pop
+// · 가드의 메시지 주입('cancelled' tool)·toolCall 삭제에도 짝 유지(Claude 400 'unexpected tool_use_id' 방지)
 function messagesToClaude(messages) {
   var result = [];
   var pendingIds = [];   // 직전 assistant의 tool_use id들(결과 대기), 순서대로

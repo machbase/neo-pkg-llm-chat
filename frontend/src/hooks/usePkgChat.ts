@@ -1,14 +1,13 @@
 import { useEffect, useState, useRef, useMemo, useCallback } from "react";
-import { getCurrentUser, getAuthToken } from "../utils/auth";
+import { getApiToken } from "../utils/auth";
 import { getWsBase } from "../services/baseUrl";
 import type { Message, PkgProvider, PkgSelectedModel } from "../types/chat";
 
 interface ExtMsgIncoming {
     type: string;
-    session?: string;
     providers?: PkgProvider[];
     msg?: string;
-    /** Follow-up chips, sent after answer_stop. Absent on ollama and on failure. */
+    /** 후속 질문 칩 — answer_stop 뒤에 도착, ollama·생성 실패 시 없음 */
     items?: string[];
     message?: {
         ver: string;
@@ -24,18 +23,16 @@ interface ExtMsgIncoming {
 }
 
 type ExtWsOutgoing =
-    | { type: "get_models"; user_id: string }
-    | { type: "chat"; user_id: string; session_id: string; provider: string; model: string; query: string }
-    | { type: "stop"; user_id: string; session_id: string }
-    | { type: "clear"; user_id: string; session_id: string };
+    | { type: "get_models" }
+    | { type: "chat"; session_id: string; provider: string; model: string; query: string; tz?: string };
 
-const getExtWsUrl = async (): Promise<string> => {
-    // base 는 이미 .../ws 로 끝나는 service proxy 경유 URL.
-    // user 는 URL segment 가 아니라 첫 채팅 메시지의 user_id 필드로 전달된다
-    // (백엔드 onBrowserConnection 의 fallback 로직이 이를 인증 user 로 처리).
-    // — JSH ws 모듈의 path-template 매칭이 끝 segment 정적일 때만 동작하기 때문에
-    //   /ws/{user} 같은 URL 패턴을 못 받음. /ws 정적 경로로 통일.
-    return getWsBase();
+// 브라우저 시간대(IANA 이름) — 리포트 등 시각 표시 기준
+const browserTimeZone = (): string | undefined => {
+    try {
+        return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+    } catch {
+        return undefined;
+    }
 };
 
 const generateSessionId = (): string => `sess-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
@@ -50,44 +47,38 @@ const DEFAULT_DELTA_SET = (target: "msg" | "block", model?: string): Message => 
         type: target,
         isProcess: true,
         isInterrupt: false,
-        // Answers only — tool blocks are folded away and never show a footer.
+        // 답변 메시지만 대상 — 도구 블록은 접혀 있어 푸터 없음
         model: target === "msg" ? model : undefined,
     };
 };
 
-export const usePkgChat = (pInitialMessages?: Message[]) => {
+export const usePkgChat = () => {
     const socketRef = useRef<WebSocket | null>(null);
     const sessionIdRef = useRef<string>(generateSessionId());
     const [wsReady, setWsReady] = useState(false);
     const wasConnectedRef = useRef(false);
 
-    const [messages, setMessages] = useState<Message[]>(pInitialMessages ?? []);
+    const [messages, setMessages] = useState<Message[]>([]);
     const [sInputValue, setInputValue] = useState("");
     const [sProcessingAnswer, setProcessingAnswer] = useState(false);
     const [sSelectedModel, setSelectedModel] = useState<PkgSelectedModel>({ provider: "", model: "", name: "" });
     const [sProviderList, setProviderList] = useState<PkgProvider[]>([]);
     const [sFollowups, setFollowups] = useState<string[]>([]);
     const [sModelsMessage, setModelsMessage] = useState("");
-    const callbackRef = useRef<any>(undefined);
 
     const isComposingRef = useRef(false);
     const processingAnswerRef = useRef(false);
-    // Read from the socket handler, which closes over stale state — the label is
-    // stamped per answer so switching models mid-session labels each one right.
+    // 소켓 핸들러에서 읽음(옛 state 를 붙잡음) — 답변마다 모델 라벨을 찍어 세션 중 모델 변경에도 정확
     const modelLabelRef = useRef("");
     modelLabelRef.current = sSelectedModel.name
         ? `${sSelectedModel.provider} / ${sSelectedModel.name}`
         : "";
-    // Monotonic token for sendChatWhenReady's polling loop. Each new call
-    // increments the token and captures it locally; if the captured token
-    // no longer matches the ref by the time a poll tick fires, that older
-    // invocation aborts (last-write-wins) so rapid successive edit-saves
-    // collapse to a single network send.
+    // sendChatWhenReady 폴링용 단조 증가 번호 — 호출마다 증가·캡처
+    // · 폴링 중 번호가 바뀌면 이전 호출은 중단(마지막 호출만 전송) — 연속 수정·저장을 전송 1회로 합침
     const pendingSendTokenRef = useRef(0);
 
     const getProcessingAnswer = useMemo(() => sProcessingAnswer, [sProcessingAnswer]);
 
-    // Handle models response
     const handleModelsResponse = useCallback((raw: ExtMsgIncoming) => {
         if (raw.providers) {
             setProviderList(raw.providers);
@@ -98,20 +89,7 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
         }
     }, []);
 
-    // Handle stop response
-    const handleStopResponse = useCallback((raw: ExtMsgIncoming) => {
-        setProcessingAnswer(false);
-        processingAnswerRef.current = false;
-        if (raw.msg) {
-            setMessages((prev) => [
-                ...prev,
-                { id: `msg-${Date.now()}-stop`, content: raw.msg!, timestamp: Date.now(), role: "assistant", type: "msg", isProcess: false, isInterrupt: false },
-            ]);
-        }
-    }, []);
-
-    // Handle error response
-    // Arrives after the answer is already on screen, so it only ever adds chips.
+    // 후속 질문 칩 — 답변이 화면에 뜬 뒤 도착, 칩 추가만 함
     const handleFollowups = useCallback((raw: ExtMsgIncoming) => {
         setFollowups(Array.isArray(raw.items) ? raw.items : []);
     }, []);
@@ -127,7 +105,7 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
         }
     }, []);
 
-    // Handle msg response (streaming)
+    // 스트리밍 메시지 처리
     const handleMsgResponse = useCallback((raw: ExtMsgIncoming) => {
         const msg = raw.message;
         if (!msg) return;
@@ -139,13 +117,9 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
                 break;
 
             case "answer_stop":
-                if (callbackRef?.current) {
-                    callbackRef.current();
-                    callbackRef.current = undefined;
-                }
                 setProcessingAnswer(false);
                 processingAnswerRef.current = false;
-                // Finalize any messages still marked as processing
+                // 진행 중 표시가 남은 메시지 확정
                 setMessages((prev) => {
                     const hasProcessing = prev.some((m) => m.isProcess);
                     if (!hasProcessing) return prev;
@@ -155,7 +129,7 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
 
             case "stream_msg_start":
             case "stream_block_start":
-                // Do nothing — message is created lazily on first delta
+                // 무시 — 메시지는 첫 delta에서 생성
                 break;
 
             case "stream_block_delta":
@@ -171,7 +145,7 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
                             return updated;
                         }
                     }
-                    // No existing processing message — create one with first delta
+                    // 진행 중 메시지 없음 → 첫 delta로 생성
                     return [...prev, { ...DEFAULT_DELTA_SET(targetType, modelLabelRef.current), content: text }];
                 });
                 break;
@@ -200,13 +174,12 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
         }
     }, []);
 
-    // Keep handlers in refs so connect() doesn't depend on them
-    const handlersRef = useRef({ handleModelsResponse, handleMsgResponse, handleStopResponse, handleErrorResponse, handleFollowups });
+    // 핸들러는 ref 보관 — connect()가 핸들러에 의존하지 않게 함
+    const handlersRef = useRef({ handleModelsResponse, handleMsgResponse, handleErrorResponse, handleFollowups });
     useEffect(() => {
-        handlersRef.current = { handleModelsResponse, handleMsgResponse, handleStopResponse, handleErrorResponse, handleFollowups };
-    }, [handleModelsResponse, handleMsgResponse, handleStopResponse, handleErrorResponse, handleFollowups]);
+        handlersRef.current = { handleModelsResponse, handleMsgResponse, handleErrorResponse, handleFollowups };
+    }, [handleModelsResponse, handleMsgResponse, handleErrorResponse, handleFollowups]);
 
-    // WebSocket connect
     const connect = useCallback(async () => {
         const prev = socketRef.current;
         if (prev) {
@@ -219,7 +192,7 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
         }
 
         try {
-            const url = await getExtWsUrl();
+            const url = await getWsBase();
             const ws = new WebSocket(url);
             socketRef.current = ws;
 
@@ -240,9 +213,6 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
                             break;
                         case "msg":
                             h.handleMsgResponse(raw);
-                            break;
-                        case "stop":
-                            h.handleStopResponse(raw);
                             break;
                         case "error":
                             h.handleErrorResponse(raw);
@@ -286,10 +256,9 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
         };
     }, [connect]);
 
-    // Send to WS
-    // 백엔드는 이 토큰만으로 사용자를 판별한다(user_id 필드는 신뢰하지 않음).
-    // 수명이 5분이라 보낼 때마다 저장소에서 새로 읽는다.
-    const wireMessage = (payload: ExtWsOutgoing) => JSON.stringify({ ...payload, auth_token: getAuthToken() });
+    // 백엔드는 이 API 토큰만으로 사용자 판정
+    // · 보낼 때마다 저장소에서 읽음 — 토큰 교체·삭제 즉시 반영
+    const wireMessage = (payload: ExtWsOutgoing) => JSON.stringify({ ...payload, auth_token: getApiToken() });
 
     const sendExt = useCallback((payload: ExtWsOutgoing) => {
         if (socketRef.current?.readyState === WebSocket.OPEN) {
@@ -297,66 +266,57 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
         }
     }, []);
 
-    // Send chat payload once WS reaches OPEN.
-    // `await connect()` only resolves after WebSocket object creation, not after
-    // the OPEN transition, so sendExt called immediately afterward may silently
-    // drop the payload (sendExt no-ops when readyState !== OPEN). This helper
-    // polls readyState (every 50ms, up to 5s) and sends exactly once.
+    // WS 가 OPEN 된 뒤 채팅 전송(정확히 1회)
+    // · await connect() 는 객체 생성까지만 기다림 — 바로 sendExt 하면 OPEN 전이라 조용히 버려짐
+    // · readyState 를 50ms 간격·최대 5초 폴링
     const sendChatWhenReady = useCallback(async (query: string) => {
         if (!sSelectedModel.provider || !sSelectedModel.model) return;
 
-        // Last-write-wins: bump the shared token and capture this call's
-        // generation. Any earlier in-flight invocation will see its captured
-        // token no longer match and abort silently (no send, no error msg).
+        // 마지막 호출 우선 — 번호 증가·캡처, 진행 중이던 이전 호출은 조용히 중단(전송·오류 없음)
         pendingSendTokenRef.current += 1;
         const myToken = pendingSendTokenRef.current;
         const isStillCurrent = () => pendingSendTokenRef.current === myToken;
 
         const payload: ExtWsOutgoing = {
             type: "chat",
-            user_id: getCurrentUser() ?? "",
             session_id: sessionIdRef.current,
             provider: sSelectedModel.provider,
             model: sSelectedModel.model,
             query,
+            tz: browserTimeZone(),
         };
 
-        // Fast path: already OPEN.
+        // 이미 OPEN이면 즉시 전송
         if (socketRef.current?.readyState === WebSocket.OPEN) {
             if (!isStillCurrent()) return;
             socketRef.current.send(wireMessage(payload));
             return;
         }
 
-        // Ensure a connect attempt is in flight.
+        // 소켓 없으면 연결 시작
         if (!socketRef.current) {
             await connect();
             if (!isStillCurrent()) return;
         }
 
-        // Poll for OPEN up to 5s.
         const TIMEOUT_MS = 5000;
         const POLL_MS = 50;
         const start = Date.now();
         while (Date.now() - start < TIMEOUT_MS) {
-            // A newer sendChatWhenReady call has superseded this one — bail
-            // without sending or surfacing an error. The newer call owns the
-            // send semantics from here on.
+            // 더 새 호출이 있음 — 전송·오류 표시 없이 중단(전송은 새 호출 담당)
             if (!isStillCurrent()) return;
             if (socketRef.current?.readyState === WebSocket.OPEN) {
                 socketRef.current.send(wireMessage(payload));
                 return;
             }
-            // If the socket was closed/errored entirely, abort.
+            // 소켓이 닫혔으면 중단
             if (socketRef.current && socketRef.current.readyState === WebSocket.CLOSED) {
                 break;
             }
             await new Promise((resolve) => setTimeout(resolve, POLL_MS));
         }
 
-        // Failed to reach OPEN within timeout — surface an error message,
-        // but only if this invocation is still the latest one. Otherwise a
-        // superseded call would spam the user with stale errors.
+        // 시간 안에 OPEN 실패 — 최신 호출일 때만 오류 표시(밀려난 호출의 낡은 오류 방지)
         if (!isStillCurrent()) return;
         setMessages((prev) => [
             ...prev,
@@ -372,12 +332,10 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
         ]);
     }, [connect, sSelectedModel.provider, sSelectedModel.model]);
 
-    // Request model list
     const getListModels = useCallback(() => {
-        sendExt({ type: "get_models", user_id: getCurrentUser() ?? "" });
+        sendExt({ type: "get_models" });
     }, [sendExt]);
 
-    // Send chat message
     const handleSendMessage = () => {
         const text = sInputValue.trim();
         if (!text || !sSelectedModel.provider || !sSelectedModel.model) return;
@@ -396,11 +354,11 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
 
         sendExt({
             type: "chat",
-            user_id: getCurrentUser() ?? "",
             session_id: sessionIdRef.current,
             provider: sSelectedModel.provider,
             model: sSelectedModel.model,
             query: text,
+            tz: browserTimeZone(),
         });
 
         setInputValue("");
@@ -408,7 +366,7 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
 
     const handleInterruptMessage = () => {
         setMessages((prev) => prev.map((m) => ({ ...m, isInterrupt: true })));
-        // Close WS to trigger server-side cancellation, then reconnect
+        // WS 종료로 서버 측 취소 → 재연결
         const ws = socketRef.current;
         if (ws) {
             ws.onopen = null;
@@ -421,16 +379,14 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
         setWsReady(false);
         setProcessingAnswer(false);
         processingAnswerRef.current = false;
-        // Reconnect after a short delay
         setTimeout(() => { connect(); }, 500);
     };
 
-    // Edit a previous user message:
-    //  1. trim & validate (non-empty, role==='user')
-    //  2. if a stream is in flight, close WS (preserving sessionIdRef) — same
-    //     pattern as handleInterruptMessage but keeping the session id.
-    //  3. truncate messages array at the edited index, replacing content.
-    //  4. re-issue the chat request via sendChatWhenReady (handles WS OPEN race).
+    // 이전 사용자 메시지 수정
+    // · 1) trim·검증(비어 있지 않음, role==='user')
+    // · 2) 응답 중이면 WS 종료(sessionIdRef 유지 — handleInterruptMessage 와 같되 세션 유지)
+    // · 3) 수정한 위치에서 메시지 배열 자르고 내용 교체
+    // · 4) sendChatWhenReady 로 재요청(WS OPEN 경합 처리)
     const handleEditUserMessage = useCallback((messageId: string, newContent: string) => {
         const trimmed = newContent.trim();
         if (!trimmed) return;
@@ -440,8 +396,7 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
         if (index < 0) return;
         if (messages[index].role !== "user") return;
 
-        // Interrupt any in-flight stream — but PRESERVE sessionIdRef so the
-        // server-side session continuity is kept for the re-issued question.
+        // 진행 중 응답 중단 — sessionIdRef 는 유지(재질문이 서버 세션을 이어감)
         if (processingAnswerRef.current) {
             const ws = socketRef.current;
             if (ws) {
@@ -457,7 +412,7 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
             processingAnswerRef.current = false;
         }
 
-        // Truncate at edited index, replacing the edited message's content.
+        // 수정 위치까지 자르고 내용 교체
         setMessages((prev) => {
             const idx = prev.findIndex((m) => m.id === messageId);
             if (idx < 0) return prev;
@@ -467,14 +422,12 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
             return truncated;
         });
 
-        // Re-issue request. sendChatWhenReady handles the WS-not-yet-OPEN race
-        // (post-close reconnect path) and silently no-ops if no model selected.
+        // 재요청 — WS 재연결 중 OPEN 경합은 sendChatWhenReady 가 처리, 모델 미선택이면 무시
         void sendChatWhenReady(trimmed);
     }, [messages, sendChatWhenReady]);
 
     const handleClearSession = () => {
-        // Close WS to trigger server-side cancellation (same as interrupt),
-        // then reset session and reconnect
+        // WS 종료로 서버 측 취소(중단과 동일) → 세션 초기화 후 재연결
         const ws = socketRef.current;
         if (ws) {
             ws.onopen = null;
@@ -498,7 +451,6 @@ export const usePkgChat = (pInitialMessages?: Message[]) => {
 
     return {
         messages,
-        setMessages,
         inputValue: sInputValue,
         setInputValue,
         isProcessingAnswer: getProcessingAnswer,

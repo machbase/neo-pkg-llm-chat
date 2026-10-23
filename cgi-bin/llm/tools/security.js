@@ -1,20 +1,9 @@
 /**
- * Central security guard for tool execution.
- *
- * One chokepoint, invoked from registry.execute() for EVERY tool call from EVERY LLM
- * backend, plus a redundant inner check in sql.js. Three jobs:
- *   1) NAME deny-list  — refuse any server-control / shell tool by name (capability-absence backstop).
- *   2) SQL screening   — first-keyword tokenizer (comment/whitespace-stripped, multi-statement
- *                        rejected) blocks INSERT/UPDATE/DELETE/ALTER/TRUNCATE/etc.; DROP gets a
- *                        "run it yourself in the console" guidance; CREATE of data
- *                        structures (TAG/LOG/INDEX/ROLLUP) is allowed (timer + legitimate setup),
- *                        but CREATE USER / GRANT / REVOKE and unknown CREATE are denied.
- *   3) TQL screening   — reject forbidden require()s (process/service/shell), and screen every
- *                        SQL(`...`) body inside the TQL with the same SQL rules.
- *
- * NOTE (residual, by design): legitimate timer-collection TQL writes via the APPEND()/INSERT()
- * TQL *sinks* — those are NOT blocked here or the timer feature breaks.
- * `INSERT INTO ... VALUES` (a SQL statement) IS blocked.
+ * 도구 실행 보안 관문 — 모든 LLM 백엔드의 도구 호출마다 검사 + 사용자 질의 사전 검사
+ * · 이름 차단: 서버 제어·쉘 도구
+ * · SQL: 첫 키워드 기준(주석 제거·다중 문 거부) — 변경·권한 문 거부, DROP은 콘솔 안내, 데이터 테이블·INDEX·ROLLUP CREATE만 허용
+ * · TQL: 금지 require 거부, SQL(`...`) 본문은 같은 SQL 규칙
+ * · TQL 싱크 APPEND()/INSERT()는 미차단(타이머 수집용), SQL INSERT INTO ... VALUES는 차단
  */
 
 // Mutation verbs we refuse outright. DROP and CREATE are handled separately above this test.
@@ -69,7 +58,7 @@ function sqlDenied(sql) {
     return '거부됨: 허용되지 않은 CREATE 작업입니다(계정/권한 생성 등은 보안 정책상 수행할 수 없습니다). 데이터 테이블 생성만 허용됩니다.';
   }
 
-  // DROP keeps the existing "guide the user to the console" behavior.
+  // DROP은 콘솔 직접 실행 안내
   if (/^DROP\b/.test(head)) {
     return 'DROP 문은 이 도구로 실행할 수 없습니다. 데이터 보호를 위해 사용자가 직접 SQL 콘솔에서 실행하도록 안내하세요. 예: DROP TABLE 테이블명 CASCADE;';
   }
@@ -141,10 +130,8 @@ function checkToolCall(name, args) {
   return { denied: false };
 }
 
-// Redact credential-like content from USER-FACING output. Model-independent backstop:
-// the model can state secrets from memory or relay them from a KB doc
-// (e.g. user-management.md ships "SYS/MANAGER"), which tool-boundary guards cannot catch.
-// Masks values while keeping structure, so legitimate doc answers stay readable.
+// 사용자 출력의 자격증명 마스킹 — 모델이 기억·문서에서 옮기는 비밀까지 차단(도구 경계 밖)
+// · 구조는 유지하고 값만 가림
 function redactSecrets(text, extraSecrets) {
   if (!text || typeof text !== 'string') return text;
   var out = text;
@@ -163,6 +150,8 @@ function redactSecrets(text, extraSecrets) {
 
   // 1) API keys / secrets by shape.
   out = out.replace(/\b(sk-ant-[A-Za-z0-9_\-]{6,}|sk-[A-Za-z0-9_\-]{12,}|AIza[A-Za-z0-9_\-]{20,})\b/g, '[보안 비공개]');
+  // Machbase Neo API token (nt_<id>_<secret>).
+  out = out.replace(/\bnt_[A-Za-z0-9]+_[A-Za-z0-9_\-]{20,}/g, '[보안 비공개]');
 
   // 2) Account/session enumeration queries against credential system tables.
   out = out.replace(/SELECT[\s\S]{0,300}?FROM\s+(?:M\$SYS_USERS|V\$SESSION)[^\n;]*;?/gi,
@@ -193,34 +182,109 @@ function redactSecrets(text, extraSecrets) {
   return out;
 }
 
-// HARD refusal — no legitimate self-serve path (credential disclosure, server control, shell,
-// prompt leak). Also used for provider policy rejections.
+// 강한 거절 — 자격증명 노출·서버 제어·쉘·프롬프트 유출(프로바이더 정책 거부에도 사용)
 var REFUSAL_TEXT = '보안 정책상 해당 요청은 수행하거나 관련 정보를 제공해 드릴 수 없습니다. 관리자 계정·접속 정보, 서버 제어, 권한 외 데이터 변경 등은 지원되지 않습니다.';
 
-// GUIDED refusal — privileged but legitimately-needed account/credential MANAGEMENT (change
-// password, create/delete user). The agent must not PERFORM it (cannot verify authority), but
-// the user genuinely needs it, so point them to the authenticated console path.
+// 안내 거절 — 계정·비밀번호 관리(변경·생성·삭제)는 권한 확인 불가라 직접 수행 안 함, 콘솔로 안내
 var MGMT_GUIDANCE_TEXT = '보안상 사용자 계정·비밀번호를 제가 직접 생성·변경·삭제해 드릴 수는 없습니다(요청자 권한을 확인할 수 없습니다). 권한 있는 관리자가 SQL 콘솔에서 직접 수행하셔야 합니다. 구체적인 명령/절차가 필요하시면 "~방법 알려줘"라고 문의해 주세요.';
 
-// Deterministic query screen for the USER QUERY. Matches ATTACK SHAPES, NOT topic
-// words — legit how-to/feature questions ("설치 방법", "로그인 기능 동작 확인", "유저 생성 방법")
-// pass through. Returns a refusal message (caller short-circuits BEFORE the LLM, so weak models
-// can't ramble) or null to proceed. HARD cases → REFUSAL_TEXT; management → MGMT_GUIDANCE_TEXT.
+// 요청 어미 — 동사 뒤에 붙으면 "시키는 말"(해줘·해·시켜·주세요·해줄 수 있어). 하면·하는·해야·해도·해? 같은 묻는 말은 해당 없음
+var REQ_TAIL = '(?:(?:해|시켜)\\s*(?:줘|주세요|주십시오|주실래|줄래|줄\\s*수|달라|봐)(?![가-힣])|(?:해|시켜|해라|하라|하세요|하십시오|하시오|하자)(?=\\s*(?:$|[.!~,])))';
+function cmdOf(stems) { return '(?:' + stems + ')\\)?\\s*' + REQ_TAIL; }
+// 어간 자체가 명령형인 동사(지워·꺼·넣어…) — 줘·라·버려가 붙거나 문장이 끝날 때만(지워져·꺼지면 제외)
+function bareCmdOf(stems) { return '(?:' + stems + ')(?:\\s*(?:줘|주세요|주십시오|라|버려)(?![가-힣])|(?=\\s*(?:$|[.!~,])))'; }
+// 영어 명령형 — 문장 첫머리 또는 please·can you 뒤
+var EN_CMD = '(?:^|[.!?]\\s+|\\b(?:please|pls|now|immediately|just|can you|could you|would you)\\s+)';
+// 묻는 말 표지 — 실행 지시가 없을 때만 통과 근거로 사용
+var QUESTION = /(\?|뭐|무엇|어떻게|어디|언제|왜|되나|돼\s*$|하면|문법|구문|사용법|방법|예제|예시|차이|의미|뜻|설명|how\s+(to|do|can|could|would|should)|\bwhat\b|\bwhy\b|syntax)/i;
+
+// 1) 자격증명 노출 — 자격증명 바로 뒤(16자 안)의 노출 동사. 대신·없이·말고(다른 인증 방식)·방법·정책 같은 속성 질문은 제외
+var CRED_G = /(비밀번호|비번|패스워드|password|passwd|\bpwd\b|\bpw\b|암호(?!화)|api[ _\-]?(?:key|키)|apikey|access[ _\-]?key|시크릿|secret\s*key|접속\s*(?:계정|정보|아이디|id)|관리자\s*(?:계정|아이디|id)|로그인\s*(?:계정|정보|id|아이디)|계정\s*정보|유저\s*(?:id|아이디|명|네임|이름)|user\s*(?:id|name)|username|인증\s*정보|자격\s*증명|크리덴셜|credential)/gi;
+var CRED_DISC = /(알려|보여|출력|공개|말해|뭐|뭔지|무엇|내놔|내놓|까줘|까봐|토해|불어|읊어)/;
+var CRED_ATTR = /(대신|없이|말고|안\s*쓰|방법|법|정책|규칙|설정|변경|바꾸|바꿀|재설정|초기화|만드|만들|생성|형식|길이|조건|위치|어디|저장|암호화|해시|옵션|입력|넣|지정|발급|등록|관리|만료|복잡도)/;
+function credDisclosure(q) {
+  var m;
+  CRED_G.lastIndex = 0;
+  while ((m = CRED_G.exec(q)) !== null) {
+    var tail = q.slice(m.index + m[0].length, m.index + m[0].length + 16), d = tail.search(CRED_DISC);
+    if (d < 0) continue;
+    var gap = tail.slice(0, d);
+    if (/[.?!\n]/.test(gap) || CRED_ATTR.test(gap)) continue;
+    return true;
+  }
+  if (/\b(reveal|show|tell|give|print|dump|display|expose|share)\b[\s\S]{0,20}?\b(password|passwd|api\s*key|secret|credential|login)/i.test(q)
+      && !/\bhow\s+(to|do|can)|\b(change|reset|rotate|policy)\b/i.test(q)) return true;
+  return /\bwhat('?s|\s+is)\s+(the\s+)?(\w+\s+)?(password|passwd|api\s*key|secret)\b/i.test(q);
+}
+
+// 5) 서버 제어 — 서버·프로세스 + 종료·재시작·구동을 시키는 말
+var SERVER_NOUN = /(서버|server|machbase[ -]?neo|\bneo\b|데몬|daemon|프로세스|process|서비스)/i;
+var STOP_N = '종료|중지|중단|정지|셧다운|재시작|재구동|재기동|리부트|리스타트|구동|가동|기동';
+var STOP_CMD = new RegExp(cmdOf(STOP_N) + '|' + bareCmdOf('꺼|죽여|내려|멈춰|없애|날려')
+  + '|(?:' + STOP_N + ')[^.?!\\n]{0,12}?(?:' + cmdOf('실행|수행|진행') + '|' + bareCmdOf('돌려') + ')');
+var STOP_EN = new RegExp(EN_CMD + '(?:shut\\s*down|stop|kill|restart|reboot|turn\\s*off|power\\s*off|take\\s*down)\\b', 'i');
+
+// 6) 변경 SQL 원문 — 실행 지시가 있거나 묻는 말이 아니면 차단
+var SQL_MUT = /(DELETE\s+FROM|INSERT\s+INTO|UPDATE\s+\S+\s+SET|ALTER\s+TABLE|TRUNCATE\s+(TABLE\s+)?\S|DROP\s+TABLE)/i;
+var EXEC_CMD = new RegExp(cmdOf('실행|수행|적용|진행|반영|삭제|추가|입력|삽입|변경|수정|제거|초기화') + '|' + bareCmdOf('넣어|지워|돌려|날려|비워|바꿔')
+  + '|\\b(?:execute|run\\s+(?:it|this|that)|apply\\s+(?:it|this))\\b', 'i');
+
+// 6b) 데이터·스키마 변경 지시(자연어)
+var MUT_KO = new RegExp('(?:데이터|테이블|레코드|행|로그|컬럼|칼럼|필드|스키마|구조)[\\s\\S]{0,8}?(?:'
+  + cmdOf('삭제|제거|드롭|입력|삽입|추가|등록|변경|수정|초기화') + '|' + bareCmdOf('지워|비워|날려|없애|넣어|바꿔') + ')');
+var MUT_EN = new RegExp(EN_CMD + '(?:delete|drop|truncate|wipe|erase|purge|remove|insert|inject|write|add|alter|modify|change)\\b[\\s\\S]{0,20}?\\b(?:data|rows?|records?|values?|tables?|everything|schema|columns?|table\\s+structure)\\b', 'i');
+var ENUM_EN = new RegExp(EN_CMD + '(?:list|show|enumerate|dump)\\b[\\s\\S]{0,12}?\\b(?:users?|accounts?|logins?)\\b', 'i');
+
+// 7) 시스템 프롬프트·도구 정의 유출
+var LEAK_OBJ = /(시스템\s*프롬프트|system\s*prompt|내부\s*(지시|지침|규칙)|(너|네|당신)[가-힣\s]{0,10}(지시문|지침|프롬프트)|(지시문|지침|프롬프트)\s*(원문|전체|그대로)|도구\s*(정의|목록)|tool\s*(definition|list)|your\s+(tools|instructions|prompt))/i;
+var LEAK_VERB = /(보여|출력|알려|공개|그대로|전체|빠짐없이|reveal|show|print|dump|output|list|give|tell|full|entire|verbatim|expose|share|provide)/i;
+
+// 8) 계정·비밀번호·권한 관리 지시 — 안내 거절(방법 질문은 통과)
+var MGMT_KO = [
+  new RegExp('(?:유저|user|사용자|계정|account)[\\s\\S]{0,8}?(?:' + cmdOf('삭제|제거|생성|추가|등록') + '|' + bareCmdOf('지워|없애|만들어') + ')', 'i'),
+  new RegExp('(?:비밀번호|암호(?!화)|패스워드|password|\\bpw\\b)[\\s\\S]{0,20}?(?:' + cmdOf('변경|재설정|초기화') + '|' + bareCmdOf('바꿔') + ')', 'i'),
+  new RegExp('권한[\\s\\S]{0,6}?' + cmdOf('부여|회수|변경|제거')),
+];
+var MGMT_EN = [
+  new RegExp(EN_CMD + '(?:create|add|make|delete|remove|drop|disable|enable)\\b[\\s\\S]{0,16}?\\b(?:users?|accounts?|logins?)\\b', 'i'),
+  new RegExp(EN_CMD + '(?:change|reset|update|set|modify)\\b[\\s\\S]{0,22}?\\b(?:password|passwd|credentials?)\\b', 'i'),
+  new RegExp(EN_CMD + '(?:grant|revoke)\\b[\\s\\S]{0,12}?\\b(?:access|privileges?|permissions?|roles?)\\b', 'i'),
+];
+var MGMT_SQL = /(\b(grant|revoke)\s+\w|(CREATE|DROP|ALTER)\s+USER\b)/i;
+function anyMatch(list, q) { for (var i = 0; i < list.length; i++) if (list[i].test(q)) return true; return false; }
+
+// 계정별 설정 파일 이름(configs/*.json) — 워커가 시작할 때 실제 목록으로 채움. 기본은 sys.json
+var _configFiles = ['sys.json'];
+function setConfigFiles(names) {
+  var out = [];
+  (names || []).forEach(function (n) { n = String(n).toLowerCase(); if (/\.json$/.test(n) && out.indexOf(n) < 0) out.push(n); });
+  if (out.indexOf('sys.json') < 0) out.push('sys.json');
+  _configFiles = out;
+}
+function mentionsConfigFile(q) {
+  var lq = String(q).toLowerCase();
+  for (var i = 0; i < _configFiles.length; i++) {
+    var at = lq.indexOf(_configFiles[i]);
+    if (at >= 0 && !/[a-z0-9_.-]/.test(lq.charAt(at - 1) || '')) return true;
+  }
+  return false;
+}
+
+// 사용자 질의 사전 검사(LLM 호출 전) — 보안 "지시"는 차단, "질문"은 통과, 섞이면 지시 우선
+// · 반환: REFUSAL_TEXT(강한 거절) / MGMT_GUIDANCE_TEXT(계정 관리 안내) / null(통과)
 function screenQuery(query) {
   if (!query || typeof query !== 'string') return null;
   var q = query;
-  var disclose = /(알려|보여|출력|공개|뭐|뭔지|무엇|확인[^.\n]{0,8}(줘|주세|해)|까줘|까봐|내놔|내놓|토해|불어|reveal|show|tell|give|print|dump|list|what('?s)?|which|share|expose|display|provide)/i;
-  var howto = /(방법|어떻게|설정하|변경하|바꾸|만드는|생성하|정책|규칙\s*설명|사용법|쓰는\s*법|관리하는|how\s+(to|do|can|could|would|should)|tutorial)/i;
+  var en = !/[가-힣]/.test(q); // 영어 명령형 규칙은 순수 영어 문장만 — 한국어 속 SQL 키워드(CREATE USER·ALTER TABLE)는 6·8번이 판정
 
-  // 1) Credentials / API keys disclosure (1a/1b/1c) — exclude how-to ("비밀번호 변경 방법")
-  if (/(비밀번호|비번|패스워드|password|passwd|\bpwd\b|\bpw\b|암호(?!화)|api[ _\-]?(key|키)|apikey|access[ _\-]?key|시크릿|secret\s*key|접속\s*(계정|정보|비밀번호|아이디|id)|관리자\s*(계정|아이디|비밀번호|id)|로그인\s*(계정|정보|비밀번호|id|아이디)|계정\s*정보|유저\s*(id|아이디|명|네임|이름)|user\s*(id|name)|username|아이디\s*[\/／]\s*(비번|비밀번호|패스워드|pw|password)|id\s*[\/／]\s*(pw|password|비번|비밀번호|패스워드)|인증\s*정보|자격\s*증명|크리덴셜|credential)/i.test(q)
-      && disclose.test(q) && !howto.test(q)) return REFUSAL_TEXT;
+  // 1) Credentials / API keys disclosure (1a/1b/1c)
+  if (credDisclosure(q)) return REFUSAL_TEXT;
 
   // 2) Account / session enumeration (1a)
   if (/(M\$SYS_USERS|V\$SESSION|사용자\s*계정\s*목록|전체\s*(사용자|계정)\s*(목록|계정)|등록된\s*(전체\s*)?(사용자|계정))/i.test(q)) return REFUSAL_TEXT;
 
   // 3) Config-file path traversal / direct secret-file access (1b/1c)
-  if (/(\.\.[\/\\])|sys\.json|joy\.json|config\.js|configs?[\/\\]/i.test(q)) return REFUSAL_TEXT;
+  if (/(\.\.[\/\\])|config\.js|configs?[\/\\]/i.test(q) || mentionsConfigFile(q)) return REFUSAL_TEXT;
 
   // 4) Shell / process execution (2c)
   if (/(child_process|require\(\s*['"`]?\s*(@jsh\/process|service|child_process|\bos\b|\bfs\b)|exec\s*\(|spawn\s*\()/i.test(q)
@@ -228,61 +292,30 @@ function screenQuery(query) {
       || /(시스템|os)\s*명령(어)?\s*(을|를)?\s*(실행|돌려|수행)/i.test(q)
       || /명령어\s*(을|를)?\s*(실행|돌려|돌릴)/i.test(q)) return REFUSAL_TEXT;
 
-  // 5) Server control — destructive verb / force-start + server noun, NOT a how-to (2a/2b)
-  if (/(서버|server|machbase[ -]?neo|데몬|프로세스|process)/i.test(q)
-      && /(종료|중지|중단|내려|꺼[줘라버]|죽여|죽이|없애|날려|멈춰|shutdown|stop|kill|재시작|재구동|restart|reboot|구동\s*(해|시켜|시키)|가동\s*(해|시켜|시키)|기동\s*(해|시켜|시키)|강제\s*(구동|가동|기동)|shut\s*down|turn\s*off|power\s*off|take\s*down)/i.test(q)
-      && !/(방법|어떻게|how\s*(to|do)|하나요|가능|설치|구동\s*방법|구동\s*(상태|중|여부)|시작하는)/i.test(q)) return REFUSAL_TEXT;
+  // 5) Server control (2a/2b) — 서버·프로세스 + 종료·재시작·구동을 시키는 말
+  if (SERVER_NOUN.test(q) && (STOP_CMD.test(q) || (en && STOP_EN.test(q)))) return REFUSAL_TEXT;
 
-  // 6) Raw data-mutation SQL to execute (3a/3b/3c) — but allow how-to/syntax questions
-  //    ("ALTER TABLE ADD COLUMN 어떻게 써?"). Actual execution is still blocked at the tool layer
-  //    (checkToolCall MUTATION regex), so explaining syntax never mutates data.
-  if (!howto.test(q)
-      && /(DELETE\s+FROM|INSERT\s+INTO|UPDATE\s+\S+\s+SET|ALTER\s+TABLE|TRUNCATE\s+(TABLE\s+)?\S|DROP\s+TABLE)/i.test(q)) return REFUSAL_TEXT;
+  // 6) Raw data-mutation SQL (3a/3b/3c) — 실행 지시가 있거나 묻는 말이 아니면 차단
+  if (SQL_MUT.test(q) && (EXEC_CMD.test(q) || !QUESTION.test(q))) return REFUSAL_TEXT;
 
-  // 6b) Natural-language (Korean) data/schema mutation COMMANDS — spec Cat3 phrasings, not SQL.
-  //     Command-form verbs (삭제해/지워/넣어/변경해…) so status/how-to queries ("입력 현황",
-  //     "삭제 방법") are not caught. how-to excluded.
-  if (!howto.test(q)) {
-    if (/(데이터|테이블|레코드|행|로그)[\s\S]{0,6}?(삭제\s*(해|하)|지워|지우|제거\s*(해|하)|비워|날려|드롭)/i.test(q)) return REFUSAL_TEXT;
-    if (/(데이터|레코드|행)[\s\S]{0,6}?(입력\s*(해|하)|삽입|넣어|넣기|추가\s*(해|하)|등록\s*해)/i.test(q)) return REFUSAL_TEXT;
-    if (/(스키마|컬럼|칼럼|필드|테이블\s*구조)[\s\S]{0,6}?(변경\s*(해|하)|수정\s*(해|하)|추가\s*(해|하)|삭제\s*(해|하)|바꿔|드롭)/i.test(q)) return REFUSAL_TEXT;
-    // English (hard): data mutation, schema change, account enumeration
-    if (/\b(delete|drop|truncate|wipe|erase|purge|remove)\b[\s\S]{0,15}?\b(data|rows?|records?|tables?|everything)\b/i.test(q)) return REFUSAL_TEXT;
-    if (/\b(insert|inject|write|add)\b[\s\S]{0,12}?\b(data|rows?|records?|values?)\b/i.test(q)) return REFUSAL_TEXT;
-    if (/\b(alter|modify|change|add|drop)\b[\s\S]{0,12}?\b(schema|columns?|table\s+structure)\b/i.test(q)) return REFUSAL_TEXT;
-    if (/\b(list|show|enumerate|dump)\b[\s\S]{0,12}?\b(users?|accounts?|logins?)\b/i.test(q)) return REFUSAL_TEXT;
-  }
+  // 6b) Natural-language data/schema mutation COMMANDS
+  if (MUT_KO.test(q) || (en && (MUT_EN.test(q) || ENUM_EN.test(q)))) return REFUSAL_TEXT;
 
   // 7) System prompt / tool definition leak (10)
-  if (/(시스템\s*프롬프트|system\s*prompt|내부\s*(지시|지침|규칙)|도구\s*(정의|목록)|tool\s*(definition|list)|your\s+(tools|instructions|prompt))/i.test(q)
-      && /(보여|출력|알려|공개|그대로|전체|빠짐없이|reveal|show|print|dump|output|list|give|tell|full|entire|verbatim|expose|share|provide)/i.test(q)) return REFUSAL_TEXT;
+  if (LEAK_OBJ.test(q) && LEAK_VERB.test(q)) return REFUSAL_TEXT;
 
-  // 8) Privileged account/credential MANAGEMENT — GUIDED refusal (how-to stays allowed).
-  //    "비밀번호 변경 방법"(설명)은 howto 제외로 통과, "비밀번호 바꿔줘"(실행)는 콘솔 안내.
-  if (!howto.test(q)) {
-    if (/(유저|user|사용자|계정|account)\s*[를을]?\s*(삭제|제거|지워|생성|만들|추가|등록)/i.test(q)) return MGMT_GUIDANCE_TEXT;
-    if (/(비밀번호|암호(?!화)|패스워드|password|\bpw\b)[\s\S]{0,20}?(변경|바꿔|재설정|초기화|reset)/i.test(q)) return MGMT_GUIDANCE_TEXT;
-    if (/(권한\s*[를을]?\s*(부여|회수|변경|제거)|\bgrant\s+\w|\brevoke\s+\w)/i.test(q)) return MGMT_GUIDANCE_TEXT;
-    // English (guided): user/account management, password change, grant/revoke
-    if (/\b(create|add|make|delete|remove|drop|disable|enable)\b[\s\S]{0,16}?\b(users?|accounts?|logins?)\b/i.test(q)) return MGMT_GUIDANCE_TEXT;
-    if (/\b(change|reset|update|set|modify)\b[\s\S]{0,22}?\b(password|passwd|credentials?)\b/i.test(q)) return MGMT_GUIDANCE_TEXT;
-    if (/\b(grant|revoke)\b[\s\S]{0,12}?\b(access|privileges?|permissions?|roles?)\b/i.test(q)) return MGMT_GUIDANCE_TEXT;
-  }
-  if (/(CREATE|DROP|ALTER)\s+USER\b/i.test(q)) return MGMT_GUIDANCE_TEXT;
+  // 8) Privileged account/credential MANAGEMENT — GUIDED refusal
+  if (anyMatch(MGMT_KO, q) || (en && anyMatch(MGMT_EN, q))) return MGMT_GUIDANCE_TEXT;
+  if (MGMT_SQL.test(q) && (EXEC_CMD.test(q) || !QUESTION.test(q))) return MGMT_GUIDANCE_TEXT;
 
   return null;
 }
 
-// Boolean convenience wrapper (back-compat).
-function attackIntent(query) { return screenQuery(query) !== null; }
-
 module.exports = {
   checkToolCall: checkToolCall,
   sqlDenied: sqlDenied,
-  firstKeyword: firstKeyword,
   redactSecrets: redactSecrets,
   screenQuery: screenQuery,
-  attackIntent: attackIntent,
-  REFUSAL_TEXT: REFUSAL_TEXT,
+  setConfigFiles: setConfigFiles,
   MGMT_GUIDANCE_TEXT: MGMT_GUIDANCE_TEXT,
 };

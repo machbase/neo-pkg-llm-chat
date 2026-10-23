@@ -3,18 +3,14 @@ export interface Message {
     content: string;
     timestamp: number;
     role: 'user' | 'assistant';
-    type: 'block' | 'msg' | 'answer' | 'question' | 'error';
+    type: 'block' | 'msg' | 'question' | 'error';
     isProcess: boolean;
     isInterrupt: boolean;
-    /**
-     * Display label of the model that produced this message, e.g. "claude / haiku".
-     * Only stamped on streamed answers, so its presence is what gates the footer:
-     * stop notices and errors carry none and stay bare.
-     */
+    /** 답변 생성 모델 표시 이름(예: "claude / haiku") — 스트리밍 답변에만 기록, 있을 때만 하단 표시 */
     model?: string;
 }
 
-export interface PkgModel {
+interface PkgModel {
     name: string;
     model_id?: string;
 }

@@ -13,11 +13,9 @@ function createGeminiClient(apiKey, model) {
   };
 }
 
-// Build the Gemini request body from unified messages.
-// IMPORTANT: Gemini 2.5 thinking models return a `thoughtSignature` on each functionCall part.
-// On multi-turn tool calling the API REQUIRES that signature to be echoed back in history,
-// otherwise it rejects with HTTP 400 "Function call is missing a thought_signature".
-// We persist it on the tool call (tc.thoughtSignature) in parseGeminiResponse and replay it here.
+// 통합 메시지 → Gemini 요청 본문
+// · Gemini 2.5 thinking 모델은 functionCall의 thoughtSignature를 이력에 되돌려줘야 함 — 누락 시 HTTP 400
+// · tc.thoughtSignature(parseGeminiResponse가 보관) 재사용
 function buildGeminiRequest(client, messages, toolDefs) {
   var system = null, contents = [];
   for (var i = 0; i < messages.length; i++) {
@@ -63,7 +61,8 @@ function geminiChat(client, messages, toolDefs, cb) {
       if (resp.statusCode === 429) return cb(new Error('[Gemini] API 사용량 한도 초과 (HTTP 429)'));
       return cb(new Error('[Gemini] API error (HTTP ' + resp.statusCode + '): ' + errBody));
     }
-    var geminiResp = resp.json();
+    // 일반 객체로 파싱 — resp.json()은 직렬화마다 키 순서가 달라져 대화 기록 캐시가 깨짐
+    var geminiResp = JSON.parse(resp.string());
     cb(null, createChatResponse(client.model, parseGeminiResponse(geminiResp), true));
   } catch (e) { cb(new Error('[Gemini] Request failed: ' + e.message)); }
 }
@@ -81,7 +80,7 @@ function geminiChatSync(client, messages, toolDefs) {
     if (resp.statusCode === 429) throw new Error('[Gemini] API 사용량 한도 초과 (HTTP 429)');
     throw new Error('[Gemini] API error (HTTP ' + resp.statusCode + '): ' + errBody);
   }
-  var geminiResp = resp.json();
+  var geminiResp = JSON.parse(resp.string());
   return createChatResponse(client.model, parseGeminiResponse(geminiResp), true);
 }
 
@@ -99,8 +98,7 @@ function parseGeminiResponse(resp) {
     if (parts[i].text) content += parts[i].text;
     else if (parts[i].functionCall) {
       var tc = createToolCall(parts[i].functionCall.name, parts[i].functionCall.args || {});
-      // Preserve the thinking-model signature so it can be echoed back on the next turn
-      // (Gemini 2.5 rejects multi-turn tool calls whose history omits it — HTTP 400).
+      // thoughtSignature 보존 — 다음 턴 이력에 되돌려줄 값(누락 시 Gemini 2.5 HTTP 400)
       if (parts[i].thoughtSignature) tc.thoughtSignature = parts[i].thoughtSignature;
       toolCalls.push(tc);
     }

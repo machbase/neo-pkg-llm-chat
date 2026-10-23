@@ -1,27 +1,17 @@
-// Follow-up question chips shown under a finished answer.
-//
-// Runs as one extra tool-free LLM call after the answer has already been sent,
-// so the chat is never blocked waiting for it. Anything that goes wrong ends as
-// an empty list: the UI draws nothing when there are no chips, so a failure is
-// invisible rather than broken.
-//
-// Skipped on ollama. Local models are both the slowest to answer and the least
-// reliable at holding a fixed output shape, and they reset context per question
-// anyway, so a follow-up chip there buys nothing.
+// 완료 답변 아래 후속 질문 칩 생성
+// · 답변 전송 후 도구 없는 LLM 호출 1회 — 채팅 대기 없음
+// · 실패 시 빈 목록(칩 없으면 UI 미표시)
+// · ollama 제외 — 느리고 출력 형식 불안정, 질문마다 컨텍스트 리셋
 
 'use strict';
 
 var { createMessage } = require('../llm/types');
 
 var MAX_ITEMS = 3;
-// The prompt asks for TARGET; MAX_CHARS is only the safety net that rejects a
-// runaway sentence. Keep the gap wide — models overshoot the asked length by a
-// clause or two, and a tight net silently drops every candidate.
+// TARGET은 프롬프트 요청 길이, MAX_CHARS는 폭주 문장 거르는 상한 — 간격이 좁으면 후보 전부 탈락
 var TARGET_CHARS = 25;
 var MAX_CHARS = 40;
-// A table-shaped answer blows past a small cap and gets cut mid-row, leaving
-// the model fewer concrete things to point at — which is when it starts
-// inventing generic database questions.
+// 답변 발췌 길이 — 작으면 표 답변이 중간에 잘려 일반론 질문 생성
 var ANSWER_EXCERPT = 2400;
 
 var SYSTEM = '## 역할\n' +
@@ -52,8 +42,7 @@ function parseItems(text) {
             .replace(/^\s*["'`]+|["'`]+\s*$/g, '')
             .trim();
         if (!line) continue;
-        // Models like to announce the list before giving it ("다음 질문입니다:")
-        // and sometimes fence it. Neither is a chip.
+        // 목록 예고 줄("다음 질문입니다:")·코드 펜스 줄 제외
         if (/[:：]$/.test(line)) continue;
         if (/^`{3,}/.test(line)) continue;
         if (line.length > MAX_CHARS) continue;
@@ -106,4 +95,4 @@ function generate(llmClient, provider, question, answer, cb) {
     }
 }
 
-module.exports = { generate, parseItems, SYSTEM };
+module.exports = { generate, SYSTEM };

@@ -27,7 +27,7 @@ guide: |
 | {TAG_COUNT} | 태그 수 | SQL 결과 |
 | {DATA_COUNT} | 총 데이터 건수 | SQL 결과 |
 | {TIME_RANGE} | 데이터 시간 범위 | SQL 결과 |
-| {TAG_STATS_ROWS} | 태그별 통계 `<tr>` 행 | SQL → 자동 변환 |
+| {TAG_STATS_ROWS} | 태그별 통계 `<tr>` 행 (전체 데이터 기준 6칸: 태그·건수·최솟값·최댓값·최솟값 시각·최댓값 시각) | SQL → 자동 변환 |
 | {TAG_LIST_JSON} | 태그 목록 JSON 배열 | SQL → 자동 변환 |
 | {DRIVING_DATA_JSON} | 태그별 raw+rollup+이벤트 JSON | SQL → 자동 계산 |
 | {ROLLUP_LABEL} | ROLLUP 단위 라벨 | 자동 계산 |
@@ -313,11 +313,11 @@ guide: |
 
   <!-- Tag Stats Table -->
   <div class="section">
-    <div class="section-title"><span class="bar"></span> 태그별 통계 요약</div>
+    <div class="section-title"><span class="bar"></span> 태그별 통계 요약 (전체 데이터 기준)</div>
     <div class="table-scroll">
     <table>
       <thead><tr>
-        <th>태그(NAME)</th><th class="num">건수(COUNT)</th><th class="num">평균(AVG)</th><th class="num">최솟값(MIN)</th><th class="num">최댓값(MAX)</th>
+        <th>태그(NAME)</th><th class="num">건수(COUNT)</th><th class="num">최솟값(MIN)</th><th class="num">최댓값(MAX)</th><th>최솟값 시각</th><th>최댓값 시각</th>
       </tr></thead>
       <tbody>{TAG_STATS_ROWS}</tbody>
     </table>
