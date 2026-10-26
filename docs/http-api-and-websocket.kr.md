@@ -5,6 +5,8 @@ weight: 50
 
 # HTTP API와 WebSocket
 
+<p align="center" style="margin-top:1.25rem"><strong>한국어</strong> | <a href="./http-api-and-websocket.en.md">English</a> | <a href="./http-api-and-websocket.ja.md">日本語</a></p>
+
 이 문서는 LLM Chat 패키지 서비스가 제공하는 HTTP API 엔드포인트와 WebSocket 프로토콜을 정리합니다.
 
 패키지는 게이트웨이 / 워커 구조를 사용합니다. 브라우저가 게이트웨이로 WebSocket을 열면, 게이트웨이가 세션별 워커 프로세스를 띄워 에이전틱 루프를 실행합니다. **채팅은 전적으로 WebSocket으로 처리되며 HTTP가 아닙니다** — HTTP 엔드포인트는 설정, 사용자 환경설정, 헬스/진단 용도로만 쓰입니다.

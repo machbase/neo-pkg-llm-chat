@@ -1,0 +1,43 @@
+.llm-lang-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.375rem;
+}
+
+.llm-lang-btn {
+  display: inline-flex;
+  align-items: center;
+  height: 2rem;
+  padding: 0 0.625rem;
+  font-size: 0.875rem;
+  color: #374151;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  background: transparent;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+
+.llm-lang-btn:hover {
+  background: #f8fafc;
+  border-color: #d1d5db;
+}
+
+.dark .llm-lang-btn {
+  color: #d1d5db;
+  border-color: #262626;
+}
+
+.dark .llm-lang-btn:hover {
+  background: #171717;
+  border-color: #404040;
+}
+
+.llm-lang-btn > div::after {
+  content: "";
+  width: 0.4rem;
+  height: 0.4rem;
+  margin-left: 0.125rem;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-2px) rotate(45deg);
+}

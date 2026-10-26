@@ -3,8 +3,6 @@ title: LLM Chat 기술 문서
 weight: 10
 ---
 
-<p align="center" style="margin-top:1.25rem"><strong>한국어</strong> | <a href="{{< relref path="/" lang="en" >}}">English</a> | <a href="{{< relref path="/" lang="ja" >}}">日本語</a></p>
-
 Machbase Neo LLM Chat 패키지는 Machbase Neo 시계열 데이터베이스와 자연어로 상호작용할 수 있는 LLM 채팅 인터페이스입니다.
 대화를 통해 데이터 조회, 대시보드 생성, 분석 리포트 작성, 메뉴얼 문서 탐색이 가능합니다.
 

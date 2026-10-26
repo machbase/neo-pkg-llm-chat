@@ -5,6 +5,8 @@ weight: 30
 
 # Chatの使い方
 
+<p align="center" style="margin-top:1.25rem"><a href="./chat-usage.kr.md">한국어</a> | <a href="./chat-usage.en.md">English</a> | <strong>日本語</strong></p>
+
 ## モデルの選択
 
 Chat画面下部の**Select model**ボタンを押して、使用するモデルを選びます。

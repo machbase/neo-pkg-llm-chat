@@ -5,6 +5,8 @@ weight: 50
 
 # HTTP APIとWebSocket
 
+<p align="center" style="margin-top:1.25rem"><a href="./http-api-and-websocket.kr.md">한국어</a> | <a href="./http-api-and-websocket.en.md">English</a> | <strong>日本語</strong></p>
+
 このドキュメントでは、LLM Chatパッケージサービスが提供するHTTP APIエンドポイントとWebSocketプロトコルをまとめます。
 
 パッケージはゲートウェイ/ワーカー構成を採用しています。ブラウザーがゲートウェイへWebSocketを開くと、ゲートウェイがセッションごとにワーカープロセスを起動し、エージェンティックループを実行します。**チャットはすべてWebSocketで処理され、HTTPは使いません** — HTTPエンドポイントは設定、ユーザー環境設定、ヘルス/診断の用途にのみ使われます。

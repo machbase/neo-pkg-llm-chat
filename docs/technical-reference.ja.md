@@ -5,6 +5,8 @@ weight: 40
 
 # 技術リファレンス
 
+<p align="center" style="margin-top:1.25rem"><a href="./technical-reference.kr.md">한국어</a> | <a href="./technical-reference.en.md">English</a> | <strong>日本語</strong></p>
+
 このドキュメントは、LLM Chatパッケージが内部で使用するツール、自動化機能、テンプレート、ファイル/ドキュメントへのアクセス機能をまとめた技術リファレンスです。
 
 ## 共通ルール

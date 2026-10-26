@@ -5,6 +5,8 @@ weight: 20
 
 # 初期設定
 
+<p align="center" style="margin-top:1.25rem"><a href="./first-setup.kr.md">한국어</a> | <a href="./first-setup.en.md">English</a> | <strong>日本語</strong></p>
+
 初めて開いたときにまだ設定がない場合は、Settings画面が先に表示されます。  
 すでに設定を保存しているユーザーは、そのままChat画面に入れます。
 
@@ -21,7 +23,7 @@ LLM ChatはMachbase Neoの**APIトークン**でデータベースに接続し�
 
 4. 発行されたトークン（`nt_`で始まる）を、コピーボタン（**⑤**）でコピーします。
 
-   ![Neo APIトークンのコピー](./images/neo-token.png)
+   ![Neo APIトークンのコピー](./images/neo-token-copy.png)
 
 > トークン文字列は発行時に一度だけ表示されます。紛失した場合は、新しいトークンを発行してください。  
 > トークンは**コンソールにログインしたアカウントのトークン**である必要があります。別のアカウントのトークンは検証の段階で拒否されます。  

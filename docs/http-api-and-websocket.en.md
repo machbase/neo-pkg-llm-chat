@@ -5,6 +5,8 @@ weight: 50
 
 # HTTP API and WebSocket
 
+<p align="center" style="margin-top:1.25rem"><a href="./http-api-and-websocket.kr.md">한국어</a> | <strong>English</strong> | <a href="./http-api-and-websocket.ja.md">日本語</a></p>
+
 This document summarizes the HTTP API endpoints and WebSocket protocol exposed by the LLM Chat package service.
 
 The package uses a gateway / worker architecture: the browser opens a WebSocket to the gateway, and the gateway starts a per-session worker process that runs the agentic loop. **Chat happens entirely over WebSocket, not HTTP** — the HTTP endpoints are used only for configuration, preferences, and health/diagnostics.

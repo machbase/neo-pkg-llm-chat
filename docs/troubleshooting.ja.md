@@ -5,6 +5,8 @@ weight: 60
 
 # トラブルシューティング
 
+<p align="center" style="margin-top:1.25rem"><a href="./troubleshooting.kr.md">한국어</a> | <a href="./troubleshooting.en.md">English</a> | <strong>日本語</strong></p>
+
 ## 保存できない
 
 以下の項目を確認します。

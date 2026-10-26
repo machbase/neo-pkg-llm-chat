@@ -5,6 +5,8 @@ weight: 20
 
 # 첫 설정
 
+<p align="center" style="margin-top:1.25rem"><strong>한국어</strong> | <a href="./first-setup.en.md">English</a> | <a href="./first-setup.ja.md">日本語</a></p>
+
 처음 열었을 때 아직 설정이 없으면 Settings 화면이 먼저 표시됩니다.  
 설정을 이미 저장한 사용자라면 바로 Chat 화면으로 들어갈 수 있습니다.
 
@@ -21,7 +23,7 @@ LLM Chat은 Machbase Neo **API 토큰**으로 데이터베이스에 접속합니
 
 4. 발급된 토큰(`nt_`로 시작)을 복사 버튼(**⑤**)으로 복사합니다.
 
-   ![Neo API 토큰 복사](./images/neo-token.png)
+   ![Neo API 토큰 복사](./images/neo-token-copy.png)
 
 > 토큰 문자열은 발급할 때 한 번만 표시됩니다. 잃어버렸다면 새로 발급합니다.  
 > 토큰은 **콘솔에 로그인한 계정의 토큰**이어야 합니다. 다른 계정의 토큰은 검증 단계에서 거부됩니다.  

@@ -3,8 +3,6 @@ title: LLM Chat Technical Documentation
 weight: 10
 ---
 
-<p align="center" style="margin-top:1.25rem"><a href="{{< relref path="/" lang="kr" >}}">한국어</a> | <strong>English</strong> | <a href="{{< relref path="/" lang="ja" >}}">日本語</a></p>
-
 The Machbase Neo LLM Chat package is an LLM-based chat interface for interacting with the Machbase Neo time-series database in natural language.
 Through conversation, you can query data, generate dashboards, create analysis reports, and explore manual documents.
 

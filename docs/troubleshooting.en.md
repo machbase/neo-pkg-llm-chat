@@ -5,6 +5,8 @@ weight: 60
 
 # Troubleshooting
 
+<p align="center" style="margin-top:1.25rem"><a href="./troubleshooting.kr.md">한국어</a> | <strong>English</strong> | <a href="./troubleshooting.ja.md">日本語</a></p>
+
 ## Settings Cannot Be Saved
 
 Check the following items:

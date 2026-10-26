@@ -5,6 +5,8 @@ weight: 40
 
 # 기술 참고
 
+<p align="center" style="margin-top:1.25rem"><strong>한국어</strong> | <a href="./technical-reference.en.md">English</a> | <a href="./technical-reference.ja.md">日本語</a></p>
+
 이 문서는 LLM Chat 패키지가 내부적으로 사용하는 도구, 자동화 기능, 템플릿, 파일/문서 접근 기능을 정리한 기술 참고 문서입니다.
 
 ## 공통 규칙

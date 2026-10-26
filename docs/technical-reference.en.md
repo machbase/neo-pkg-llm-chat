@@ -5,6 +5,8 @@ weight: 40
 
 # Technical Reference
 
+<p align="center" style="margin-top:1.25rem"><a href="./technical-reference.kr.md">한국어</a> | <strong>English</strong> | <a href="./technical-reference.ja.md">日本語</a></p>
+
 This document describes the built-in tools, automation features, templates, and file/document access functions used internally by the LLM Chat package.
 
 ## Common Rules

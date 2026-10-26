@@ -5,6 +5,8 @@ weight: 20
 
 # First Setup
 
+<p align="center" style="margin-top:1.25rem"><a href="./first-setup.kr.md">한국어</a> | <strong>English</strong> | <a href="./first-setup.ja.md">日本語</a></p>
+
 If no settings have been saved yet, the Settings screen appears first when you open the package.  
 If settings already exist, you may go directly to the Chat screen.
 
@@ -21,7 +23,7 @@ Queries, charts, dashboards, and reports all run with the permissions of that to
 
 4. Copy the issued token (it starts with `nt_`) with the copy button **⑤**.
 
-   ![Copy the Neo API token](./images/neo-token.png)
+   ![Copy the Neo API token](./images/neo-token-copy.png)
 
 > The token string is shown only once, when it is issued. If you lose it, issue a new token.  
 > The token must **belong to the account logged in to the console**. A token of another account is rejected during verification.  

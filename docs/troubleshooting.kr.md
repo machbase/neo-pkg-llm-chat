@@ -5,6 +5,8 @@ weight: 60
 
 # 문제 해결
 
+<p align="center" style="margin-top:1.25rem"><strong>한국어</strong> | <a href="./troubleshooting.en.md">English</a> | <a href="./troubleshooting.ja.md">日本語</a></p>
+
 ## 저장이 되지 않음
 
 다음 항목을 확인합니다.
