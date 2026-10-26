@@ -13,10 +13,17 @@ If settings already exist, you may go directly to the Chat screen.
 LLM Chat connects to the database with a Machbase Neo **API token**.  
 Queries, charts, dashboards, and reports all run with the permissions of that token's account.
 
-1. Log in to the Neo web console with the account you will use LLM Chat with.
-2. Issue a token from the console's API token menu (shield icon).
-3. Copy the issued token (it starts with `nt_`). The token string is shown only once, right after it is issued.
+1. Open the Neo web console (`http://<neo-host>:5654`) and log in with the account you will use LLM Chat with.
+2. Click the shield icon **①**, then the **+** button next to **TOKENS** **②**.
+3. Enter a name for the token **③** (e.g. `llm-chat`) and click **Issue token** **④**. You can set the expiry date in **NotAfter**.
 
+   ![Create a Neo API token](./images/neo-token-create.png)
+
+4. Copy the issued token (it starts with `nt_`) with the copy button **⑤**.
+
+   ![Copy the Neo API token](./images/neo-token.png)
+
+> The token string is shown only once, when it is issued. If you lose it, issue a new token.  
 > The token must **belong to the account logged in to the console**. A token of another account is rejected during verification.  
 > Required version: Machbase Neo 8.7.3 or later
 
