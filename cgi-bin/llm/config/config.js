@@ -32,7 +32,7 @@ function loadConfig(filePath) {
     console.println('[Config] File not found or invalid: ' + filePath + ', using defaults');
   }
 
-  // Runtime overrides (not saved to file)
+  // 실행 중 덮어쓰기 값(파일에 저장 안 함)
   cfg.provider = '';
   cfg.model = '';
 

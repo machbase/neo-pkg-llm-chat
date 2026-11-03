@@ -5,9 +5,9 @@ var { withUserRoot, ensureParentOf, shortTableName } = require('./paths');
 var { resolveTableRef, readTagNames, statViewName, parseTableRef, countRollups } = require('./table_access');
 var { zoneName } = require('../machbase/timezone');
 
-// Cache DB-derived params from 1st call so 2nd call (with analysis) can reuse them
+// 1차 호출의 DB 유래 파라미터 캐시 — 분석 포함 2차 호출에서 재사용
 var _paramsCache = {};
-var CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+var CACHE_TTL = 10 * 60 * 1000; // 10분
 
 function cacheParams(tableName, params) {
   _paramsCache[tableName] = { params: params, ts: Date.now() };
@@ -29,13 +29,13 @@ function purgeExpiredCache() {
   }
 }
 
-// Extract routing kind from a template ID: 'R-2-vibration' -> 'R-2', 'C-1-vibration' -> 'C-1', 'R-2' -> 'R-2'.
+// 템플릿 ID의 라우팅 kind: 'R-2-vibration' -> 'R-2', 'C-1-vibration' -> 'C-1', 'R-2' -> 'R-2'
 function templateKind(id) {
   var m = /^([A-Za-z]-\d+)/.exec(id || '');
   return m ? m[1] : (id || '');
 }
 
-// Topic slug of a template ID: 'R-2-vibration' / 'C-2-vibration' -> 'vibration'. '' if none.
+// 템플릿 ID의 topic slug: 'R-2-vibration' / 'C-2-vibration' -> 'vibration', 없으면 ''
 function reportTopicOf(id) {
   var m = /^[A-Za-z]-\d+-(.+)$/.exec(id || '');
   return m ? m[1].toLowerCase() : '';
@@ -50,7 +50,7 @@ function sameTemplateIntent(a, b) {
   return templateKind(a) === templateKind(b);
 }
 
-// ── Compute catalog ────────────────────────────────────────────────────────
+// ── 계산 카탈로그 ────────────────────────────────────────────────────────
 // 템플릿 frontmatter `compute: <name>`으로 조회하는 도메인 계산(빌트인·커스텀 동일 취급)
 // · run(ctx, done)    : 원시 데이터 조회 + ctx.params에 결과 기록 후 done()
 // · summarize(params) : LLM이 분석 작성에 쓸 계산 수치 요약
@@ -254,7 +254,7 @@ function buildReport(mc, norm, ref, tz, nowText, cb) {
   console.println('[report] args keys: ' + Object.keys(norm).join(', '));
   console.println('[report] has analysis: ' + (!!anyStr(norm, 'analysis')) + ', has recommendations: ' + (!!anyStr(norm, 'recommendations')));
 
-  // 2nd call: use cached DB params to skip re-querying
+  // 2차 호출: 캐시된 DB 파라미터 사용 — 재조회 생략
   var hasAnalysis = !!anyStr(norm, 'analysis');
   var hasReco = !!anyStr(norm, 'recommendations');
   var explicitTemplateID = anyStr(norm, 'template_id') || anyStr(norm, 'templateid');
@@ -282,7 +282,7 @@ function buildReport(mc, norm, ref, tz, nowText, cb) {
         params.GENERATED_DATE = nowText;
         return saveToFile(mc, cached._templateID || templateID, params, filename, cb);
       }
-      // Only one collected so far → ask ONLY for the missing piece (the other is saved).
+      // 하나만 모인 상태 → 빠진 쪽만 요청(모인 쪽은 캐시에 보관)
       var stillMissing = cached.ANALYSIS ? 'recommendations' : 'analysis';
       var alreadyHave = cached.ANALYSIS ? 'analysis' : 'recommendations';
       return cb(null, alreadyHave + '는 저장됐습니다. 이제 ' + stillMissing + '만 보내면 리포트가 완성됩니다 (다른 파라미터 없이 ' + stillMissing + '만 포함해 다시 호출).');
@@ -376,7 +376,7 @@ function buildReport(mc, norm, ref, tz, nowText, cb) {
     });
   }
 
-  // Step 1: Get tags
+  // Step 1: 태그 조회
   function doStep1() {
     mc.querySQL('SELECT NAME FROM ' + statView + ' LIMIT 2600', '', '', '', function (err, tagCSV) {
     var tags = parseTagList(err ? '' : tagCSV);
@@ -389,14 +389,14 @@ function buildReport(mc, norm, ref, tz, nowText, cb) {
       var stockWhere = '';
       if (stock) {
         var upper = stock.toUpperCase();
-        // 1) Prefix match: AMD → AMD_close, AMD_high, ...
+        // 1) 접두 일치: AMD → AMD_close, AMD_high, ...
         var prefix = upper + '_';
         var filtered = tags.filter(function (t) { return t.toUpperCase().indexOf(prefix) === 0; });
-        // 2) Exact match fallback: AccX → AccX
+        // 2) 정확히 일치(대체): AccX → AccX
         if (filtered.length === 0) {
           filtered = tags.filter(function (t) { return t.toUpperCase() === upper; });
         }
-        // 3) Contains fallback: vibration → vibration_x, vibration_y
+        // 3) 포함 일치(대체): vibration → vibration_x, vibration_y
         if (filtered.length === 0) {
           filtered = tags.filter(function (t) { return t.toUpperCase().indexOf(upper) >= 0; });
         }
@@ -477,20 +477,20 @@ function buildReport(mc, norm, ref, tz, nowText, cb) {
           var rollupLabels = { sec: '초별', min: '분별', hour: '시간별', day: '일별', week: '주별', month: '월별' };
           params.ROLLUP_LABEL = rollupLabels[rollupUnit] || rollupUnit;
 
-          // Resolve this template's declared compute + guide (frontmatter) — builtin & custom alike.
+          // 템플릿 frontmatter의 compute·guide 조회 — 빌트인·커스텀 동일
           var tmplMeta = getTemplateMeta(templateID) || {};
           var spec = COMPUTE[tmplMeta.compute] || null;
           var templateGuide = tmplMeta.guide || '';
 
-          // Step 4: Template-specific data then finalize
+          // Step 4: 템플릿별 데이터 조회 후 마무리
           function afterTemplateData() {
-            // Cache all DB-derived params for 2nd call
+            // DB 유래 파라미터 전부 캐시 — 2차 호출용
             params._templateID = templateID;
             console.println('[report] Before cache: TAG_COUNT=' + (params.TAG_COUNT || 'MISSING') + ' DATA_COUNT=' + (params.DATA_COUNT || 'MISSING') + ' TIME_RANGE=' + (params.TIME_RANGE || 'MISSING'));
             console.println('[report] params keys: ' + Object.keys(params).join(', '));
             cacheParams(tableName, params);
 
-            // LLM-provided params (fallback if DB didn't populate)
+            // LLM 제공 파라미터 — DB로 못 채운 값의 폴백
             if (!params.TAG_COUNT && anyStr(norm, 'tag_count')) params.TAG_COUNT = anyStr(norm, 'tag_count');
             if (!params.DATA_COUNT && anyStr(norm, 'data_count')) params.DATA_COUNT = anyStr(norm, 'data_count');
             if (!params.TIME_RANGE && anyStr(norm, 'time_range')) params.TIME_RANGE = anyStr(norm, 'time_range');
@@ -505,7 +505,7 @@ function buildReport(mc, norm, ref, tz, nowText, cb) {
               if (total > 0) params.DATA_COUNT = String(total);
             }
 
-            // If analysis missing, return stats + computed results for LLM to fill in
+            // 분석·권고 누락 시 통계·계산 결과 반환 — LLM 작성용
             if (!params.ANALYSIS || !params.RECOMMENDATIONS) {
               var summary = '테이블: ' + tableName + '\n';
               if (params.TAG_COUNT) summary += '태그 수: ' + params.TAG_COUNT + '\n';
@@ -564,9 +564,9 @@ function buildReport(mc, norm, ref, tz, nowText, cb) {
   });
 }
 
-// --- Save to file ---
+// --- 파일 저장 ---
 function saveToFile(mc, templateID, params, filename, cb) {
-  // Ensure no placeholder is left unreplaced
+  // 빈 값 기본값 채움 — 미치환 플레이스홀더 방지
   if (!params.TAG_COUNT) params.TAG_COUNT = '-';
   if (!params.DATA_COUNT) params.DATA_COUNT = '-';
   if (!params.TIME_RANGE) params.TIME_RANGE = '-';
@@ -591,7 +591,7 @@ function saveToFile(mc, templateID, params, filename, cb) {
   ensureParentOf(mc, filename, function () { doWrite(); });
 }
 
-// --- R-3 Driving Data Fetcher ---
+// --- R-3 운전 데이터 수집 ---
 // 시간 버킷 식 — ROLLUP이 있으면 ROLLUP(미리 집계된 값), 없으면 DATE_TRUNC(원본 행을 묶음)
 // · useRollup을 안 넘기면 ROLLUP
 function bucketExpr(unit, timeCol, useRollup) {
@@ -602,7 +602,7 @@ function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cols, useR
   var perTag = {};
   var tagIdx = 0;
 
-  // Step 1: Fetch rollup + raw waveform (4096 points) per tag
+  // Step 1: 태그별 롤업 + 원시 파형(4096점) 조회
   function fetchNextTag() {
     if (tagIdx >= tags.length) return fetchThresholds();
     var tag = tags[tagIdx++];
@@ -624,7 +624,7 @@ function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cols, useR
         } catch (e) {}
       }
 
-      // Raw waveform (4096 points)
+      // 원시 파형(4096점)
       var rawSQL = "SELECT " + scanForward(tableName) + cols.t + ", " + cols.v + " FROM " + tableName + " WHERE " + cols.n + "='" + tag + "'" + (timeWhere || '') + " LIMIT 4096";
       mc.querySQL(rawSQL, 'ms', '', '', function (err2, rawJSON) {
         var raw = parseRawCSV(rawJSON);
@@ -635,7 +635,7 @@ function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cols, useR
     });
   }
 
-  // Step 2: Compute thresholds via SQL STDDEV
+  // Step 2: SQL STDDEV로 임계값 계산
   var thresholds = {};
   var threshAxes = [
     { axis: 'AccX', events: ['accel', 'brake'] },
@@ -666,7 +666,7 @@ function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cols, useR
     });
   }
 
-  // Step 3: Event detection from raw data (50000 limit)
+  // Step 3: 원시 데이터에서 이벤트 검출(50000건 한도)
   var eventsData = { accel: [], brake: [], turn: [] };
   var eventAxIdx = 0;
 
@@ -695,7 +695,7 @@ function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cols, useR
     });
   }
 
-  // Step 4: Count total samples via SQL
+  // Step 4: SQL로 전체 샘플 수 집계
   var totalSamples = 0;
   var cntAxIdx = 0;
   var countAxes = ['AccX', 'AccY'];
@@ -761,7 +761,7 @@ function fetchDrivingData(mc, tableName, tags, rollupUnit, timeWhere, cols, useR
   fetchNextTag();
 }
 
-// Parse raw CSV/JSON response to {times_ms:[], values:[]}
+// 원시 조회 응답 → {times_ms:[], values:[]}
 function parseRawCSV(jsonStr) {
   var result = { times_ms: [], values: [] };
   if (!jsonStr) return result;
@@ -777,7 +777,7 @@ function parseRawCSV(jsonStr) {
   return result;
 }
 
-// Case-insensitive tag find
+// 대소문자 무시 태그 찾기
 function findTagCI(tags, name) {
   var lower = name.toLowerCase();
   for (var i = 0; i < tags.length; i++) {
@@ -786,7 +786,7 @@ function findTagCI(tags, name) {
   return '';
 }
 
-// --- R-2 Vibration Data Fetcher ---
+// --- R-2 진동 데이터 수집 ---
 function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cols, useRollup, tz, cb) {
   var perTag = {};
   var tagIdx = 0;
@@ -799,7 +799,7 @@ function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cols, us
     mc.querySQL(rawSQL, 'ms', '', '', function (err, rawJSON) {
       var raw = parseRawCSV(rawJSON);
 
-      // ROLLUP with AVG, MIN, MAX, SUMSQ, COUNT
+      // ROLLUP으로 AVG·MIN·MAX·SUMSQ·COUNT 집계
       var rollupSQL = "SELECT " + bucketExpr(rollupUnit, cols.t, useRollup) + " as t, ROUND(AVG(" + cols.v + "),6) as avg_val, " +
         "ROUND(MIN(" + cols.v + "),6) as min_val, ROUND(MAX(" + cols.v + "),6) as max_val, " +
         (useRollup === false ? "SUM(" + cols.v + "*" + cols.v + ")" : "SUMSQ(" + cols.v + ")") + " as sumsq, COUNT(" + cols.v + ") as cnt FROM " + tableName +
@@ -824,7 +824,7 @@ function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cols, us
           } catch (e2) {}
         }
 
-        // FFT: separate query with 131072 points (2^17), no timeformat → nanoseconds for sampleRate calc
+        // FFT용 별도 조회(131072점 = 2^17) — timeformat 없이 나노초로 받아 sampleRate 계산
         var fftSQL = "SELECT " + scanForward(tableName) + cols.t + ", " + cols.v + " FROM " + tableName + " WHERE " + cols.n + "='" + tag + "'" + (timeWhere || '') + " LIMIT 131072";
         mc.querySQL(fftSQL, '', '', '', function (err3, fftJSON) {
           var fftRaw = parseRawCSV(fftJSON);
@@ -838,7 +838,7 @@ function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cols, us
     });
   }
 
-  // Compute stats from rollup data
+  // 롤업 데이터로 통계 계산
   function enrichStats() {
     var keys = Object.keys(perTag);
     for (var i = 0; i < keys.length; i++) {
@@ -846,7 +846,7 @@ function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cols, us
       var rollup = d.rollup || [];
 
       if (rollup.length > 0) {
-        // Aggregate across all rollup buckets
+        // 전체 롤업 버킷 집계
         var totalSumSq = 0, totalCount = rollup.length;
         var globalMin = Infinity, globalMax = -Infinity;
         var sumAvg = 0;
@@ -855,7 +855,7 @@ function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cols, us
           sumAvg += (r.avg || 0);
           if (r.rms !== undefined) totalSumSq += r.rms * r.rms;
         }
-        // For global min/max, use raw data (rollup keeps no per-bucket min/max)
+        // 전체 최소/최대는 원시 데이터 기준 — rollup 배열에 버킷별 최소/최대 없음
         var vals = d.raw.values || [];
         for (var j = 0; j < vals.length; j++) {
           if (vals[j] < globalMin) globalMin = vals[j];
@@ -869,7 +869,7 @@ function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cols, us
         var peak = Math.max(Math.abs(globalMin), Math.abs(globalMax));
         var overallCrest = overallRMS > 0 ? peak / overallRMS : 0;
 
-        // Peak RMS (1-bucket window max)
+        // 최대 RMS(1버킷 창 최댓값)
         var peakRMS = 0;
         for (var j = 0; j < rollup.length; j++) {
           if ((rollup[j].rms || 0) > peakRMS) peakRMS = rollup[j].rms;
@@ -884,7 +884,7 @@ function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cols, us
         var lateAvg = lateSum / seg;
         var trendRatio = earlyAvg > 0 ? lateAvg / earlyAvg : 1;
 
-        // Severity grading per indicator
+        // 지표별 심각도 등급
         function rmsGrade(v) { return v < 1.12 ? 0 : v < 2.8 ? 1 : v < 7.1 ? 2 : 3; }
         function crestGrade(v) { return v < 3 ? 0 : v < 5 ? 1 : v < 8 ? 2 : 3; }
         function trendGrade(v) { return v < 1.5 ? 0 : v < 3.0 ? 1 : v < 5.0 ? 2 : 3; }
@@ -896,7 +896,7 @@ function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cols, us
         var g_trend = trendGrade(trendRatio);
         var worstGrade = Math.max(g_avgRMS, g_peakRMS, g_crest, g_trend);
 
-        // Determine which indicator(s) caused worst grade
+        // 최악 등급을 낸 지표 판별
         var deciders = [];
         if (g_avgRMS === worstGrade) deciders.push('평균 RMS (' + overallRMS.toFixed(4) + ')');
         if (g_peakRMS === worstGrade) deciders.push('피크 RMS (' + peakRMS.toFixed(4) + ')');
@@ -926,7 +926,7 @@ function fetchVibrationData(mc, tableName, tags, rollupUnit, timeWhere, cols, us
           }
         };
       } else {
-        // Fallback: raw data
+        // 대체: 원시 데이터
         var vals = d.raw.values || [];
         var rms = calcRMS(vals);
         var minV = vals.length ? Math.min.apply(null, vals) : 0;
@@ -956,25 +956,25 @@ function calcRMS(vals) {
   return Math.sqrt(sumSq / vals.length);
 }
 
-// Cooley-Tukey Radix-2 FFT
-// timestamps: nanosecond timestamps (no timeformat), vals: float values
+// Cooley-Tukey Radix-2 FFT 구현
+// timestamps: 나노초 타임스탬프(timeformat 없음), vals: 실수 값
 function computeFFT(timestamps, vals, maxBins) {
   if (!vals || vals.length < 16) return null;
   maxBins = maxBins || 4096;
   var N = vals.length;
 
-  // Compute sample rate from first/last timestamp (nanoseconds)
+  // 첫·끝 타임스탬프(나노초)로 샘플링 레이트 계산
   var firstNs = timestamps[0] || 0;
   var lastNs = timestamps[N - 1] || 0;
   var dtSec = (lastNs - firstNs) / 1e9 / (N - 1);
   if (dtSec <= 0) return null;
   var sampleRate = 1.0 / dtSec;
 
-  // Pad to next power of 2
+  // 다음 2의 거듭제곱 길이로 채움
   var n = 1;
   while (n < N) n *= 2;
   var re = new Array(n), im = new Array(n);
-  // Hanning window + zero-pad
+  // Hanning 창 + 0 채움
   for (var i = 0; i < n; i++) {
     if (i < N) {
       var win = 0.5 * (1 - Math.cos(2 * Math.PI * i / (N - 1)));
@@ -984,14 +984,14 @@ function computeFFT(timestamps, vals, maxBins) {
     }
     im[i] = 0;
   }
-  // Bit-reversal permutation
+  // 비트 반전 순열
   for (var i = 1, j = 0; i < n; i++) {
     var bit = n >> 1;
     for (; j & bit; bit >>= 1) j ^= bit;
     j ^= bit;
     if (i < j) { var tmp = re[i]; re[i] = re[j]; re[j] = tmp; tmp = im[i]; im[i] = im[j]; im[j] = tmp; }
   }
-  // Butterfly operations
+  // 버터플라이 연산
   for (var len = 2; len <= n; len *= 2) {
     var half = len / 2, ang = -2 * Math.PI / len;
     var wRe = Math.cos(ang), wIm = Math.sin(ang);
@@ -1010,13 +1010,13 @@ function computeFFT(timestamps, vals, maxBins) {
       }
     }
   }
-  // Magnitude spectrum (first half)
+  // 진폭 스펙트럼(앞쪽 절반)
   var halfN = n / 2;
   var rawMags = new Array(halfN - 1);
   for (var k = 1; k < halfN; k++) {
     rawMags[k - 1] = Math.sqrt(re[k] * re[k] + im[k] * im[k]) * 2 / N;
   }
-  // Bin down to maxBins
+  // maxBins 개로 묶음
   var freqs = [], mags = [];
   if (rawMags.length <= maxBins) {
     for (var k = 0; k < rawMags.length; k++) {
@@ -1040,7 +1040,7 @@ function computeFFT(timestamps, vals, maxBins) {
   return { freqs: freqs, mags: mags, sampleRate: Math.round(sampleRate * 100) / 100, total_points: N };
 }
 
-// --- R-1 Finance Data Fetcher ---
+// --- R-1 금융 데이터 수집 ---
 function fetchFinanceData(mc, tableName, tags, stock, rollupUnit, timeWhere, cols, useRollup, tz, cb) {
   var ohlcv = findOHLCVTags(tags, stock);
   var stockName = stock || '';
@@ -1056,8 +1056,8 @@ function fetchFinanceData(mc, tableName, tags, stock, rollupUnit, timeWhere, col
 
   if (!ohlcv.close) return cb(null, { trend: [], stockName: stockName });
 
-  // Time label trim length by rollup unit
-  var trimLen = 7; // month default
+  // rollup 단위별 시간 라벨 자를 길이
+  var trimLen = 7; // 기본 month
   if (rollupUnit === 'sec') trimLen = 19;
   else if (rollupUnit === 'min') trimLen = 16;
   else if (rollupUnit === 'hour') trimLen = 13;
@@ -1105,11 +1105,11 @@ function fetchFinanceData(mc, tableName, tags, stock, rollupUnit, timeWhere, col
     });
   }
 
-  // Merge OHLCV by time
+  // 시각 기준 OHLCV 병합
   function mergeAndFinish() {
     var timeMap = {};
     var timeOrder = [];
-    // Use close as primary time source
+    // close를 기준 시각으로 사용
     var primaryField = ohlcvData.close ? 'close' : Object.keys(ohlcvData)[0];
     var primary = ohlcvData[primaryField] || [];
     for (var i = 0; i < primary.length; i++) {
@@ -1118,7 +1118,7 @@ function fetchFinanceData(mc, tableName, tags, stock, rollupUnit, timeWhere, col
       if (!timeMap[t]) { timeMap[t] = { time: t }; timeOrder.push(t); }
       if (primary[i][primaryField] !== undefined) timeMap[t][primaryField] = primary[i][primaryField];
     }
-    // Merge other fields
+    // 나머지 필드 병합
     var allFields = Object.keys(ohlcvData);
     for (var fi = 0; fi < allFields.length; fi++) {
       var f = allFields[fi];
@@ -1142,12 +1142,12 @@ function fetchFinanceData(mc, tableName, tags, stock, rollupUnit, timeWhere, col
   fetchNextField();
 }
 
-// --- Finance Summary ---
+// --- 금융 요약 ---
 function computeFinanceSummary(trendData) {
   if (!trendData || trendData.length === 0) return '';
   var toF = function(v) { return parseFloat(v) || 0; };
 
-  // Collect points with close > 0
+  // close > 0 인 점만 수집
   var pts = [];
   for (var i = 0; i < trendData.length; i++) {
     var d = trendData[i];
@@ -1157,7 +1157,7 @@ function computeFinanceSummary(trendData) {
   if (pts.length === 0) return '';
   var lines = [];
 
-  // 1. Trend direction
+  // 1. 추세 방향
   var first = pts[0], last = pts[pts.length - 1];
   var changeRate = first.close > 0 ? (last.close - first.close) / first.close * 100 : 0;
   var direction = '횡보';
@@ -1165,7 +1165,7 @@ function computeFinanceSummary(trendData) {
   else if (changeRate < -5) direction = '하락';
   lines.push('- 추세: ' + first.time + ' → ' + last.time + ' (' + first.close.toFixed(1) + ' → ' + last.close.toFixed(1) + ', ' + changeRate.toFixed(1) + '% ' + direction + ')');
 
-  // 2. Recent candle pattern (last 20 bars)
+  // 2. 최근 캔들 패턴(마지막 20개)
   var recentN = Math.min(20, pts.length);
   var recent = pts.slice(pts.length - recentN);
   var bullish = 0, bearish = 0;
@@ -1181,7 +1181,7 @@ function computeFinanceSummary(trendData) {
     lines.push('- 최근 ' + recentN + '봉: 양봉 ' + bullish + '개, 음봉 ' + bearish + '개 (' + dominant + ')');
   }
 
-  // 3. Moving averages
+  // 3. 이동 평균
   function calcMA(data, period) {
     if (data.length < period) return 0;
     var sum = 0;
@@ -1202,7 +1202,7 @@ function computeFinanceSummary(trendData) {
     }
   }
 
-  // 4. Volatility (high-low spread)
+  // 4. 변동성(고가-저가 폭)
   var totalSpread = 0, spreadCount = 0, recentSpread = 0, recentSpreadCount = 0;
   for (var i = 0; i < pts.length; i++) {
     if (pts[i].high > 0 && pts[i].low > 0) {
@@ -1219,7 +1219,7 @@ function computeFinanceSummary(trendData) {
     lines.push('- 변동성: 전체 평균 스프레드 ' + avgSp.toFixed(1) + ', 최근 ' + avgRecSp.toFixed(1) + ' → 변동성 ' + volState);
   }
 
-  // 5. High/Low points
+  // 5. 고점·저점
   var maxP = pts[0], minP = pts[0];
   for (var i = 1; i < pts.length; i++) {
     if (pts[i].close > maxP.close) maxP = pts[i];
@@ -1228,7 +1228,7 @@ function computeFinanceSummary(trendData) {
   lines.push('- 최고가 구간: ' + maxP.time + ' (' + maxP.close.toFixed(1) + ')');
   lines.push('- 최저가 구간: ' + minP.time + ' (' + minP.close.toFixed(1) + ')');
 
-  // 6. Volume trend
+  // 6. 거래량 추세
   var totalVol = 0, volCount = 0, recentVol = 0, recentVolCount = 0;
   for (var i = 0; i < pts.length; i++) {
     if (pts[i].vol > 0) {
@@ -1250,7 +1250,7 @@ function computeFinanceSummary(trendData) {
   return lines.join('\n');
 }
 
-// --- Template auto-detection ---
+// --- 템플릿 자동 판별 ---
 function detectIMUTags(tags) {
   var imuKeywords = ['accx', 'accy', 'accz', 'gyrox', 'gyroy', 'gyroz', 'acc_x', 'acc_y', 'acc_z', 'gyro_x', 'gyro_y', 'gyro_z'];
   var found = 0;
@@ -1291,7 +1291,7 @@ function roundRate(count, total) {
   return Math.round(count / total * 1000) / 10;
 }
 
-// --- Helpers ---
+// --- 도우미 ---
 function anyStr(obj, key) { var v = obj[key]; if (v === undefined || v === null) return ''; return String(v); }
 function pad2(n) { return n < 10 ? '0' + n : String(n); }
 // 시각 표시 시간대 — 요청한 시간대를 Neo가 알면 그것, 아니면 사용자 시간대
@@ -1391,12 +1391,12 @@ function mdToHTML(text) {
     var trimmed = raw.trim();
     if (!trimmed) { closeUL(); continue; }
 
-    // Headers
+    // 제목
     if (/^####\s+/.test(trimmed)) { closeUL(); result.push('<h4 style="font-size:14px;font-weight:700;color:var(--text-primary,#2d3748);margin:18px 0 8px;">' + inlineFmt(trimmed.replace(/^####\s+/, '')) + '</h4>'); continue; }
     if (/^###\s+/.test(trimmed)) { closeUL(); result.push('<h3 style="font-size:15px;font-weight:700;color:var(--text-primary,#1a365d);margin:20px 0 10px;">' + inlineFmt(trimmed.replace(/^###\s+/, '')) + '</h3>'); continue; }
     if (/^##\s+/.test(trimmed)) { closeUL(); result.push('<h2 style="font-size:17px;font-weight:700;color:var(--text-primary,#1a365d);margin:24px 0 12px;border-bottom:2px solid var(--border-default,#e2e8f0);padding-bottom:6px;">' + inlineFmt(trimmed.replace(/^##\s+/, '')) + '</h2>'); continue; }
 
-    // Ordered list: "1. text" → 번호 직접 보존, div 들여쓰기
+    // 순서 목록: "1. text" → 번호 직접 보존, div 들여쓰기
     var olMatch = trimmed.match(/^(\d+)[.)]\s+(.*)/);
     if (olMatch) {
       closeUL();
@@ -1404,14 +1404,14 @@ function mdToHTML(text) {
       continue;
     }
 
-    // Indented sub-item: "  - text" (check before top-level)
+    // 들여쓴 하위 항목: "  - text" — 최상위 목록보다 먼저 검사
     if (/^\s{2,}[-*]\s+/.test(raw)) {
       if (!inUL) { result.push('<ul style="margin:4px 0 8px 28px;list-style-type:disc;">'); inUL = true; }
       result.push('<li style="margin-left:20px;margin-bottom:4px;list-style-type:circle;">' + inlineFmt(raw.trim().replace(/^[-*]\s+/, '')) + '</li>');
       continue;
     }
 
-    // Unordered list: "- text" or "* text"
+    // 순서 없는 목록: "- text" 또는 "* text"
     if (/^[-*]\s+/.test(trimmed)) {
       if (!inUL) { result.push('<ul style="margin:4px 0 8px 28px;list-style-type:disc;">'); inUL = true; }
       result.push('<li style="margin-bottom:5px;">' + inlineFmt(trimmed.replace(/^[-*]\s+/, '')) + '</li>');
@@ -1452,7 +1452,7 @@ function mdToHTML(text) {
       }
     }
 
-    // Normal paragraph
+    // 일반 문단
     closeUL();
     result.push('<p style="margin-bottom:12px;line-height:1.7;">' + inlineFmt(trimmed) + '</p>');
   }

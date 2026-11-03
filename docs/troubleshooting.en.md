@@ -106,3 +106,4 @@ In this case, wait a little longer, or stop the response and retry with a simple
 
 - [Previous: HTTP API and WebSocket](./http-api-and-websocket.en.md)
 - [Back to Index](./index.en.md)
+- [Next: Release Notes](./release-notes.en.md)

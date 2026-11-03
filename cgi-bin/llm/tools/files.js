@@ -13,8 +13,8 @@ function register(registry, mc) {
     fn: function (args, cb) {
       var given = argStr(args, 'folder_name', '');
       if (!given) return cb(null, 'Error: folder_name is required');
-      // 산출물과 같은 자리에 만든다({user}/ 아래). 파일 API 는 상위 폴더를 자동 생성하지
-      // 않으므로 단계별로 만든다 — 이미 있으면 조용히 넘어간다.
+      // 산출물 자리({user}/ 아래)에 생성
+      // · 파일 API가 상위 폴더 자동 생성 안 함 → 단계별 생성, 이미 있으면 통과
       var folder = withUserRoot(mc, given);
       ensureFolders(mc, folder, function () {
         cb(null, 'Folder created: ' + folder);
@@ -38,8 +38,8 @@ function register(registry, mc) {
         cb(null, out.trim() || ('Empty directory: ' + shown));
       }
 
-      // 산출물은 {user}/ 아래 있으므로 계정 폴더를 먼저 본다. 루트를 명시했거나 계정 폴더가
-      // 비어 있으면 준 경로 그대로 — 공용·옛 경로도 계속 훑을 수 있게 남긴다.
+      // 산출물 위치인 계정 폴더({user}/) 먼저 조회
+      // · 루트 명시 또는 계정 폴더 비어 있으면 준 경로 그대로 — 공용 경로 조회용
       var scoped = (dirPath === '/' || dirPath === '') ? dirPath : withUserRoot(mc, dirPath);
       if (scoped === dirPath) {
         return mc.listDir(dirPath, function (err, items) {
@@ -70,8 +70,7 @@ function register(registry, mc) {
     fn: function (args, cb) {
       var filename = argStr(args, 'filename', '');
       if (!filename) return cb(null, 'Error: filename is required');
-      // Block path traversal / absolute paths. Timer cleanup deletes
-      // NAME/NAME.tql and the NAME folder — both are relative paths with no '..', so allowed.
+      // 상위·절대 경로 차단 — 타이머 정리 대상(NAME/NAME.tql·NAME 폴더)은 상대 경로라 허용
       var norm = filename.replace(/\\/g, '/');
       if (norm.indexOf('..') >= 0 || norm.charAt(0) === '/' || /^[A-Za-z]:/.test(norm)) {
         return cb(null, '거부됨: 상위/절대 경로 파일은 삭제할 수 없습니다(보안 정책). 작업 산출물 경로만 허용됩니다.');

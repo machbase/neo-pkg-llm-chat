@@ -106,3 +106,4 @@ weight: 60
 
 - [이전: HTTP API와 WebSocket](./http-api-and-websocket.kr.md)
 - [목차로 돌아가기](./index.kr.md)
+- [다음: 릴리스 노트](./release-notes.kr.md)

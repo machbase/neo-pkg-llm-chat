@@ -1,7 +1,7 @@
 var { rePrompt } = require('./guard');
 var { DASHBOARD_TOOLS } = require('../fixer/fixer');
 
-// Prevents dashboard creation before all TQL templates are saved (advanced mode only)
+// TQL 템플릿 전부 저장 전 대시보드 생성 차단(advanced 모드 전용)
 var DashboardEarlyGuard = {
   name: 'dashboard_early',
   check: function (agent, msg) {
@@ -17,9 +17,8 @@ var DashboardEarlyGuard = {
     }
     if (!hasDashboardCall) return msg;
 
-    // Count saved TQL templates
     var savedCount = countSavedTQLs(agent.messages);
-    var expectedCount = 4; // minimum (범용: 3-1~3-4)
+    var expectedCount = 4; // 최소 개수(범용: 3-1~3-4)
 
     if (savedCount < expectedCount) {
       console.println('  [guard] Dashboard too early: ' + savedCount + '/' + expectedCount + ' TQLs saved');

@@ -1,7 +1,7 @@
 'use strict';
 
 // CGI: POST /api/worker/stop?name=xxx
-// Stops and uninstalls the named worker service
+// 지정한 워커 서비스 중지·제거
 
 var process = require('process');
 var service = require('service');

@@ -14,14 +14,14 @@ var SCRIPT_DIR = path.resolve(path.dirname(process.argv[1]));
 try { process.chdir(SCRIPT_DIR); } catch (e) {}
 var WORKERS_DIR = path.join(SCRIPT_DIR, 'workers');
 
-// --- Parse args ---
+// --- 인자 해석 ---
 var sessionID = process.argv[2];
 if (!sessionID) {
   console.println('[Worker] ERROR: session ID required as argv[2]');
   process.exit(1);
 }
 
-// --- Load worker config ---
+// --- 워커 설정 로드 ---
 var workerCfgPath = path.join(WORKERS_DIR, sessionID + '.json');
 var workerCfg;
 try {
@@ -35,7 +35,7 @@ console.println('[Worker] Session: ' + sessionID);
 console.println('[Worker] User: ' + workerCfg.user_id);
 console.println('[Worker] Provider: ' + workerCfg.provider + '/' + workerCfg.model);
 
-// --- Load LLM config ---
+// --- LLM 설정 로드 ---
 var config = require('./config/config');
 var cfgPath = workerCfg.config_path;
 if (!fs.existsSync(cfgPath)) cfgPath = workerCfg.fallback_config_path;
@@ -52,7 +52,7 @@ cfg.model = workerCfg.model;
 // 실행 계정 = 게이트웨이가 토큰으로 검증한 계정(설정 파일 값 아님)
 cfg.machbase.user = workerCfg.user_id;
 
-// --- Initialize components ---
+// --- 구성 요소 초기화 ---
 var { createLLM } = require('./llm/factory');
 var { createClient } = require('./machbase/client');
 var { userZone } = require('./machbase/timezone');
@@ -83,7 +83,7 @@ try {
 var agent = createAgent(llmClient, registry, mc);
 console.println('[Worker] Tools: ' + registry.toolNames().length + ' loaded');
 
-// --- Shutdown hook ---
+// --- 종료 처리 ---
 try {
   process.addShutdownHook(function () {
     console.println('[Worker] Shutdown — cancelling agent');
@@ -91,7 +91,7 @@ try {
   });
 } catch (e) {}
 
-// --- Connect to Gateway ---
+// --- 게이트웨이 연결 ---
 var conn;
 try {
   conn = new ws.WebSocket(workerCfg.gateway_url);
@@ -135,7 +135,7 @@ conn.on('error', function (err) {
   console.println('[Worker] WS error: ' + err.message);
 });
 
-// --- Chat execution ---
+// --- 채팅 실행 ---
 function runChat(query) {
   console.println('[Worker] Query: ' + query.substring(0, 100));
   sendStreamMsg('answer_start');
@@ -172,7 +172,7 @@ function runChat(query) {
   });
 }
 
-// --- Send helpers ---
+// --- 전송 도우미 ---
 function sendStreamMsg(msgType, text) {
   var message = { ver: '1.0', id: Date.now(), type: msgType };
   if (text !== undefined) {

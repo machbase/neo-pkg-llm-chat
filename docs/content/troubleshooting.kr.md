@@ -102,3 +102,4 @@ weight: 60
 
 - [이전: HTTP API와 WebSocket]({{< relref "http-api-and-websocket" >}})
 - [목차로 돌아가기]({{< relref "/" >}})
+- [다음: 릴리스 노트]({{< relref "release-notes" >}})

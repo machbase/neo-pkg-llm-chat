@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 
 interface Props {
-    /** Line to type out. Changing it restarts the cycle on the new text. */
+    /** 타이핑할 문구 — 바뀌면 새 문구로 사이클 재시작 */
     text: string;
-    /** Asked for the next line once this one has finished typing and erasing. */
+    /** 타이핑·지우기 완료 후 다음 문구 요청 */
     onCycle: () => void;
-    /** Click anywhere on the line — skips ahead instead of waiting out the cycle. */
+    /** 문구 클릭 — 사이클 대기 없이 바로 넘김 */
     onClick: () => void;
 }
 
@@ -26,12 +26,11 @@ export const TypedGreeting = ({ text, onCycle, onClick }: Props) => {
     const [count, setCount] = useState(still ? chars.length : 0);
     const [phase, setPhase] = useState<Phase>(still ? 'holding' : 'typing');
 
-    // `onCycle` fires from inside a timer; keeping it in a ref means the timer
-    // effect does not restart every render just because the callback is new.
+    // onCycle은 ref로 보관 — 콜백이 바뀔 때마다 타이머 effect 재시작 방지
     const cycleRef = useRef(onCycle);
     cycleRef.current = onCycle;
 
-    // New line — start over from nothing.
+    // 새 문구 — 처음부터 다시 타이핑
     useEffect(() => {
         if (still) {
             setCount([...text].length);
@@ -61,10 +60,7 @@ export const TypedGreeting = ({ text, onCycle, onClick }: Props) => {
         return () => clearTimeout(id);
     }, [phase, count, text, still]);
 
-    // One text flow, not two. The untyped tail stays in the layout at zero
-    // opacity, so the line breaks exactly where the finished line will break and
-    // the mark beside it never shifts. Splitting it across a hidden sizer and an
-    // absolutely positioned overlay let the two disagree about where to wrap.
+    // 미입력 꼬리도 투명하게 레이아웃 유지 — 완성 문구와 같은 줄바꿈, 옆 마크 위치 고정
     const shown = chars.slice(0, count).join('');
     const rest = chars.slice(count).join('');
 

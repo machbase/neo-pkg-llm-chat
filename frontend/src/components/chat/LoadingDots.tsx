@@ -2,13 +2,13 @@ import { useEffect, useState } from 'react';
 import Icon from '../common/Icon';
 
 interface Props {
-    /** Tool currently running, when the wait is a tool call rather than generation. */
+    /** 실행 중인 도구 이름 — 답변 생성 대기 땐 없음 */
     toolName?: string;
-    /** When that tool started, for the live clock. */
+    /** 도구 시작 시각 — 실시간 경과 표시용 */
     startedAt?: number;
 }
 
-/** Ticks while a tool runs; one decimal is slow enough to read. */
+/** 도구 실행 중 경과 시간 — 소수 한 자리(읽을 수 있는 갱신 속도) */
 const formatLive = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
 
 export const LoadingDots = ({ toolName, startedAt }: Props) => {

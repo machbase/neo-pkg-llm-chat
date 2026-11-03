@@ -1,4 +1,4 @@
-// Guard pipeline - runs checks before tool execution and after loop completion
+// 가드 파이프라인 — 도구 실행 전·루프 종료 후 검사
 
 function createPipeline(preToolGuards, postLoopGuards) {
   return {
@@ -80,7 +80,7 @@ function rePromptFailed(agent, mark, e, label) {
   console.println('  [guard] ' + label + ' failed: ' + (e.message || String(e)));
 }
 
-// Re-prompt helper: appends msg + cancel results + hint, calls LLM again
+// 재유도 — msg·취소 결과·힌트 추가 후 LLM 재호출
 function rePrompt(agent, msg, hint) {
   neutralizePriorGuardHints(agent.messages); // 누적 방지: 이전 힌트 본문 중립화(구조 보존)
   var mark = agent.messages.length;
@@ -91,7 +91,7 @@ function rePrompt(agent, msg, hint) {
   }
   msgs.push({ role: 'user', content: hint, toolCalls: [], _guardHint: true });
 
-  // Update agent messages too
+  // agent.messages에도 동일 반영
   agent.messages.push(msg);
   for (var j = 0; j < (msg.toolCalls ? msg.toolCalls.length : 0); j++) {
     agent.messages.push({ role: 'tool', content: 'cancelled: redirecting', toolCalls: [] });
@@ -107,7 +107,7 @@ function rePrompt(agent, msg, hint) {
   }
 }
 
-// Re-prompt for post-loop (msg has no tool calls)
+// 루프 종료 후 재유도(msg에 도구 호출 없음)
 // · 잘림 반복으로 도구 없이 답변하는 단계면 재유도 안 함 — 도구를 요구하는 재유도는 충족 불가, 답변만 예고문으로 바뀜
 function rePromptNoToolCalls(agent, msg, hint) {
   if (agent._truncForceAnswer) return msg;

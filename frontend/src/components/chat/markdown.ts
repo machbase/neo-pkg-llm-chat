@@ -116,14 +116,14 @@ export function normalizeMarkdown(content: string): string {
         // Bold — [^*]+? 로 내부 공백 허용(예: **TQL(Transforming Query Language)**은)
         line = line.replace(/\*\*\s*([^*]+?)\s*\*\*/g, '**$1**');
         line = line.replace(/(\*\*[^*]+?\*\*)(?=[가-힣a-zA-Z0-9])/g, '$1 ');
-        // Bold+Italic (***)
+        // 굵게+기울임(***)
         line = line.replace(/\*\*\*\s*([^*]+?)\s*\*\*\*/g, '***$1***');
         line = line.replace(/(\*\*\*[^*]+?\*\*\*)(?=[가-힣a-zA-Z0-9])/g, '$1 ');
-        // Italic (single *)
+        // 기울임(* 하나)
         line = line.replace(/(?<!\*)\*\s+([^*]+?)\s*\*(?!\*)/g, '*$1*');
         line = line.replace(/(?<!\*)\*([^*]+?)\s+\*(?!\*)/g, '*$1*');
         line = line.replace(/((?<!\*)\*[^*]+?\*(?!\*))(?=[가-힣a-zA-Z0-9])/g, '$1 ');
-        // Strikethrough
+        // 취소선
         line = line.replace(/~~\s*([^~]+?)\s*~~/g, '~~$1~~');
         line = line.replace(/(~~\S+?~~)(?=[가-힣a-zA-Z0-9])/g, '$1 ');
         // 홑물결 escape — GFM의 홑물결 쌍 취소선 처리 방지(범위 표기 "0~45°C, pH 0~14")

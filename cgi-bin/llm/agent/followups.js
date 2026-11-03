@@ -29,7 +29,7 @@ var SYSTEM = '## 역할\n' +
   '- 답변에 없는 새 주제를 꺼내지 마세요. **이름만 답변에서 빌려오고 동작은 지어낸 질문**이 가장 흔한 실패입니다.\n' +
   '- 용량·백업·권한·서버 설정 같은 운영 주제는 답변이 그것을 다뤘을 때만 물으세요.\n';
 
-/** One chip per line; strip the decorations models add anyway. */
+/** 줄당 칩 1개 — 모델이 붙인 번호·불릿·따옴표 제거 */
 function parseItems(text) {
     if (!text) return [];
     var lines = String(text).split('\n');
@@ -55,11 +55,11 @@ function parseItems(text) {
 }
 
 /**
- * @param {object} llmClient  provider client with .chat(messages, toolDefs, cb)
- * @param {string} provider   resolved provider name
- * @param {string} question   what the user asked
- * @param {string} answer     the answer that was just streamed
- * @param {function(string[])} cb  always called, with [] on any failure
+ * @param {object} llmClient  .chat(messages, toolDefs, cb) 제공 프로바이더 클라이언트
+ * @param {string} provider   확정된 프로바이더 이름
+ * @param {string} question   사용자 질문
+ * @param {string} answer     방금 스트리밍된 답변
+ * @param {function(string[])} cb  항상 호출, 실패 시 []
  */
 function generate(llmClient, provider, question, answer, cb) {
     if (String(provider || '').toLowerCase() === 'ollama') return cb([]);

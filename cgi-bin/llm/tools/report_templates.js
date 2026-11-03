@@ -1,20 +1,19 @@
 var fs = require('fs');
 var path = require('path');
 
-// 30s TTL: re-scan so a newly dropped custom/*.md appears without a worker restart.
-// (.md are data files, not code modules, so re-reading them at runtime is safe — code edits still need restart.)
+// 30초 TTL 재스캔 — 새로 넣은 custom/*.md를 워커 재시작 없이 반영
 var CACHE_TTL = 30 * 1000;
 
-var _cache = null;   // id -> html string
+var _cache = null;   // id -> html 문자열
 var _meta = {};      // id -> { id, title, file, custom, compute, guide }
 var _cacheTs = 0;
 
-// Collect *.md under neo/report/ (builtin) and neo/report/custom/ (custom drops).
+// neo/report/(빌트인)·neo/report/custom/(커스텀) 아래 *.md 수집
 function scanTemplateFiles(baseDir) {
   var out = [];
   function addDir(dir, custom) {
     var names;
-    try { names = fs.readdirSync(dir); } catch (e) { return; } // custom/ may not exist yet
+    try { names = fs.readdirSync(dir); } catch (e) { return; } // custom/ 없을 수 있음
     for (var i = 0; i < names.length; i++) {
       if (/\.md$/i.test(names[i])) out.push({ path: path.join(dir, names[i]), file: names[i], custom: custom });
     }
@@ -24,9 +23,9 @@ function scanTemplateFiles(baseDir) {
   return out;
 }
 
-// Minimal YAML-ish frontmatter parser: a leading ---\n ... \n--- block.
-// Supports `key: value` scalars and `key: |` block scalars (indented following lines).
-// Used for per-template `compute:` (which calc to run) and `guide:` (analysis direction text).
+// 간이 YAML frontmatter 파서 — 선두 ---\n ... \n--- 블록
+// · `key: value` 스칼라·`key: |` 블록 스칼라(들여쓴 다음 줄들) 지원
+// · 템플릿별 `compute:`(실행할 계산)·`guide:`(분석 방향 문구)용
 function parseFrontmatter(content) {
   var m = /^---\n([\s\S]*?)\n---\n?/.exec(content);
   if (!m) return {};
@@ -46,7 +45,7 @@ function parseFrontmatter(content) {
       }
       fm[key] = buf.join('\n').replace(/^\n+|\n+$/g, '');
     } else {
-      fm[key] = val.replace(/\s+#.*$/, '').trim(); // strip YAML inline comment ' # ...'
+      fm[key] = val.replace(/\s+#.*$/, '').trim(); // YAML 인라인 주석 ' # ...' 제거
       i++;
     }
   }
@@ -56,7 +55,7 @@ function parseFrontmatter(content) {
 function loadReportTemplates() {
   var templates = {};
   var meta = {};
-  var baseDir = path.resolve(__dirname, '..', 'neo', 'report'); // resolve→absolute: jsh fs.readdirSync needs absolute path (util.js pattern)
+  var baseDir = path.resolve(__dirname, '..', 'neo', 'report'); // jsh fs.readdirSync는 절대 경로 필요
   var files = scanTemplateFiles(baseDir);
   for (var i = 0; i < files.length; i++) {
     var f = files[i];
@@ -64,7 +63,7 @@ function loadReportTemplates() {
       var data = fs.readFileSync(f.path, 'utf8');
       var content = data.replace(/\r\n/g, '\n').replace(/^﻿/, '');
       var fm = parseFrontmatter(content);
-      // group1=id (R-N-topic / C-N-topic), group2=title, group3=html body
+      // group1=id(R-N-topic / C-N-topic), group2=제목, group3=html 본문
       var re = /(?:^|\n)###\s*([RC]-\d+[\w-]*)\s*\.\s*([^\n]*)\n[\s\S]*?```html\n([\s\S]*?)\n```/g;
       var match;
       while ((match = re.exec(content)) !== null) {
@@ -83,7 +82,7 @@ function loadReportTemplates() {
   return templates;
 }
 
-// Lazy load + short TTL re-scan (picks up dropped custom/*.md without restart).
+// 지연 로드 + 짧은 TTL 재스캔
 function ensureCache() {
   var now = Date.now();
   if (!_cache || (now - _cacheTs) > CACHE_TTL) {
@@ -93,10 +92,9 @@ function ensureCache() {
   return _cache;
 }
 
-// [{ id, title, file, custom, compute, guide }] — builtin first, then custom. For LLM exposure / routing.
-// ⚠️ 이 폴더(neo/report)에 있는 건 **전부 save_html_report가 채울 수 있어야 한다** — 여기 목록이 그대로 LLM에
-//    노출되고 질의 라우팅 대상이 되기 때문. 도구 전용 템플릿(예: 예측)은 **다른 폴더**에 두어 스캔 자체를 피한다
-//    (neo/forecast/ — forecast_report.js가 따로 로드). 플래그로 걸러내는 방식은 새 소비자가 생기면 또 샌다.
+// [{ id, title, file, custom, compute, guide }] — 빌트인 먼저, 커스텀 다음. LLM 노출·라우팅용
+// ⚠️ neo/report 안 템플릿은 전부 save_html_report로 채울 수 있어야 함 — 목록이 그대로 LLM 노출·라우팅 대상
+//    · 도구 전용 템플릿(예: 예측)은 다른 폴더(neo/forecast/)에 둠
 function listReportTemplates() {
   ensureCache();
   var out = [];
@@ -105,7 +103,7 @@ function listReportTemplates() {
   return out;
 }
 
-// Metadata for one template id (compute/guide/title/custom). null if unknown.
+// 템플릿 id 하나의 메타데이터(compute/guide/title/custom), 없으면 null
 function getTemplateMeta(id) {
   ensureCache();
   return _meta[id] || null;
@@ -159,7 +157,7 @@ function matchByQuery(query, customOnly) {
   for (var i = 0; i < keys.length; i++) {
     var m = _meta[keys[i]];
     if (!m) continue;
-    if (m.internal) continue; // 도구 전용 템플릿은 질의 라우팅 대상 아님("예측 리포트" → save_html_report로 새면 깨진다)
+    if (m.internal) continue; // 도구 전용 템플릿은 질의 라우팅 대상 아님 — "예측 리포트"가 save_html_report로 새는 것 방지
     if (customOnly ? !m.custom : m.custom) continue;
     var slug = (/^[A-Za-z]-\d+-(.+)$/.exec(m.id) || [])[1] || '';
     var kws = routingTokens(slug).concat(routingTokens(m.title || ''));

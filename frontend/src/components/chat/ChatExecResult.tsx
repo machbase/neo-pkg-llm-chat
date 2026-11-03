@@ -67,7 +67,7 @@ export const ChatExecResult = ({ code, lang }: ChatExecResultProps) => {
             if (navigator.clipboard && window.isSecureContext) {
                 await navigator.clipboard.writeText(code);
             } else {
-                // fallback for non-secure contexts
+                // 비보안 컨텍스트용 대체 방법
                 const textarea = document.createElement('textarea');
                 textarea.value = code;
                 textarea.style.position = 'fixed';

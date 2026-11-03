@@ -1,6 +1,6 @@
 var { rePromptNoToolCalls, finalizedWithoutTools } = require('./guard');
 
-// Detects when advanced analysis is done but charts are missing from dashboard
+// 고급 분석 완료 후 대시보드 차트 누락 탐지
 var ChartOmissionGuard = {
   name: 'chart_omission',
   check: function (agent, msg) {

@@ -209,7 +209,7 @@ function withTimestamp(filename) {
 var TYPE_MAP = { 'string': 5, 'varchar': 5, 'datetime': 6, 'double': 20, 'float': 16, 'int32': 8, 'int64': 12 };
 var SIZE_MAP = { 'string': 32, 'varchar': 32, 'datetime': 8, 'double': 8, 'float': 4, 'int32': 4, 'int64': 8 };
 
-// Fill tableInfo in each blockList entry (required for Neo dashboard viewer)
+// blockList 각 항목에 tableInfo 채움 — Neo 대시보드 뷰어 필수
 function fillTableInfo(mc, panel, cb) {
   var blockList = panel.blockList;
   if (!blockList || blockList.length === 0 || !blockList[0].table) return cb();
@@ -237,7 +237,7 @@ function fillTableInfo(mc, panel, cb) {
   });
 }
 
-// Fill tableInfo for all panels sequentially
+// 전체 패널 tableInfo 순차 채움
 function fillAllPanels(mc, panels, idx, cb) {
   if (idx >= panels.length) return cb();
   fillTableInfo(mc, panels[idx], function () {
@@ -263,7 +263,7 @@ function validateTqlPaths(mc, charts, cb) {
   var pending = [];
   for (var j = 0; j < charts.length; j++) {
     if (!charts[j] || !charts[j].tql_path) { results[j] = true; continue; }
-    results[j] = null; // pending
+    results[j] = null; // 대기
     pending.push(j);
   }
   var total = pending.length;
@@ -496,7 +496,7 @@ function register(registry, mc) {
       });
       return;
 
-      // Infer table name from charts
+      // 차트에서 테이블 이름 추정
       function buildDashboard() {
       var tableName = '';
       for (var ci = 0; ci < charts.length; ci++) {
@@ -516,7 +516,7 @@ function register(registry, mc) {
       function buildWithTable(tableName) {
       // 테이블별 실제 컬럼 이름(PK/BASETIME/SUMMARIZED) — 패널 빌드 전에 채움
       var colsByTable = {};
-      // Time range shift: if requested range has no data, shift to MAX(TIME)
+      // 요청 기간에 데이터 없으면 MAX(TIME) 기준으로 이동
       var shiftedMsg = '';
       function afterTimeShift() {
         var panels = [];

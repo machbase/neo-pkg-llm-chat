@@ -1,6 +1,6 @@
 function captureKnownTags(result, fctx) {
   if (!result) return;
-  // Format: "[TABLE] tag1, tag2, tag3" or just lines of tags
+  // 형식: "[TABLE] tag1, tag2, tag3" 또는 태그 줄 나열
   var tags = [];
   var bracketIdx = result.indexOf(']');
   if (bracketIdx >= 0) {

@@ -10,11 +10,11 @@ interface ChatMessageListProps {
     isProcessingAnswer?: boolean;
     userMessageAlign?: UserMessageAlign;
     scrollRef?: React.RefObject<HTMLDivElement | null>;
-    /** Forwarded to ChatMessageItem for the inline edit affordance. */
+    /** ChatMessageItem 전달용 — 인라인 편집 */
     onEdit?: (messageId: string, newContent: string) => void;
-    /** Forwarded to ChatMessageItem; gates whether the pencil icon is rendered. */
+    /** ChatMessageItem 전달용 — 연필 아이콘 표시 여부 */
     canEdit?: boolean;
-    /** Follow-up chips for the last answer; empty while none have arrived. */
+    /** 마지막 답변의 후속 질문 칩 — 미도착 시 빈 배열 */
     followups?: string[];
     onPickFollowup?: (prompt: string) => void;
 }
@@ -24,7 +24,7 @@ interface ToolRun {
     resultMessage?: Message;
 }
 
-/** Consecutive runs of one tool, collapsed behind a single chip. */
+/** 같은 도구의 연속 실행 — 칩 하나로 접음 */
 interface ToolGroup {
     name: string;
     runs: ToolRun[];
@@ -36,28 +36,24 @@ type DisplayItem = { kind: 'message'; message: Message }
 const isToolCall = (msg: Message) =>
     msg.role === 'assistant' && msg.type === 'block' && msg.content.includes('🛠️');
 
-/** 표 결과(list_tables 등) — 코드펜스가 아니라 마크다운 표로 온다. */
+/** 표 결과(list_tables 등) — 코드펜스 대신 마크다운 표로 수신 */
 const isMarkdownTable = (content: string) => /^\s*\|.*\|\s*\r?\n\s*\|[-\s|:]+\|/.test(content);
 
 const isToolResult = (msg: Message) =>
     msg.role === 'assistant' && msg.type === 'block' && !msg.content.includes('🛠️') &&
     (msg.content.trimStart().startsWith('```') || isMarkdownTable(msg.content));
 
-/** Extract tool name from "🛠️ Calling tool: **tool_name**" */
+/** "🛠️ Calling tool: **tool_name**"에서 도구 이름 추출 */
 const extractToolName = (content: string): string => {
     const match = content.match(/\*\*([^*]+)\*\*/);
     return match ? match[1] : 'tool';
 };
 
-/**
- * Wall time between the call block and its result block arriving. That covers
- * the tool run plus its round trip, not the tool body alone — it is the only
- * timing the stream exposes.
- */
+/** 호출 블록~결과 블록 도착 간 경과 시간 — 도구 실행 + 왕복 포함 */
 const formatDuration = (ms: number): string =>
     ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
 
-/** Summed over the runs that actually returned; null when none did. */
+/** 결과가 온 실행만 합산 — 하나도 없으면 null */
 const totalElapsed = (runs: ToolRun[]): number | null => {
     let total = 0;
     let measured = 0;
@@ -72,7 +68,7 @@ const totalElapsed = (runs: ToolRun[]): number | null => {
 };
 
 const ToolCallGroup = ({ group }: { group: ToolGroup }) => {
-    // 표는 최종 답변에 들어가므로 도구 블록은 접어 둔다(같은 표가 두 번 보이지 않게).
+    // 기본 접힘 — 최종 답변에 같은 표가 들어가 두 번 보이는 것 방지
     const [open, setOpen] = useState(false);
     const count = group.runs.length;
     const elapsed = totalElapsed(group.runs);
@@ -120,7 +116,7 @@ function buildDisplayItems(messages: Message[]): DisplayItem[] {
     while (i < messages.length) {
         const msg = messages[i];
 
-        // Tool call → pair with next result block
+        // 도구 호출 → 다음 결과 블록과 짝지음
         if (isToolCall(msg)) {
             const run: ToolRun = { callMessage: msg };
             if (i + 1 < messages.length && isToolResult(messages[i + 1])) {
@@ -130,8 +126,7 @@ function buildDisplayItems(messages: Message[]): DisplayItem[] {
                 i += 1;
             }
             const name = extractToolName(msg.content);
-            // Only fold runs that are adjacent — merging across an intervening
-            // tool would reorder what actually happened.
+            // 인접 실행만 묶음 — 다른 도구를 건너 합치면 실행 순서 뒤바뀜
             const last = items[items.length - 1];
             if (last && last.kind === 'tool' && last.group.name === name) {
                 last.group.runs.push(run);
@@ -159,8 +154,7 @@ export const ChatMessageList = ({
     onPickFollowup,
 }: ChatMessageListProps) => {
     const items = buildDisplayItems(messages);
-    // A tool whose result block has not arrived yet is the thing being waited on.
-    // Only the tail can be pending — anything earlier already returned.
+    // 결과 미도착 도구 = 대기 대상 — 마지막 항목만 해당
     const tail = items[items.length - 1];
     const tailRun = tail?.kind === 'tool' ? tail.group.runs[tail.group.runs.length - 1] : undefined;
     const pending = tailRun && !tailRun.resultMessage

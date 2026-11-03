@@ -7,13 +7,13 @@ var pathMod = require('path');
 var http2 = require('@jsh/http');
 var config = require('../config/config');
 
-var SESSION_TTL = 30 * 60 * 1000; // 30 min
+var SESSION_TTL = 30 * 60 * 1000; // 30분
 var WORKER_PREFIX = 'llm-w-';
 
 function createGateway(cfg, serverPort) {
   var routes = {};       // sessionID → { browserConn, workerConn, serviceName, ... }
 
-  // Paths
+  // 경로
   var LLM_DIR = pathMod.resolve('.');
   var CONFIGS_DIR = pathMod.join(LLM_DIR, 'configs');
   var WORKERS_DIR = pathMod.join(LLM_DIR, 'workers');
@@ -29,7 +29,7 @@ function createGateway(cfg, serverPort) {
   console.println('[Gateway] Port=' + gatewayPort);
   console.println('[Gateway] Neo=' + neoBase);
 
-  // --- Sync HTTP helper for CGI calls ---
+  // --- CGI 호출용 동기 HTTP 도우미 ---
   function cgiPost(endpoint, query) {
     try {
       var url = neoBase + CGI_BASE + endpoint + '?' + query;
@@ -44,7 +44,7 @@ function createGateway(cfg, serverPort) {
     }
   }
 
-  // --- Per-user config ---
+  // --- 사용자별 설정 ---
   // 본인 설정 파일 — 없으면 null(sys.json으로 대신하지 않음)
   function userCfg(userID) {
     if (!userID) return null;
@@ -54,7 +54,7 @@ function createGateway(cfg, serverPort) {
   }
 
   // =====================================================================
-  //  Browser message handling
+  //  브라우저 메시지 처리
   // =====================================================================
 
   function handleBrowserMessage(conn, raw, authUserID, authToken) {
@@ -150,7 +150,7 @@ function createGateway(cfg, serverPort) {
     sendJSON(workerConn, { type: 'chat', session_id: sessionID, query: query, machbase_token: token, tz: tz });
   }
 
-  // --- Worker lifecycle via Neo CGI (sync HTTP) ---
+  // --- 워커 수명 관리(Neo CGI, 동기 HTTP) ---
 
   function startWorker(sessionID, route) {
     var workerCfgPath = pathMod.join(WORKERS_DIR, sessionID + '.json');
@@ -241,7 +241,7 @@ function createGateway(cfg, serverPort) {
   }
 
   // =====================================================================
-  //  Worker message handling (internal WS)
+  //  워커 메시지 처리(내부 WS)
   // =====================================================================
 
   function handleWorkerConnection(conn) {
@@ -269,7 +269,7 @@ function createGateway(cfg, serverPort) {
         return;
       }
 
-      // Forward worker messages to browser as-is
+      // 워커 메시지를 브라우저로 그대로 전달
       if (!boundSessionID) return;
       var route = routes[boundSessionID];
       if (route && route.browserConn) {
@@ -287,7 +287,7 @@ function createGateway(cfg, serverPort) {
   }
 
   // =====================================================================
-  //  Cleanup
+  //  정리
   // =====================================================================
 
   function cleanupBrowserConnection(conn) {

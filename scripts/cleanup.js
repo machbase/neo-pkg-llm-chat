@@ -1,7 +1,7 @@
 'use strict';
 
-// 업데이트 후 고아 파일 정리 — 수동 관리 목록 scripts/obsolete.json "remove" 기준
-// · 레포에서 파일·폴더 삭제 시 패키지 루트 기준 경로를 목록에 추가, 누적 유지(삭제는 멱등 → 버전 건너뛴 업데이트도 정리)
+// 업데이트 후 고아 파일 정리 — scripts/obsolete.json "remove" 기준(scripts/gen-obsolete.mjs로 생성)
+// · 패키지 루트 기준 경로의 누적 목록(삭제는 멱등 → 버전 건너뛴 업데이트도 정리)
 // · install.js에서 호출(설치·업데이트), 단독 실행: machbase-neo jsh scripts/cleanup.js
 // · 절대 경로·".." 탈출·루트 밖·보호 폴더 거부, 호출자에 예외 전파 없음
 
@@ -53,13 +53,13 @@ function runCleanup(pkgRoot) {
     var orig = list[i];
     var rel = normalizeRel(orig);
 
-    // 1) reject empty / absolute / traversal
+    // 1) 빈 값·절대 경로·상위 경로 탈출 거부
     if (!rel || rel === '.' || path.isAbsolute(orig) || rel.indexOf('..') >= 0) {
       console.println('[cleanup] REFUSED (unsafe): ' + orig);
       stats.refused++;
       continue;
     }
-    // 2) reject runtime/user-data dirs
+    // 2) 런타임·사용자 데이터 폴더 거부
     if (isProtected(rel)) {
       console.println('[cleanup] REFUSED (protected): ' + rel);
       stats.refused++;
@@ -67,7 +67,7 @@ function runCleanup(pkgRoot) {
     }
 
     var target = path.resolve(rootResolved, rel);
-    // 3) final guard: target must stay strictly inside the package root
+    // 3) 최종 확인 — 대상이 패키지 루트 안쪽이어야 함
     var back = path.relative(rootResolved, target);
     if (back === '' || back.indexOf('..') === 0 || path.isAbsolute(back)) {
       console.println('[cleanup] REFUSED (escapes root): ' + rel);
@@ -94,7 +94,7 @@ function runCleanup(pkgRoot) {
   return stats;
 }
 
-module.exports = { runCleanup: runCleanup };
+module.exports = { runCleanup: runCleanup, isProtected: isProtected };
 
 // 단독 실행 판정 — jsh의 require.main 지원 불확실 → argv[1] 파일명도 확인(install.js에서 require 시 false)
 var _proc = require('process');

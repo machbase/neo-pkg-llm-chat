@@ -83,6 +83,7 @@ Machbase Neo左側のサイドパネルには、利用可能なパッケージ�
 - [技術リファレンス]({{< relref "technical-reference" >}})
 - [HTTP APIとWebSocket]({{< relref "http-api-and-websocket" >}})
 - [トラブルシューティング]({{< relref "troubleshooting" >}})
+- [リリースノート]({{< relref "release-notes" >}})
 
 ## ページ移動
 

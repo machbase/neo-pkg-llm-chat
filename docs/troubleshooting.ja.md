@@ -106,3 +106,4 @@ weight: 60
 
 - [前へ：HTTP APIとWebSocket](./http-api-and-websocket.ja.md)
 - [目次に戻る](./index.ja.md)
+- [次へ：リリースノート](./release-notes.ja.md)

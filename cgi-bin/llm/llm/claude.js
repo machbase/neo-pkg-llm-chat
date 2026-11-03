@@ -54,7 +54,7 @@ function claudeChat(client, messages, toolDefs, cb) {
 
     // 일반 객체로 파싱 — resp.json()은 직렬화마다 키 순서가 달라져 대화 기록 캐시가 깨짐
     var claudeResp = JSON.parse(resp.string());
-    // Log cache usage
+    // 캐시 사용량 로그
     if (claudeResp.usage) {
       var u = claudeResp.usage;
       var cached = u.cache_read_input_tokens || 0;

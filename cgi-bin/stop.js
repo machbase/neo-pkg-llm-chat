@@ -1,6 +1,6 @@
 'use strict';
 
-// CGI stop endpoint — stops all worker services, then stops the gateway service.
+// CGI stop — 워커 서비스 전체 중지 후 게이트웨이 서비스 중지
 
 const process = require('process');
 const path = require('path');
@@ -34,7 +34,7 @@ const method = (process.env.get('REQUEST_METHOD') || 'GET').toUpperCase();
 if (method !== 'POST') {
   reply({ ok: false, reason: 'method not allowed' });
 } else {
-  // 1. Collect worker names from config files
+  // 1. 설정 파일에서 워커 이름 수집
   const workerNames = [];
   try {
     if (fs.existsSync(WORKERS_DIR)) {
@@ -48,7 +48,7 @@ if (method !== 'POST') {
     }
   } catch (e) {}
 
-  // 2. Stop workers → clean files → stop gateway
+  // 2. 워커 중지 → 파일 정리 → 게이트웨이 중지
   stopAll(workerNames, 0);
 }
 
@@ -62,7 +62,7 @@ function stopAll(names, idx) {
     return;
   }
 
-  // Clean worker config files
+  // 워커 설정 파일 삭제
   try {
     if (fs.existsSync(WORKERS_DIR)) {
       const files = fs.readdirSync(WORKERS_DIR);
@@ -72,7 +72,7 @@ function stopAll(names, idx) {
     }
   } catch (e) {}
 
-  // Stop gateway
+  // 게이트웨이 중지
   const SERVICE_NAME = getQueryParam('name') || DEFAULT_SERVICE_NAME;
   service.stop(SERVICE_NAME, (err) => {
     if (err) {

@@ -1,20 +1,18 @@
 var { rePromptNoToolCalls } = require('./guard');
 var docIntent = require('../agent/doc_intent');
 
-// 모델이 추측으로 지어낸 가짜 TQL 문법을 최종 답변에 쓴 경우 차단(답변 경로 환각 방지).
-// ⚠️ CHART_LINE/CHART_BAR/CHART_SCATTER는 넣지 말 것 — 레거시지만 **실재하는** 싱크로 문서 예제에 다수 등장
-//   (tql-guide.md Getting Started, tql-fft.md 등. tql-reading.md가 deprecated로 명시) → 문서 인용 답변이 오탐됨.
-// SRC(/SINK(는 공백 없는 코드형만(문서 산문 "SRC (Data Source)"는 공백+괄호), SRC=SQL은 대소문자 구분
-//   (ODBC 예제의 C 변수 'sRC = SQLAppendDataV2' 오탐 방지). 좌측 경계로 DATASRC( 류 합성어 제외.
+// 최종 답변에 추측으로 지어낸 가짜 TQL 문법 차단 — 답변 경로 환각 방지
+// ⚠️ CHART_LINE/CHART_BAR/CHART_SCATTER 제외 — 레거시지만 실재 싱크로 문서 예제에 다수 등장 → 문서 인용 답변 오탐
+// · SRC(/SINK(는 공백 없는 코드형만(문서 산문 "SRC (Data Source)"는 공백+괄호)
+// · SRC=SQL은 대소문자 구분 — ODBC 예제 C 변수 'sRC = SQLAppendDataV2' 오탐 방지
+// · 좌측 경계로 DATASRC( 류 합성어 제외
 var FAKE_TQL = /(^|[^A-Za-z0-9_])(SRC\s*=\s*SQL|SINK\s*=\s*CHART|SRC\(|SINK\()/;
 
-// 재유도 하드캡. 캡이 없으면 섹션 헛짚기 캡(도구 차단)과 맞물려 무한 핑퐁이 된다:
-// 도구 차단 → 답변 → 이 가드가 반려 → 도구 시도 → 차단 → … (실측 step 16까지 돌다 ETIMEDOUT).
-// 다른 캡들과 같은 원칙 — 재유도는 반드시 상한을 갖는다.
+// 재유도 하드캡 — 없으면 섹션 헛짚기 캡(도구 차단)과 맞물려 무한 핑퐁
+// · 도구 차단 → 답변 → 이 가드 반려 → 도구 시도 → 차단 → …
 var FAKE_TQL_REPROMPT_CAP = 2;
 
-// 개념 답변에서 파이프라인 구조를 설명하는 산문("SRC()로 시작해 SINK()로 끝납니다")은 지어낸 문법이 아니다.
-// 이 가드가 막으려는 건 실행될 것처럼 제시된 코드이므로, 문서 모드에선 코드블록 안만 본다.
+// 문서 모드용 코드블록만 추출 — 파이프라인 구조 설명 산문("SRC()로 시작해 SINK()로 끝납니다")은 검사 제외
 function fencedOnly(text) {
   var out = '', re = /```[\s\S]*?```/g, m;
   while ((m = re.exec(String(text))) !== null) out += m[0] + '\n';
@@ -32,14 +30,14 @@ var FakeTqlAnswerGuard = {
       return msg;
     }
 
-    // DocLookup 문서 모드(= agent.js EXCEPTION 불성립: 예제요청 AND 실재테이블명 둘 다가 아님)에서는
-    // compile/describe가 결정론 가드로 차단되므로 "compile로 생성하라" 조언이 모순(핑퐁 유발).
-    // 문서 예제 인용으로 유도한다. 조건은 agent.js의 _exception과 동일하게 계산(캐시 재사용).
+    // DocLookup 문서 모드(예제요청 AND 실재 테이블명 불성립) → 문서 예제 인용으로 유도
+    // · 이 모드는 compile/describe 차단 상태라 "compile로 생성" 조언은 핑퐁 유발
+    // · 조건은 agent.js _exception과 동일 계산(캐시 재사용)
     var _q = agent.currentQuery || '';
     var _exception = docIntent.wantsExample(_q) &&
       !!docIntent.mentionsTable(_q, agent._docTableNames !== undefined ? agent._docTableNames : null);
     if (agent.skillName === 'DocLookup' && !_exception) {
-      // 산문의 SRC()/SINK() 언급은 개념 설명이라 정상 — "TQL이 뭔가요"의 정답이 바로 이 형태다.
+      // 산문 속 SRC()/SINK() 언급은 개념 설명이라 통과
       if (!FAKE_TQL.test(fencedOnly(content))) return msg;
       agent._fakeTqlReprompts = (agent._fakeTqlReprompts || 0) + 1;
       console.println('  [guard] fake TQL syntax in doc-mode answer, redirecting to doc quotation');

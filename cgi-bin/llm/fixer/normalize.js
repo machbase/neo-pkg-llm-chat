@@ -1,4 +1,4 @@
-// Parameter alias normalization - maps common LLM mistakes to correct param names
+// 파라미터 별칭 정규화 — LLM이 흔히 틀리는 인자 이름을 정식 이름으로 매핑
 
 var aliasMap = {
   execute_sql_query: { sql: 'sql_query', query: 'sql_query' },

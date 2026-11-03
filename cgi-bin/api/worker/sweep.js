@@ -1,19 +1,11 @@
 'use strict';
 
 // CGI: POST /api/worker/sweep[?keep=sess-a,sess-b]
-// Uninstalls orphaned llm-w-* worker services and removes their config files.
-//
-// Worker services live in two separate places: Neo's own service registry
-// (etc/services/<name>.json, written by service.install) and this package's
-// workers/<sessionID>.json. A crash leaves entries in both, and a leftover
-// registry entry makes Neo emit a STOP line for it on every shutdown, so the
-// registry is the authority here — an entry there can outlive the config file
-// by months.
-//
-// service.list is undocumented: it takes (controller, callback), the address
-// comes from resolveController(), and each entry is {config:{name,...}, status}
-// — not a bare name. Entries with enable:false and status:"stopped" do appear,
-// which is exactly the stale case this sweeps.
+// 고아 llm-w-* 워커 서비스 제거 + 설정 파일 삭제
+// · 워커 흔적 위치: Neo 서비스 레지스트리(etc/services/<name>.json)·workers/<sessionID>.json
+// · 레지스트리 기준 정리 — 남은 항목은 Neo 종료마다 STOP 줄 유발, 설정 파일보다 오래 잔존
+// · service.list(controller, cb) — 주소는 resolveController(), 항목은 {config:{name,...}, status}
+// · enable:false·status:"stopped" 항목도 목록에 포함 → 정리 대상
 
 var process = require('process');
 var path = require('path');
@@ -48,8 +40,7 @@ function svcNameOf(sessionID) {
   return WORKER_PREFIX + sessionID.replace(/[^a-zA-Z0-9-]/g, '').substring(0, 20);
 }
 
-// Tolerate a plain array or a wrapper, and entries that are {config:{name}},
-// {name}, or a bare string.
+// 배열·래퍼 객체 모두 허용, 항목은 {config:{name}}·{name}·문자열 허용
 function toNames(result) {
   var arr = result;
   if (arr && !Array.isArray(arr)) arr = arr.services || arr.data || arr.list;
@@ -63,7 +54,7 @@ function toNames(result) {
   return names;
 }
 
-// Sessions the gateway still routes — their services must survive.
+// 게이트웨이가 아직 라우팅 중인 세션 — 서비스 유지 대상
 var keepSvc = {};
 
 var method = (process.env.get('REQUEST_METHOD') || 'GET').toUpperCase();
@@ -111,7 +102,7 @@ if (method !== 'POST') {
 
 function uninstallAll(names, idx, failed) {
   if (idx < names.length) {
-    // stop 실패는 무시한다 — 이미 죽은 서비스도 정의는 지워야 한다.
+    // stop 실패 무시 — 이미 죽은 서비스도 정의 삭제 필요
     service.stop(names[idx], function () {
       service.uninstall(names[idx], function (err) {
         if (err) failed.push(names[idx] + ':' + (err.message || err));
@@ -123,8 +114,7 @@ function uninstallAll(names, idx, failed) {
   reply({ ok: true, removed: names.length - failed.length, failed: failed, files: sweepFiles() });
 }
 
-// Config files for sessions the gateway no longer routes. Left behind by the
-// same crash; harmless on their own but they feed stop.js's service list.
+// 라우팅 대상 아닌 세션의 설정 파일 삭제 — 남으면 stop.js 서비스 목록에 섞임
 function sweepFiles() {
   var removed = 0;
   var files;

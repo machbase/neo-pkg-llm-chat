@@ -1,5 +1,5 @@
 /**
- * Tool Registry - manages tool definitions and execution.
+ * 도구 레지스트리 — 도구 정의·실행 관리
  */
 
 var security = require('./security');
@@ -15,7 +15,7 @@ function createRegistry(mc) {
 
   function get(name) { return tools[name] || null; }
 
-  // Async execute: cb(err, result)
+  // 비동기 실행 — cb(err, result)
   function execute(name, args, cb) {
     if (!args) args = {};
     // 보안 관문 — 모든 LLM 백엔드의 도구 호출을 여기서 한 번 검사
@@ -73,7 +73,7 @@ function createRegistry(mc) {
     client: mc,
   };
 
-  // Register all tools
+  // 전체 도구 등록
   require('./sql').register(registry, mc);
   require('./tql').register(registry, mc);
   require('./tql_spec').register(registry, mc); // compile_tql_from_spec — tql(save/execute) 등록 후
@@ -87,7 +87,7 @@ function createRegistry(mc) {
   return registry;
 }
 
-// --- Arg helpers ---
+// --- 인자 도우미 ---
 
 function argStr(args, key, fallback) {
   if (args[key] !== undefined && args[key] !== null && args[key] !== '') {

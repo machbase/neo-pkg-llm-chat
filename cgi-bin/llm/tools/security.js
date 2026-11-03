@@ -6,51 +6,50 @@
  * · TQL 싱크 APPEND()/INSERT()는 미차단(타이머 수집용), SQL INSERT INTO ... VALUES는 차단
  */
 
-// Mutation verbs we refuse outright. DROP and CREATE are handled separately above this test.
+// 무조건 거부하는 변경 동사 — DROP·CREATE는 sqlDenied에서 별도 처리
 var MUTATION = /^(INSERT|UPDATE|DELETE|ALTER|TRUNCATE|RENAME|MERGE|GRANT|REVOKE|UPSERT|REPLACE|EXEC|EXECUTE|CALL)\b/;
 
-// Tool names that imply server-control / shell. None are registered today; this is a forward guard.
+// 서버 제어·쉘 도구 이름 — 현재 미등록, 사전 차단용
 var NAME_DENY = /(shutdown|reboot|stop_server|start_server|restart|kill_process|exec_command|run_command|run_shell|child_process|spawn_process|service_control)/i;
 
-// Forbidden module requires inside a TQL SCRIPT() block.
+// TQL SCRIPT() 안 금지 require 모듈
 var FORBIDDEN_REQUIRE = /require\s*\(\s*['"`](@jsh\/process|service|child_process|os|fs)['"`]/i;
 
-// Credential / identity system tables — refuse user-driven reads (internal tool queries bypass this).
+// 자격증명·세션 시스템 테이블 — 사용자 주도 조회 거부(내부 도구 쿼리는 미적용)
 var SENSITIVE_TABLE = /\bFROM\s+(M\$SYS_USERS|V\$SESSION)\b/i;
 
 function stripComments(sql) {
   return String(sql || '')
-    .replace(/\/\*[\s\S]*?\*\//g, ' ') // /* block */ comments
-    .replace(/--[^\n]*/g, ' ');        // -- line comments
+    .replace(/\/\*[\s\S]*?\*\//g, ' ') // 블록 주석
+    .replace(/--[^\n]*/g, ' ');        // 라인 주석
 }
 
-// Strip comments AND collapse string literals to empty, so a ';' or a table name that lives
-// inside a quoted string can never trip the multi-statement / sensitive-table checks.
+// 주석 제거 + 문자열 리터럴 비움 — 따옴표 안 ';'·테이블명의 다중 문·민감 테이블 오탐 방지
 function stripStringsAndComments(sql) {
   return stripComments(sql)
-    .replace(/'(?:[^'\\]|\\.|'')*'/g, "''")  // single-quoted (handles '' and \' escapes)
-    .replace(/"(?:[^"\\]|\\.)*"/g, '""');     // double-quoted
+    .replace(/'(?:[^'\\]|\\.|'')*'/g, "''")  // 작은따옴표('' · \' 이스케이프 포함)
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""');     // 큰따옴표
 }
 
-// First SQL keyword, uppercased, after stripping comments and leading whitespace/;/(
+// 주석·선행 공백/;/( 제거 후 대문자화 — 첫 키워드 판정용
 function firstKeyword(sql) {
   return stripComments(sql)
     .replace(/^[\s;(]+/, '')
     .toUpperCase();
 }
 
-// True if there is more than one statement (a ';' that is not just a single trailing terminator).
+// 다중 문 여부 — 끝 ';' 하나는 종결자로 간주
 function hasMultiStatement(sql) {
-  var body = stripStringsAndComments(sql).replace(/;\s*$/, ''); // drop one trailing ';'
+  var body = stripStringsAndComments(sql).replace(/;\s*$/, ''); // 끝 ';' 하나 제거
   return body.indexOf(';') >= 0;
 }
 
-// Returns a Korean denial message, or null if the SQL is allowed.
+// 거부 메시지 반환, 허용이면 null
 function sqlDenied(sql) {
   if (!sql) return null;
   var head = firstKeyword(sql);
 
-  // Allow data-structure CREATE (timer/setup). Deny privileged/unknown CREATE.
+  // 데이터 구조 CREATE(타이머·셋업용)만 허용, 권한·기타 CREATE 거부
   if (/^CREATE\b/.test(head)) {
     if (/^CREATE\s+(TAG\s+|VOLATILE\s+|LOOKUP\s+)?TABLE\b/.test(head)) return checkMulti(sql);
     if (/^CREATE\s+INDEX\b/.test(head)) return checkMulti(sql);
@@ -63,13 +62,12 @@ function sqlDenied(sql) {
     return 'DROP 문은 이 도구로 실행할 수 없습니다. 데이터 보호를 위해 사용자가 직접 SQL 콘솔에서 실행하도록 안내하세요. 예: DROP TABLE 테이블명 CASCADE;';
   }
 
-  // Any other mutation / privilege verb is refused.
+  // 그 밖의 변경·권한 동사 거부
   if (MUTATION.test(head)) {
     return '거부됨: 데이터를 변경/삭제/입력하거나 스키마·권한을 바꾸는 작업(INSERT/UPDATE/DELETE/ALTER/TRUNCATE/GRANT 등)은 보안 정책상 수행할 수 없습니다. 권한 있는 관리자가 직접 콘솔에서 실행하도록 안내하세요.';
   }
 
-  // Read of credential/session system tables (user-driven). Use string-stripped text so a
-  // table name appearing inside a quoted literal does not false-trigger.
+  // 자격증명·세션 시스템 테이블 조회 거부 — 문자열 제거본으로 검사해 따옴표 안 테이블명 오탐 방지
   if (SENSITIVE_TABLE.test(stripStringsAndComments(sql))) {
     return '거부됨: 사용자 계정/세션 정보 조회는 보안 정책상 허용되지 않습니다.';
   }
@@ -84,7 +82,7 @@ function checkMulti(sql) {
   return null;
 }
 
-// Extract every SQL(`...`) / SQL('...') / SQL("...") body from a TQL script.
+// TQL 스크립트의 SQL(`...`) / SQL('...') / SQL("...") 본문 전부 추출
 function extractTqlSql(tql) {
   var out = [];
   var res = [
@@ -99,7 +97,7 @@ function extractTqlSql(tql) {
   return out;
 }
 
-// Returns { denied: bool, message?: string }
+// 반환: { denied: bool, message?: string }
 function checkToolCall(name, args) {
   if (NAME_DENY.test(String(name || ''))) {
     return { denied: true, message: '거부됨: 서버 종료/재시작·OS 쉘 명령 등 시스템 제어 작업은 수행할 수 없습니다.' };
@@ -121,7 +119,7 @@ function checkToolCall(name, args) {
       var dd = sqlDenied(bodies[j]);
       if (dd) return { denied: true, message: dd };
     }
-    // raw mutation accidentally passed as tql_content (e.g. "DELETE FROM ...")
+    // tql_content로 넘어온 변경 SQL 원문(예: "DELETE FROM ...")
     if (MUTATION.test(firstKeyword(t))) {
       return { denied: true, message: sqlDenied(t) || '거부됨: 허용되지 않은 작업입니다.' };
     }
@@ -137,7 +135,7 @@ function redactSecrets(text, extraSecrets) {
   var out = text;
   var MASK = '****';
 
-  // 0) Known literal secrets (actual deployment DB password / keys), if provided.
+  // 0) 전달된 실제 비밀값(배포 DB 비밀번호·키)
   if (extraSecrets && extraSecrets.length) {
     for (var i = 0; i < extraSecrets.length; i++) {
       var s = extraSecrets[i];
@@ -148,33 +146,33 @@ function redactSecrets(text, extraSecrets) {
     }
   }
 
-  // 1) API keys / secrets by shape.
+  // 1) 형태로 식별하는 API 키·시크릿
   out = out.replace(/\b(sk-ant-[A-Za-z0-9_\-]{6,}|sk-[A-Za-z0-9_\-]{12,}|AIza[A-Za-z0-9_\-]{20,})\b/g, '[보안 비공개]');
-  // Machbase Neo API token (nt_<id>_<secret>).
+  // Machbase Neo API 토큰(nt_<id>_<secret>)
   out = out.replace(/\bnt_[A-Za-z0-9]+_[A-Za-z0-9_\-]{20,}/g, '[보안 비공개]');
 
-  // 2) Account/session enumeration queries against credential system tables.
+  // 2) 자격증명 시스템 테이블 대상 계정·세션 조회 쿼리
   out = out.replace(/SELECT[\s\S]{0,300}?FROM\s+(?:M\$SYS_USERS|V\$SESSION)[^\n;]*;?/gi,
     '[계정/세션 조회 쿼리는 보안 정책상 비공개]');
 
-  // 3) Default admin credential pair (SYS/MANAGER).
+  // 3) 기본 관리자 자격증명 쌍(SYS/MANAGER)
   out = out.replace(/\bSYS\s*\/\s*MANAGER\b/gi, 'SYS/' + MASK);
 
-  // 4) password/암호/비밀번호 = value  → mask the value, keep key+separator.
+  // 4) password/암호/비밀번호 = 값 → 키·구분자 유지, 값만 마스킹
   out = out.replace(
     /((?:password|passwd|pwd|비밀번호|암호|패스워드)["']?\s*[:=]\s*['"`]?)([^\s'"`,;)\]}]{2,})/gi,
     function (m, head, val) {
-      if (/^(VARCHAR|CHAR|TEXT|NUMBER|your|the|<|\.\.\.|\{)/i.test(val)) return m; // placeholder/DDL
+      if (/^(VARCHAR|CHAR|TEXT|NUMBER|your|the|<|\.\.\.|\{)/i.test(val)) return m; // 플레이스홀더·DDL
       return head + MASK;
     });
 
-  // 5) Default password value "MANAGER" mentioned in a credential context (within 40 chars).
+  // 5) 자격증명 문맥(40자 이내)의 기본 비밀번호 "MANAGER"
   out = out.replace(
     /(비밀번호|암호|패스워드|password|passwd|pwd|계정|로그인|login|기본\s*(?:계정|로그인|관리자))[\s\S]{0,40}?\bMANAGER\b/gi,
     function (m) { return m.replace(/\bMANAGER\b/i, MASK); });
 
-  // 6) Admin username "sys" stated as a login identity (ID: sys / 로그인 계정 SYS / Username: sys).
-  //    Only when a credential keyword sits right before it — avoids touching M$SYS_*, sys.json, etc.
+  // 6) 로그인 신원으로 쓰인 관리자 계정명 "sys"(ID: sys / 로그인 계정 SYS / Username: sys)
+  //    · 바로 앞에 자격증명 키워드 있을 때만 — M$SYS_*·sys.json 등 오탐 방지
   out = out.replace(
     /((?:\bID\b|아이디|계정|로그인|username|user[\s_]?name|유저\s?(?:명|이름))\s*[:=은는|]{0,4}\s*)(SYS)\b/gi,
     function (m, head) { return head + MASK; });
@@ -277,34 +275,34 @@ function screenQuery(query) {
   var q = query;
   var en = !/[가-힣]/.test(q); // 영어 명령형 규칙은 순수 영어 문장만 — 한국어 속 SQL 키워드(CREATE USER·ALTER TABLE)는 6·8번이 판정
 
-  // 1) Credentials / API keys disclosure (1a/1b/1c)
+  // 1) 자격증명·API 키 노출 (1a/1b/1c)
   if (credDisclosure(q)) return REFUSAL_TEXT;
 
-  // 2) Account / session enumeration (1a)
+  // 2) 계정·세션 목록 조회 (1a)
   if (/(M\$SYS_USERS|V\$SESSION|사용자\s*계정\s*목록|전체\s*(사용자|계정)\s*(목록|계정)|등록된\s*(전체\s*)?(사용자|계정))/i.test(q)) return REFUSAL_TEXT;
 
-  // 3) Config-file path traversal / direct secret-file access (1b/1c)
+  // 3) 설정 파일 경로 탐색·비밀 파일 직접 접근 (1b/1c)
   if (/(\.\.[\/\\])|config\.js|configs?[\/\\]/i.test(q) || mentionsConfigFile(q)) return REFUSAL_TEXT;
 
-  // 4) Shell / process execution (2c)
+  // 4) 쉘·프로세스 실행 (2c)
   if (/(child_process|require\(\s*['"`]?\s*(@jsh\/process|service|child_process|\bos\b|\bfs\b)|exec\s*\(|spawn\s*\()/i.test(q)
       || (/(쉘|shell)/i.test(q) && /(명령|command|커맨드|실행|돌려|돌릴)/i.test(q))
       || /(시스템|os)\s*명령(어)?\s*(을|를)?\s*(실행|돌려|수행)/i.test(q)
       || /명령어\s*(을|를)?\s*(실행|돌려|돌릴)/i.test(q)) return REFUSAL_TEXT;
 
-  // 5) Server control (2a/2b) — 서버·프로세스 + 종료·재시작·구동을 시키는 말
+  // 5) 서버 제어 (2a/2b) —서버·프로세스 + 종료·재시작·구동을 시키는 말
   if (SERVER_NOUN.test(q) && (STOP_CMD.test(q) || (en && STOP_EN.test(q)))) return REFUSAL_TEXT;
 
-  // 6) Raw data-mutation SQL (3a/3b/3c) — 실행 지시가 있거나 묻는 말이 아니면 차단
+  // 6) 데이터 변경 SQL 원문 (3a/3b/3c) —실행 지시가 있거나 묻는 말이 아니면 차단
   if (SQL_MUT.test(q) && (EXEC_CMD.test(q) || !QUESTION.test(q))) return REFUSAL_TEXT;
 
-  // 6b) Natural-language data/schema mutation COMMANDS
+  // 6b) 자연어 데이터·스키마 변경 지시
   if (MUT_KO.test(q) || (en && (MUT_EN.test(q) || ENUM_EN.test(q)))) return REFUSAL_TEXT;
 
-  // 7) System prompt / tool definition leak (10)
+  // 7) 시스템 프롬프트·도구 정의 유출 (10)
   if (LEAK_OBJ.test(q) && LEAK_VERB.test(q)) return REFUSAL_TEXT;
 
-  // 8) Privileged account/credential MANAGEMENT — GUIDED refusal
+  // 8) 계정·자격증명 관리 지시 — 안내 거절
   if (anyMatch(MGMT_KO, q) || (en && anyMatch(MGMT_EN, q))) return MGMT_GUIDANCE_TEXT;
   if (MGMT_SQL.test(q) && (EXEC_CMD.test(q) || !QUESTION.test(q))) return MGMT_GUIDANCE_TEXT;
 

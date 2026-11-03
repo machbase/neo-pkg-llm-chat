@@ -12,12 +12,12 @@ function fixTimeValues(args) {
   ['time_start', 'time_end'].forEach(function (key) {
     var v = args[key];
     if (typeof v !== 'string') return;
-    // Nanosecond trim (>15 digits)
+    // 나노초 절삭(15자리 초과)
     if (v.length > 15 && isAllDigits(v)) {
       args[key] = v.substring(0, v.length - 6);
       return;
     }
-    // DateTime string → epoch ms
+    // 날짜시각 문자열 → epoch ms
     if (!isAllDigits(v)) {
       var ms = parseTimeValue(v);
       if (ms > 0) {
@@ -29,10 +29,10 @@ function fixTimeValues(args) {
 }
 
 function parseTimeValue(v) {
-  // Try epoch ms (all digits)
+  // epoch ms(전부 숫자) 시도
   if (isAllDigits(v)) return parseInt(v, 10);
 
-  // Try "2006-01-02 15:04:05"
+  // "2006-01-02 15:04:05" 형식 시도
   var m = DT_FORMAT_RE.exec(v);
   if (m) {
     var d = new Date(parseInt(m[1]), parseInt(m[2]) - 1, parseInt(m[3]),
@@ -40,7 +40,7 @@ function parseTimeValue(v) {
     return d.getTime();
   }
 
-  // Try "2006-01-02"
+  // "2006-01-02" 형식 시도
   var parts = v.split('-');
   if (parts.length === 3 && parts[0].length === 4) {
     var d2 = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
@@ -83,7 +83,7 @@ function captureDataTimeRange(args, result, fctx) {
       }
     }
   } catch (e) {
-    // Try CSV format
+    // CSV 형식 시도
     var lines = result.split('\n');
     if (lines.length >= 2) {
       var vals = lines[1].split(',');

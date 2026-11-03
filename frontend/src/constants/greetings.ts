@@ -1,8 +1,5 @@
-// Welcome-screen headline. The pool for a pick is the time-of-day set plus the
-// neutral set, so the hour tints the greeting without pinning it to one line.
-//
-// This is the empty state — nothing has happened yet, so lines that imply a
-// thread to resume ("이어서…") read wrong here.
+// 웰컴 화면 인사말 — 시간대 세트 + 공통 세트에서 무작위 선택
+// · 빈 상태 화면 → 이어지는 대화를 암시하는 문구("이어서…") 제외
 
 type Slot = "dawn" | "morning" | "afternoon" | "evening";
 
@@ -48,10 +45,7 @@ function slotFor(hour: number): Slot {
     return "dawn";
 }
 
-/**
- * `exclude` drops the line currently on screen so a re-roll always visibly
- * changes something; it is ignored when it would leave nothing to pick from.
- */
+/** exclude: 화면의 현재 문구 제외(다시 뽑으면 항상 바뀜) — 후보가 비면 무시 */
 export function pickGreeting(now: Date = new Date(), exclude?: string): string {
     const pool = [...TIME_GREETINGS[slotFor(now.getHours())], ...NEUTRAL_GREETINGS];
     const rest = exclude ? pool.filter((line) => line !== exclude) : pool;

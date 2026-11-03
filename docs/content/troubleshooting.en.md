@@ -102,3 +102,4 @@ In this case, wait a little longer, or stop the response and retry with a simple
 
 - [Previous: HTTP API and WebSocket]({{< relref "http-api-and-websocket" >}})
 - [Back to Index]({{< relref "/" >}})
+- [Next: Release Notes]({{< relref "release-notes" >}})

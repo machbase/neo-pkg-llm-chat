@@ -190,7 +190,7 @@ function register(registry, mc) {
           }
         }
 
-        // Convert epoch nanoseconds to TO_DATE before processing
+        // epoch 나노초 → TO_DATE 변환
         var nanoRe = /(\d{18,19})/g;
         var nanoM;
         while ((nanoM = nanoRe.exec(tqlContent)) !== null) {
@@ -204,7 +204,7 @@ function register(registry, mc) {
           }
         }
 
-        // Time shift: if TQL contains TO_DATE with future times, shift to data range
+        // TO_DATE 시작이 데이터 MAX(TIME) 이후면 기간 길이 유지한 채 데이터 끝으로 이동
         var toDateRe = /TO_DATE\s*\(\s*'([^']+)'\s*\)/g;
         // 소유자 접두(SYS.BITCOIN)까지 한 토큰 — SYS만 잘려 엉뚱한 테이블 조회 방지
         var fromRe = /FROM\s+([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*){0,2})/i;

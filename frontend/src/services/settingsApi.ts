@@ -3,7 +3,7 @@ import { defaultConfig } from "../types/settings";
 import { getApiBase } from "./baseUrl";
 import { authHeaders, getConsoleUser } from "../utils/auth";
 
-// ── API token check ──
+// ── API 토큰 확인 ──
 // 성공 시 소문자 계정 이름, 무효(401)면 null. 네트워크·서버 오류는 throw
 async function validateToken(token: string): Promise<string | null> {
     const API_BASE = await getApiBase();
@@ -35,7 +35,7 @@ export async function checkToken(token: string): Promise<TokenCheck> {
     }
 }
 
-// ── Config list ──
+// ── 설정 목록 ──
 export async function getConfigList(): Promise<string[]> {
     const API_BASE = await getApiBase();
     const res = await fetch(`${API_BASE}/configs`, { headers: authHeaders() });
@@ -46,7 +46,7 @@ export async function getConfigList(): Promise<string[]> {
     return raw.map((item) => (typeof item === "string" ? item : item.name));
 }
 
-// ── Config detail ──
+// ── 설정 조회 ──
 export async function getConfig(name: string): Promise<AppConfig> {
     const API_BASE = await getApiBase();
     const res = await fetch(`${API_BASE}/configs/${encodeURIComponent(name)}`, { headers: authHeaders() });
@@ -72,7 +72,7 @@ export async function getConfig(name: string): Promise<AppConfig> {
 // · LLM 서버(@jsh/http)에 preflight 응답(options) 없음, 본문은 문자열로 받아 JSON.parse
 // · PUT/DELETE 는 ?_method=PUT|DELETE 로 전달
 
-// ── Config create ──
+// ── 설정 생성 ──
 // /api/configs/{name} 경로로 저장(서버에서 PUT 처리) — 이름은 토큰 계정만 허용(아니면 403)
 export async function createConfig(name: string, config: AppConfig): Promise<string> {
     const API_BASE = await getApiBase();
@@ -86,7 +86,7 @@ export async function createConfig(name: string, config: AppConfig): Promise<str
     return body.data?.name ?? name;
 }
 
-// ── Config update ──
+// ── 설정 수정 ──
 export async function updateConfig(name: string, config: AppConfig): Promise<string> {
     const API_BASE = await getApiBase();
     const res = await fetch(`${API_BASE}/configs/${encodeURIComponent(name)}?_method=PUT`, {

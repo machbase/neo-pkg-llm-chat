@@ -1,6 +1,6 @@
 var { rePrompt } = require('./guard');
 
-// Triggers when same tool fails 2+ times consecutively
+// 같은 도구가 2회 이상 연속 실패하면 동작
 var ConsecutiveFailureGuard = {
   name: 'consecutive_failure',
   check: function (agent, msg) {

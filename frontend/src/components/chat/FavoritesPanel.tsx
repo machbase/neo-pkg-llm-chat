@@ -26,8 +26,8 @@ export function FavoritesPanel({ favorites, onPick, onAdd, onRemove, onReorder }
         if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
     }, []);
 
-    // Briefly highlight + scroll an existing item into view (when a duplicate is
-    // re-added). The null→rAF→id flip restarts the animation on repeat attempts.
+    // 중복 추가 시 기존 항목 잠깐 강조 + 스크롤
+    // · null→rAF→id 전환 — 반복 시도에도 애니메이션 재시작
     const flashExisting = useCallback((id: string) => {
         if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
         setFlashId(null);
@@ -43,7 +43,7 @@ export function FavoritesPanel({ favorites, onPick, onAdd, onRemove, onReorder }
         if (!text) return;
         const existing = favorites.find((f) => f.prompt === text);
         if (existing) {
-            // Already there — don't add; show the user where it is, keep the draft.
+            // 이미 있음 — 추가 없이 기존 위치 표시, 입력값 유지
             flashExisting(existing.id);
             return;
         }

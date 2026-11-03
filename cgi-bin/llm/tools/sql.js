@@ -382,7 +382,7 @@ function register(registry, mc) {
       prepareSql(mc, finalSQL, function (accessErr, preparedSQL) {
         if (accessErr) return cb(null, 'Error: ' + accessErr.message);
         finalSQL = preparedSQL;
-        // Always request JSON from Machbase, format to CSV in code if needed
+        // 항상 JSON 요청, 필요 시 코드에서 CSV 변환
         mc.querySQL(finalSQL, timeformat, timezone, '', function (err, result) {
           if (err) return cb(null, 'Error: ' + err.message + hintForError(err.message, finalSQL));
           if (format === 'json') return cb(null, result);
@@ -396,7 +396,7 @@ function register(registry, mc) {
             out = out.trim();
             // 실제 행 수 footer — LIMIT 값을 건수로 지어내는 것 방지
             var n = rows.length;
-            // effective LIMIT: explicit LIMIT in the SQL, else the auto-applied limit param
+            // 실효 LIMIT — SQL의 명시 LIMIT, 없으면 자동 적용 limit 파라미터
             var limM = upper.match(/\bLIMIT\s+(\d+)/);
             var effLimit = limM ? parseInt(limM[1], 10) : limit;
             var footer = '\n\n(' + n + ' row' + (n === 1 ? '' : 's') + ')';
@@ -410,7 +410,7 @@ function register(registry, mc) {
   });
 }
 
-// Append dashboard profile (tags + per-tag stats + time range) for TAG tables — one-call exploration.
+// TAG 테이블 프로필(태그·태그별 통계·기간) 덧붙임 — 한 번 호출로 탐색
 function appendProfile(mc, ref, nameCol, timeCol, valueCol, out, cb) {
   var table = ref.qualified;
   readTagNames(mc, ref, nameCol, function (errT, tags, source) {

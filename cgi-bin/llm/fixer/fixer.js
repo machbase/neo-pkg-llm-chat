@@ -40,10 +40,10 @@ function fix(msg, fctx) {
     }
     var name = tc.function.name;
 
-    // Step 1: Normalize parameter aliases
+    // Step 1: 파라미터 별칭 정규화
     normalizeArgs(name, args);
 
-    // Step 2: list_table_tags table_name inference
+    // Step 2: list_table_tags table_name 추론
     if (name === 'list_table_tags') {
       var table = args.table_name || '';
       if (!table && fctx.inferTableName) {
@@ -55,13 +55,13 @@ function fix(msg, fctx) {
       }
     }
 
-    // Step 2.5: describe_table profile auto-inject (basic analysis → one-call exploration)
+    // Step 2.5: describe_table profile 자동 주입 — 분석 스킬은 한 번 호출로 탐색
     if (name === 'describe_table' && (fctx.skillName === 'BasicAnalysis' || fctx.skillName === 'AdvancedAnalysis') && args.profile === undefined) {
       args.profile = true;
       console.println('  [fix] describe_table profile auto-injected (' + fctx.skillName + ')');
     }
 
-    // Step 3: save_html_report time injection
+    // Step 3: save_html_report 기간 주입
     if (name === 'save_html_report' && fctx.timeStartDt) {
       args.time_start = fctx.timeStartDt;
       args.time_end = fctx.timeEndDt;
@@ -76,22 +76,22 @@ function fix(msg, fctx) {
       else delete args.question;
     }
 
-    // Step 4: time_start/time_end float → string
+    // Step 4: time_start/time_end 실수 → 문자열
     fixTimeFloats(args);
 
-    // Step 5: Literal \n → real newline
+    // Step 5: 리터럴 \n → 실제 개행
     fixEscapedNewlines(args);
 
-    // Step 6: charts normalization
+    // Step 6: charts 정규화
     fixCharts(args, fctx);
 
-    // Step 7: time_start/time_end normalize to epoch ms
+    // Step 7: time_start/time_end → epoch ms 정규화
     fixTimeValues(args);
 
-    // Step 8: delete_file folder merge
+    // Step 8: delete_file 폴더 병합
     fixFolderMerge(name, args);
 
-    // Step 9: Dashboard filename/title auto-fix
+    // Step 9: 대시보드 파일명·제목 자동 보정
     fixDashboardFilename(name, args);
     fixDashboardTitle(name, args, fctx);
   }
@@ -110,7 +110,7 @@ function fixCharts(args, fctx) {
     }
   }
 
-  // Basic analysis is table-based only — strip any tql_path the model hallucinated (no .tql files exist)
+  // 기본 분석은 테이블 기반 전용 — 모델이 지어낸 tql_path 제거(.tql 파일 없음)
   if (fctx.skillName === 'BasicAnalysis' && typeof args.charts === 'string' && args.charts) {
     var basicList = jsonUnmarshal(args.charts);
     if (Array.isArray(basicList)) {
@@ -118,7 +118,7 @@ function fixCharts(args, fctx) {
       for (var bsi = 0; bsi < basicList.length; bsi++) {
         if (basicList[bsi].tql_path) {
           if (!basicList[bsi].tag) {
-            // recover tag from tql_path basename: "SILVER/open.tql" → "open"
+            // tql_path 파일명에서 태그 복구: "SILVER/open.tql" → "open"
             var bsBase = String(basicList[bsi].tql_path).split('/').pop().replace(/\.tql$/i, '');
             if (bsBase) basicList[bsi].tag = bsBase;
           }
@@ -133,7 +133,7 @@ function fixCharts(args, fctx) {
     }
   }
 
-  // charts: column "TIME" → "VALUE" (LLM mistake: plotting timestamps as values)
+  // charts: column "TIME" → "VALUE" — 타임스탬프를 값으로 그리는 LLM 실수 보정
   if (typeof args.charts === 'string' && args.charts.toUpperCase().indexOf('"TIME"') >= 0) {
     var chartArr = jsonUnmarshal(args.charts);
     if (Array.isArray(chartArr)) {
@@ -147,11 +147,11 @@ function fixCharts(args, fctx) {
     }
   }
 
-  // charts: tag field missing → auto fill from sibling charts or knownTags
+  // charts: tag 누락 → 다른 차트의 태그 또는 knownTags로 채움
   if (typeof args.charts === 'string' && args.charts) {
     var tagChartList = jsonUnmarshal(args.charts);
     if (Array.isArray(tagChartList)) {
-      // Collect known tags from charts that have them
+      // tag 있는 차트의 첫 태그 수집
       var firstTag = '';
       for (var ti = 0; ti < tagChartList.length; ti++) {
         if (tagChartList[ti].tag) { firstTag = tagChartList[ti].tag; break; }
@@ -173,7 +173,7 @@ function fixCharts(args, fctx) {
     }
   }
 
-  // charts: tag = column name (NAME/TIME/VALUE) → replace with actual tag from knownTags
+  // charts: tag = 컬럼명(NAME/TIME/VALUE) → knownTags의 실제 태그로 교체
   var COLUMN_NAMES = { 'NAME': true, 'TIME': true, 'VALUE': true, 'ROWNUM': true };
   if (typeof args.charts === 'string' && args.charts && fctx.knownTags && fctx.knownTags.length > 0) {
     var colList = jsonUnmarshal(args.charts);
@@ -193,7 +193,7 @@ function fixCharts(args, fctx) {
     }
   }
 
-  // charts: tag case correction → match knownTags original case
+  // charts: tag 대소문자 → knownTags 원본 표기로 보정
   if (typeof args.charts === 'string' && args.charts && fctx.knownTags && fctx.knownTags.length > 0) {
     var caseList = jsonUnmarshal(args.charts);
     if (Array.isArray(caseList)) {
@@ -216,7 +216,7 @@ function fixCharts(args, fctx) {
     }
   }
 
-  // charts: table field missing → auto insert
+  // charts: table 누락 → 자동 삽입
   if (typeof args.charts === 'string' && args.charts && fctx.inferTableName) {
     var inferred = fctx.inferTableName();
     if (inferred) {
@@ -265,7 +265,7 @@ function fixDashboardFilename(name, args) {
     fn = folder + '/' + fn;
   }
 
-  // Add timestamp for create operations
+  // 생성 작업이면 파일명에 타임스탬프 부착
   if (name === 'create_dashboard_with_charts') {
     var now = new Date();
     var ts = now.getFullYear() +
@@ -311,12 +311,12 @@ function fixDashboardTime(tc, fctx) {
   var startDt = fctx.timeStartDt || fctx.dataMinDt;
   var endDt = fctx.timeEndDt || fctx.dataMaxDt;
 
-  // Fallback: if requested range has no data, shift to data's MAX(TIME)
+  // 요청 기간에 데이터 없으면 데이터 MAX(TIME) 기준으로 이동
   var dataMaxMs = fctx.dataMaxDt ? new Date(fctx.dataMaxDt.replace(' ', 'T')).getTime() : 0;
   var dataMinMs = fctx.dataMinDt ? new Date(fctx.dataMinDt.replace(' ', 'T')).getTime() : 0;
 
   if (dataMaxMs > 0) {
-    // Check from args (LLM-provided) or fctx (parsed from query)
+    // 판정 기준 기간 — args(LLM 입력) 우선, 없으면 fctx(질문 파싱)
     var checkStartMs = 0;
     var checkEndMs = 0;
     if (args.time_start) checkStartMs = parseInt(String(args.time_start), 10);
@@ -368,7 +368,7 @@ function captureResults(tc, result, err, fctx) {
   }
 }
 
-// Capture knownTags + data time range from an expanded describe_table profile output.
+// describe_table profile 출력에서 knownTags·데이터 기간 수집
 function captureProfile(result, fctx) {
   if (!result || typeof result !== 'string') return;
   var tagsM = result.match(/^tags \(\d+\):\s*(.*)$/m);

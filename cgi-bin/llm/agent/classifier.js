@@ -1,4 +1,4 @@
-// Time range parsing and skill hints for multi-turn support
+// 질문 기간 해석·멀티턴용 스킬 힌트·히스토리 압축
 
 var TIME_RANGE_KO_RE = /(최근|지난)\s*(\d+)\s*(시간|분|일|주|개월|년)/;
 var TIME_RANGE_EN_RE = /(last|past|recent)\s+(\d+)\s*(hours?|minutes?|mins?|days?|weeks?|months?|years?)/i;
@@ -248,7 +248,7 @@ function timeHintText(kind, timeRange) {
   return ' 기간을 언급하지 않았으니 time_start/time_end는 넣지 마세요. MIN/MAX 등 사전 조회도 하지 마세요 — 도구가 전체 데이터를 자동 처리(폭에 맞춘 롤업)합니다.';
 }
 
-// Compact history: remove tool_calls and tool results, keep user + final assistant
+// 히스토리 압축 — tool_calls·도구 결과 제거, user·최종 assistant만 유지
 function compactHistory(messages) {
   var result = [];
   for (var i = 0; i < messages.length; i++) {
@@ -260,7 +260,7 @@ function compactHistory(messages) {
   return result;
 }
 
-// Infer table name from messages history
+// 메시지 이력에서 테이블명 추정
 function inferTableName(messages) {
   var knownTables = [];
   for (var i = 0; i < messages.length; i++) {
@@ -286,7 +286,7 @@ function inferTableName(messages) {
   if (knownTables.length === 0) return '';
   if (knownTables.length === 1) return knownTables[0];
 
-  // Find mentioned table in user/assistant messages
+  // 여러 개면 user·assistant 메시지에 언급된 테이블 선택
   var searchText = '';
   for (var i2 = 0; i2 < messages.length; i2++) {
     if (messages[i2].role === 'user' || messages[i2].role === 'assistant') {

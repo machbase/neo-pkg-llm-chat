@@ -3,7 +3,7 @@ try { if (typeof globalThis !== 'undefined' && typeof globalThis.process === 'un
 
 var config = require('./config/config');
 
-// --- Parse CLI arguments ---
+// --- CLI 인자 해석 ---
 var mode = 'cli';
 var configPath = 'configs/sys.json';
 var query = '';
@@ -23,7 +23,7 @@ if (typeof process !== 'undefined' && process.argv) {
   }
 }
 
-// --- Initialize ---
+// --- 초기화 ---
 var cfg = config.loadConfig(configPath);
 if (provider) cfg.provider = provider;
 if (model) cfg.model = model;
@@ -32,7 +32,7 @@ console.println('=== neo-pkg-llm JSH ===');
 console.println('Mode: ' + mode);
 console.println('Machbase: ' + config.machbaseURL(cfg));
 
-// --- Mode dispatch ---
+// --- 모드 분기 ---
 switch (mode) {
   case 'cli':
     runCLI(cfg, query);
@@ -44,7 +44,7 @@ switch (mode) {
     console.println('Unknown mode: ' + mode + ' (use cli or server)');
 }
 
-// --- CLI Mode ---
+// --- CLI 모드 ---
 function runCLI(cfg, initialQuery) {
   var { createLLM } = require('./llm/factory');
   var { createRegistry } = require('./tools/registry');
@@ -68,7 +68,7 @@ function runCLI(cfg, initialQuery) {
   }
 }
 
-// --- Server Mode (Gateway — no LLM in this process) ---
+// --- 서버 모드(게이트웨이 — 이 프로세스는 LLM 미사용) ---
 function runServerMode(cfg, serverPort) {
   serverPort = serverPort || cfg.server.port || '8884';
   console.println('Provider: ' + config.resolveProvider(cfg));

@@ -35,7 +35,7 @@ function listInstalledPackages() {
   return packages;
 }
 
-// Check package health via CGI endpoint (sync HTTP call)
+// CGI 엔드포인트로 패키지 상태 확인(동기 HTTP)
 function checkPackageHealth(baseURL, pkgName) {
   try {
     var url = baseURL + '/public/' + pkgName + '/cgi-bin/api/health';
@@ -62,7 +62,7 @@ function register(registry, mc) {
     fn: function (args, cb) {
       var packages = listInstalledPackages();
 
-      // Check health for each package via CGI (sync, fast)
+      // 패키지별 상태 확인(CGI, 동기)
       for (var p = 0; p < packages.length; p++) {
         var health = checkPackageHealth(mc.baseURL, packages[p].name);
         packages[p].service_status = health.status;
@@ -75,12 +75,12 @@ function register(registry, mc) {
         machbase: { status: 'unknown' },
       };
 
-      // 1) DB connection check
+      // 1) DB 연결 확인
       mc.querySQL('SELECT 1', '', '', '', function (err) {
         info.machbase.status = err ? 'disconnected' : 'connected';
         if (err) return cb(null, JSON.stringify(info, null, 2));
 
-        // 2) Server config via V$PROPERTY
+        // 2) 서버 설정(V$PROPERTY)
         mc.querySQL("SELECT NAME, VALUE FROM V$PROPERTY WHERE NAME IN ('BIND_IP_ADDRESS','PORT_NO','HANDLE_LIMIT','PROCESS_MAX_SIZE','TAG_PARTITION_COUNT','TAG_CACHE_ENABLE','TAG_CACHE_MAX_MEMORY_SIZE','RS_CACHE_ENABLE','RS_CACHE_MAX_MEMORY_SIZE')", '', '', '', function (err2, raw2) {
           if (!err2 && raw2) {
             try {
@@ -94,7 +94,7 @@ function register(registry, mc) {
             } catch (e) { /* ignore */ }
           }
 
-          // 3) Storage usage via V$STORAGE
+          // 3) 스토리지 사용량(V$STORAGE)
           mc.querySQL("SELECT * FROM V$STORAGE", '', '', '', function (err3, raw3) {
             if (!err3 && raw3) {
               try {
@@ -109,8 +109,8 @@ function register(registry, mc) {
               } catch (e) { /* ignore */ }
             }
 
-            // 4) Session info via V$SESSION
-            // USER_NAME intentionally NOT selected — session account names are sensitive.
+            // 4) 세션 정보(V$SESSION)
+            // USER_NAME 제외 — 세션 계정명은 민감 정보
             mc.querySQL("SELECT ID, CLIENT_TYPE, LOGIN_TIME FROM V$SESSION", '', '', '', function (err4, raw4) {
               if (!err4 && raw4) {
                 try {
@@ -126,8 +126,8 @@ function register(registry, mc) {
                 } catch (e) { /* ignore */ }
               }
 
-              // 5) Table count
-              // 소유가 아니라 접근 기준 — 세션 사용자 기준으로 DB 가 이미 걸러 준다.
+              // 5) 테이블 수
+              // 접근 가능 테이블 기준 — DB가 세션 사용자 기준으로 필터링
               mc.querySQL('SELECT COUNT(*) AS CNT FROM M$SYS_TABLES WHERE FLAG = 0', '', '', '', function (err5, raw5) {
                 if (!err5 && raw5) {
                   try {

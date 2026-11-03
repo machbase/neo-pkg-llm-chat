@@ -20,7 +20,7 @@ function runServer(cfg, port) {
     address: '0.0.0.0:' + port,
   });
 
-  // --- Relay helpers ---
+  // --- 중계 도우미 ---
 
   function relayError(ctx, route, err) {
     console.println('[Server] proxy ' + route + ' failed: ' + err.message);
@@ -28,7 +28,7 @@ function runServer(cfg, port) {
     ctx.json(502, { error: 'relay failed: ' + err.message });
   }
 
-  // --- Relay routes (proxy to machbase-neo) ---
+  // --- 중계 경로(machbase-neo 프록시) ---
 
   // Run 코드(SQL·TQL)의 테이블 이름 정규화 — 에이전트 도구와 같은 prepareSql, 호출자 토큰의 계정 기준
   // · 접두 없는 이름 → DB.소유자.테이블
@@ -88,7 +88,7 @@ function runServer(cfg, port) {
     }
   });
 
-  // --- Config API ---
+  // --- 설정 API ---
 
   var fs = require('fs');
   var pathMod = require('path');
@@ -130,7 +130,7 @@ function runServer(cfg, port) {
     if (fs.existsSync(fp)) fs.unlinkSync(fp);
   }
 
-  // ── Per-user UI prefs (favorites) ──
+  // ── 사용자별 UI 환경설정(즐겨찾기) ──
   // 파일명 문자 제한 — 경로 탈출 방지
   function safePrefName(name) {
     return String(name || '').replace(/[^A-Za-z0-9_.-]/g, '_') || 'sys';
@@ -377,7 +377,7 @@ function runServer(cfg, port) {
     gateway.handleWorkerConnection(socket);
   });
 
-  // --- Graceful shutdown ---
+  // --- 정상 종료 ---
   // 종료 훅은 HTTP 서버만 닫음 — 워커 정리는 stop.js(별도 프로세스, service.stop 가능) 담당
   var process3 = require('process');
   process3.addShutdownHook(function () {

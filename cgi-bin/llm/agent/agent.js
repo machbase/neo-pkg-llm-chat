@@ -9,6 +9,7 @@ var security = require('../tools/security');
 var { bareSelectCols } = require('../tools/sql'); // 버킷 GROUP BY + bare VALUE 실행 전 차단용
 var { parseAmbiguity, resolveTableRef, countRollups } = require('../tools/table_access'); // 테이블 이름 모호 → 사용자 선택 질문 전환용
 var docIntent = require('./doc_intent');
+var { autoDashboardCall } = require('./auto_dashboard');
 var { wallTime, utcLabel, serverOffset, userZone } = require('../machbase/timezone');
 
 var { createPipeline, internalUserMessage, isTruncatedToolCall, noteTruncation, TRUNCATION_CAP } = require('../guard/guard');
@@ -79,7 +80,7 @@ function createAgent(llmClient, registry, mc) {
     ),
   };
 
-  // onProgress(text) — called for each tool step
+  // onProgress(text) — 도구 step마다 호출
   agent.onProgress = null;
 
   // cb(err, finalAnswer)
@@ -139,6 +140,7 @@ function agentRun(agent, query, cb) {
   agent._truncStreak = 0;           // 성공 호출 없이 연달아 잘린 횟수
   agent._truncForceAnswer = false;  // 잘림 반복 → 도구 제거 답변 강제 플래그
   agent._truncNudged = false;       // 잘림 답변 강제 지시 1회 플래그
+  agent._autoDashboard = false;     // 고급 분석 대시보드 대체 생성 1회 플래그
   agent._tableClarify = null;       // 테이블 이름 모호 감지 결과 { table, candidates } — 설정되면 선택 질문으로 턴 종료
   if (agent.llm.type === 'ollama' && agent.llm.temperature !== 0) agent.llm.temperature = 0; // 이전 턴 재시도 온도 잔재 원복
   restoreNumPredict(agent);         // 이전 턴 잘림 재시도 출력 상한 잔재 원복
@@ -159,7 +161,7 @@ function buildReportTemplateList() {
   if (!list || list.length === 0) return '';
   var customs = [], builtins = [];
   for (var i = 0; i < list.length; i++) { (list[i].custom ? customs : builtins).push(list[i]); }
-  var ordered = customs.concat(builtins); // customs first so the first topic-match is the custom
+  var ordered = customs.concat(builtins); // 커스텀 우선 — 첫 주제 매칭이 커스텀이 되도록
   var out = '\n\n## 사용 가능한 리포트 템플릿 (template_id에 아래 ID를 정확히 사용)';
   out += '\n[필수 선택 규칙] 요청 주제에 맞는 ★커스텀이 있으면 빌트인보다 반드시 그 커스텀을 선택하세요.';
   out += '\n  예) "진동 리포트" 요청 + 커스텀 진동 템플릿 존재 → 빌트인 R-2-vibration이 아니라 그 커스텀을 사용.';
@@ -222,7 +224,7 @@ function applySkill(agent, activeSkill) {
   }
 }
 
-// cb() — no error, just signals ready
+// cb() — 에러 없음, 준비 완료 신호용
 function initMessages(agent, query, cb) {
   var skillRegistry = createSkillRegistry();
   var activeSkill = skillRegistry.classify(query);
@@ -234,7 +236,7 @@ function initMessages(agent, query, cb) {
   agent.fixerCtx.skillName = agent.skillName;
   agent.fixerCtx.isOllama = !!(agent.llm && agent.llm.type === 'ollama');
 
-  // Load document catalog directly from file (avoids async issues with registry.execute in WS context)
+  // 문서 카탈로그 파일 직접 로드 — WS 컨텍스트의 registry.execute 비동기 문제 회피
   try {
     var fs = require('fs');
     var catalogPath = require('path').join(process.cwd(), 'neo', 'catalog.md');
@@ -384,7 +386,7 @@ function restoreNumPredict(agent) {
   agent._baseNumPredict = null;
 }
 
-// Recursive async loop: cb(err, finalAnswer)
+// 재귀 비동기 루프 — cb(err, finalAnswer)
 function runLoop(agent, step, cb) {
   if (agent.cancelled) {
     console.println('[Agent] Cancelled before step ' + step);
@@ -416,6 +418,19 @@ function runLoop(agent, step, cb) {
   // · (b) 동일 호출 반복 차단 누적 교착(_repeatForceAnswer): 도구 제거
   // · (c) 도구 인자 잘림 반복(_truncForceAnswer): 도구 제거
   var _forceAnswer = (agent.llm.type === 'ollama' && (agent.dashboardFinalized || agent._repeatForceAnswer || agent._truncForceAnswer));
+  // 고급 분석이 도구 없이 끝나게 됐는데 저장된 차트만 있고 대시보드가 없음 → 그 차트로 대시보드 생성(1회)
+  // · 도구 제거 답변 강제(b·c)에선 모델이 대시보드 도구를 못 부름 — chart_omission 재유도도 이 상태에선 동작 안 함
+  if (_forceAnswer && agent.advanced && !agent.dashboardFinalized && !agent._autoDashboard) {
+    agent._autoDashboard = true;
+    var autoCall = autoDashboardCall(agent.messages);
+    if (autoCall) {
+      console.println('[Agent] Tools unavailable, saved charts without dashboard → creating dashboard from saved charts.');
+      agent.messages.push(createMessage('assistant', '', [autoCall]));
+      return executeToolCalls(agent, [autoCall], 0, step, function (newStep) {
+        runLoop(agent, newStep, cb);
+      });
+    }
+  }
   // 완성 후 강제답변 공회전 하드캡 — 차단 경로는 step 미소모라 maxSteps 백스톱 미도달
   // · 상한 초과 시 완성 도구 결과(URL 포함)로 결정론 종료
   if (_forceAnswer && agent.dashboardFinalized) {
@@ -494,6 +509,7 @@ function runLoop(agent, step, cb) {
       console.println('============================================================');
       if (agent.llm.type === 'ollama') agent.llm.temperature = 0; // 소진 → 온도 원복
       restoreNumPredict(agent);
+      if (agent.dashboardFinalized && agent._finalizeResult) return cb(null, agent._finalizeResult);
       return cb(null, '일시적으로 응답 생성에 실패했습니다(모델 오류). 같은 질문을 다시 시도해 주세요.');
     }
     agent._llmErrorRetries = 0; // 성공 → step별 재시도 카운터 리셋
@@ -506,15 +522,15 @@ function runLoop(agent, step, cb) {
     var msg = resp.message;
     msg = fix(msg, agent.fixerCtx);
 
-    // Pre-tool guards (may re-prompt LLM and replace msg)
+    // 도구 실행 전 가드 — LLM 재유도로 msg 교체 가능
     if (msg.toolCalls && msg.toolCalls.length > 0) {
       msg = agent.guard.runPreTool(agent, msg);
     }
 
-    // No tool calls → post-loop guards, then final answer
+    // 도구 호출 없음 → post-loop 가드 후 최종 답변
     if (!msg.toolCalls || msg.toolCalls.length === 0) {
       msg = agent.guard.runPostLoop(agent, msg);
-      // Post-loop guard may have re-prompted and got tool calls back
+      // post-loop 가드 재유도로 도구 호출이 돌아온 경우
       if (msg.toolCalls && msg.toolCalls.length > 0) {
         agent.messages.push(msg);
         return executeToolCalls(agent, msg.toolCalls, 0, step, function (newStep) {
@@ -649,7 +665,7 @@ function runLoop(agent, step, cb) {
       return cb(null, finalContent);
     }
 
-    // Execute tool calls sequentially
+    // 도구 호출 순차 실행
     agent.messages.push(msg);
     executeToolCalls(agent, msg.toolCalls, 0, step, function (newStep) {
       runLoop(agent, newStep, cb);
@@ -657,7 +673,7 @@ function runLoop(agent, step, cb) {
   });
 }
 
-// Execute tool calls one by one: doneCb(updatedStep)
+// 도구 호출 순차 실행 — doneCb(updatedStep)
 function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
   if (agent.cancelled) {
     console.println('[Agent] Cancelled during tool execution');
@@ -979,7 +995,7 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
     argSummary.push(keys[k] + '=' + (val.length > 80 ? val.substring(0, 80) + '...' : val));
   }
 
-  // Report tool call to UI
+  // 도구 호출 UI 표시
   if (agent.onProgress) {
     agent.onProgress('🛠️ Calling tool: **' + toolName + '**' + (argSummary.length > 0 ? '\n' + argSummary.join('\n') : ''));
   }
@@ -1013,7 +1029,7 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
     args._userQuery = String(agent.currentQuery);
   }
 
-  // Execute tool
+  // 도구 실행
   agent.registry.execute(toolName, args, function (execErr, result) {
     if (toolName === 'execute_sql_query') {
       agent._ranQuery = true; // 조회 시도함 → "선언 후 미실행" 넛지 대상에서 제외(에러여도 시도는 한 것)
@@ -1101,7 +1117,7 @@ function executeToolCalls(agent, toolCalls, idx, step, doneCb) {
     var amb = parseAmbiguity(result);
     if (amb) agent._tableClarify = amb;
 
-    // Report result to UI
+    // 도구 결과 UI 표시
     if (agent.onProgress) {
       // 결과가 마크다운 표로 시작하면 표만 펜스 없이·자르지 않고 전송(UI가 표로 렌더)
       // · 표 뒤의 모델용 지시문·전체 이름 목록은 제외
@@ -1545,8 +1561,8 @@ function reflowMarkdown(s) {
         var prev = out[out.length - 1];
         if (prev && prev.trim() && !/^\s*(\d{1,2}[.)]|[-*])\s/.test(prev)) out.push('');
       }
-      // ④ 번호 항목에 바로 붙은 불릿은 하위 항목으로 3칸 들여쓰기 (빈 줄로 떨어진 불릿은 별개 목록으로 존중,
-      //    단 이미 들여쓴 하위 불릿의 연속이면 빈 줄 하나 건너서도 이어 들여쓴다)
+      // ④ 번호 항목에 바로 붙은 불릿은 하위 항목으로 3칸 들여쓰기
+      // · 빈 줄로 떨어진 불릿은 별개 목록으로 유지, 단 이미 들여쓴 하위 불릿의 연속이면 빈 줄 하나 건너도 이어 들여씀
       if (/^[-*] /.test(part)) {
         var last = out[out.length - 1];
         if (last !== undefined && (/^\d{1,2}[.)] /.test(last) || /^\s{2,}[-*] /.test(last) ||

@@ -102,3 +102,4 @@ weight: 60
 
 - [前へ：HTTP APIとWebSocket]({{< relref "http-api-and-websocket" >}})
 - [目次に戻る]({{< relref "/" >}})
+- [次へ：リリースノート]({{< relref "release-notes" >}})

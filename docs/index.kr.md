@@ -87,6 +87,7 @@ Machbase Neo 좌측 사이드 패널에는 사용 가능한 패키지 목록이 
 - [기술 참고](./technical-reference.kr.md)
 - [HTTP API와 WebSocket](./http-api-and-websocket.kr.md)
 - [문제 해결](./troubleshooting.kr.md)
+- [릴리스 노트](./release-notes.kr.md)
 
 ## 문서 이동
 

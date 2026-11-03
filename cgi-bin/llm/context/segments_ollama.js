@@ -1,4 +1,4 @@
-// Ollama-optimized compact segments (reduced token count for small models)
+// Ollama용 압축 세그먼트 — 소형 모델 토큰 절감용
 
 var OllamaSegRole = '## Role\n' +
   'You are Machbase Neo AI assistant.\n' +

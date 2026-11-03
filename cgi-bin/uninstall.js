@@ -28,7 +28,7 @@ const method = (process.env.get('REQUEST_METHOD') || 'GET').toUpperCase();
 if (method !== 'POST') {
   reply({ ok: false, reason: 'method not allowed' });
 } else {
-  // Optional ?name=xxx for cleaning up old/stale service registrations
+  // 선택 ?name=xxx — 잔존 서비스 등록 정리용
   const SERVICE_NAME = getQueryParam('name') || DEFAULT_SERVICE_NAME;
 
   function doUninstall() {
@@ -46,9 +46,9 @@ if (method !== 'POST') {
     });
   }
 
-  // Stop first (uninstall requires the service to be stopped on some neo versions).
+  // 먼저 중지 — 일부 neo 버전은 중지 상태에서만 uninstall 가능
   service.stop(SERVICE_NAME, (stopErr) => {
-    // Ignore stop errors (service might already be stopped or not found) and proceed.
+    // stop 오류 무시(이미 중지·미등록 가능) 후 진행
     doUninstall();
   });
 }

@@ -3,19 +3,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentUser } from "../utils/auth";
 import { fetchFavorites, saveFavorites } from "../services/prefsApi";
 
-// Per-user "자주 쓰는 질문" favorites.
-//  - Logged-in user → stored server-side at prefs/{user}.json (cross-device,
-//    isolated per user) via /api/prefs.
-//  - No logged-in user → localStorage fallback (dev / pre-login).
-// Favorites saved by the earlier localStorage-only version are migrated up to
-// the server once, on first load.
+// 사용자별 "자주 쓰는 질문" 즐겨찾기
+// · 로그인 → /api/prefs 경유 서버 prefs/{user}.json 저장(기기 간 공유·사용자별 격리)
+// · 비로그인 → localStorage 대체(개발·로그인 전)
+// · 첫 로드 때 브라우저 저장소에만 있던 즐겨찾기를 서버로 1회 이전
 
 export interface FavoriteItem {
   id: string;
   prompt: string;
 }
 
-const STORAGE_KEY = "neo-llm-favorites"; // legacy/local fallback key
+const STORAGE_KEY = "neo-llm-favorites"; // 로컬 대체 저장 키
 
 let idSeq = 0;
 const genId = (): string => `fav-${Date.now()}-${(idSeq += 1)}`;
@@ -51,7 +49,7 @@ export function useFavorites() {
     setFavorites(list);
   }, []);
 
-  // Resolve user + initial load (once).
+  // 사용자 확인 + 초기 로드(1회)
   useEffect(() => {
     const user = getCurrentUser();
     userRef.current = user;
@@ -63,7 +61,7 @@ export function useFavorites() {
           const server = sanitize(await fetchFavorites());
           if (cancelled) return;
           if (server.length === 0) {
-            // Migrate favorites from the previous localStorage-only version.
+            // 브라우저 저장소에만 있던 즐겨찾기를 서버로 이전
             const local = readLocal();
             if (local.length > 0) {
               setBoth(local);
@@ -79,8 +77,7 @@ export function useFavorites() {
           }
           setBoth(server);
         } catch (e) {
-          // Server unreachable — fall back to local so the UI still works,
-          // but don't flip loadedRef until we've shown something.
+          // 서버 불통 — 로컬로 대체해 UI 유지, loadedRef는 표시 후 전환
           console.warn("[favorites] load failed, using local:", e);
           if (!cancelled) setBoth(readLocal());
         }
@@ -101,7 +98,7 @@ export function useFavorites() {
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
       } catch {
-        /* storage full / unavailable — non-fatal */
+        /* 저장소 가득 참·사용 불가 — 무시 */
       }
       return;
     }
@@ -114,7 +111,7 @@ export function useFavorites() {
     }, SAVE_DEBOUNCE_MS);
   }, []);
 
-  // Flush a pending debounced save on unmount.
+  // 언마운트 시 대기 중인 디바운스 저장 즉시 실행
   useEffect(() => {
     return () => {
       if (saveTimerRef.current) {
@@ -138,7 +135,7 @@ export function useFavorites() {
     const text = prompt.trim();
     if (!text) return;
     const prev = favoritesRef.current;
-    if (prev.some((f) => f.prompt === text)) return; // de-dup exact matches
+    if (prev.some((f) => f.prompt === text)) return; // 완전 일치 중복 제외
     apply([...prev, { id: genId(), prompt: text }]);
   }, [apply]);
 

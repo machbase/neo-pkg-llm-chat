@@ -12,7 +12,7 @@ function register(registry, mc) {
       try {
         var neoDir = findNeoDir();
         if (!neoDir) return cb(null, 'Error: neo documentation directory not found');
-        // Use pre-built catalog.md if available (scanDocs can cause Go panic in JSH)
+        // 사전 생성 catalog.md 우선 — JSH에서 scanDocs는 Go panic 가능
         var catalogPath = path.join(neoDir, 'catalog.md');
         if (fs.existsSync(catalogPath)) {
           return cb(null, fs.readFileSync(catalogPath, 'utf8'));
@@ -198,7 +198,7 @@ function register(registry, mc) {
           return cb(null, sectionIndex(filePath, sections, 'Section "' + kw + '" not found.'));
         }
 
-        // No section → small doc returns whole; large doc returns the section index (no body hidden).
+        // section 미지정 → 작은 문서는 전문, 큰 문서는 섹션 인덱스 반환
         var full = '';
         for (var m = 0; m < sections.length; m++) full += '## ' + sections[m].title + '\n' + sections[m].content + '\n\n';
         // 전문에도 주요 섹션 목록 부착 — 개념질문 답변이 여러 주제를 반영하도록
@@ -293,7 +293,7 @@ function cleanFilePath(raw) {
   // 경로 탈출·절대 경로 거부 — 문서 도구로 설정 파일(비밀번호·API 키) 열람 방지
   if (p.indexOf('..') >= 0) return '';
   if (p.charAt(0) === '/') return '';
-  if (/^[A-Za-z]:/.test(p)) return ''; // Windows drive-letter absolute path
+  if (/^[A-Za-z]:/.test(p)) return ''; // Windows 드라이브 문자 절대 경로
   return p;
 }
 
@@ -310,7 +310,7 @@ function resolveDocPath(neoDir, filePath) {
       if (p && p.split('/').pop() === base) return p;
     }
   } catch (e) {}
-  return filePath; // no match — return original (caller will report not found)
+  return filePath; // 미매치 — 입력 그대로(not found 보고는 호출측)
 }
 
 
@@ -357,7 +357,7 @@ function scanDocs(baseDir, relParts) {
   return out;
 }
 
-// --- search_documents helpers ---
+// --- search_documents 헬퍼 ---
 
 // catalog.md 표를 {path,title,keywords,summary} 행 배열로 파싱
 function parseCatalogRows(text) {
@@ -562,7 +562,7 @@ function parseSections(content) {
   var lines = String(content).replace(/\r\n/g, '\n').split('\n');
   var sections = [];
   var current = null;
-  var inFence = false; // track ``` code blocks so '## ...' inside a SQL example isn't a fake section
+  var inFence = false; // ``` 코드 블록 추적 — 예제 속 '## ...'의 섹션 오인 방지
   for (var i = 0; i < lines.length; i++) {
     if (/^```/.test(lines[i])) inFence = !inFence;
     if (!inFence && lines[i].match(/^#{1,3}\s/)) {
@@ -606,9 +606,9 @@ function parseSubsections(sections) {
   return subs;
 }
 
-// --- section-targeted retrieval helpers (used by get_full_document_content) ---
-var SECTION_CAP = 8000;  // per-section cap
-var TOTAL_CAP = 16000;   // overall ceiling for any single tool result
+// --- 섹션 지정 조회 헬퍼(get_full_document_content용) ---
+var SECTION_CAP = 8000;  // 섹션당 상한
+var TOTAL_CAP = 16000;   // 도구 결과 1건 전체 상한
 var EXCERPT_WIN = 700;   // 매치 앞뒤 발췌 폭
 var EXCERPT_MAX = 3;     // 발췌 최대 매치 수
 var INDEX_CAP = 60;      // 섹션 목록 상한(목록 자체가 컨텍스트를 밀어내지 않게)
@@ -654,17 +654,17 @@ function capSection(body) {
 
 function escapeRegex(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
-// Rank a section title against the keyword: lower = better match; 99 = no match.
+// 키워드 대비 섹션 제목 순위 — 낮을수록 일치, 99 = 미일치
 function matchScore(title, kw) {
   var t = title.toLowerCase();
-  if (t === kw) return 0;                                        // exact title
-  if (t.indexOf(kw) === 0) return 1;                            // title starts with kw
-  if (new RegExp('\\b' + escapeRegex(kw) + '\\b').test(t)) return 2; // whole-word match
-  if (t.indexOf(kw) >= 0) return 3;                            // substring
+  if (t === kw) return 0;                                        // 제목 정확 일치
+  if (t.indexOf(kw) === 0) return 1;                            // kw로 시작
+  if (new RegExp('\\b' + escapeRegex(kw) + '\\b').test(t)) return 2; // 단어 단위 일치
+  if (t.indexOf(kw) >= 0) return 3;                            // 부분 문자열
   return 99;
 }
 
-// Emit one or more sections (each capped), with a leading note, stopping at totalCap.
+// 섹션 출력(섹션별 캡, 앞에 안내문) — totalCap 도달 시 중단
 function emitSections(secs, note, totalCap) {
   var ceil = totalCap || TOTAL_CAP;
   var out = note ? note + '\n\n' : '';
@@ -721,7 +721,7 @@ function mainTopicsFooter(sections) {
     '\n(질문과 밀접한 3개 정도의 내용을 답변에 자연스럽게 반영하세요. 섹션 제목·도구 이름은 답변에 노출하지 마세요.)';
 }
 
-// When a doc is too large to return whole, list its section titles so the model can target one.
+// 전문 반환하기 큰 문서의 섹션 제목 목록 — 모델의 section= 지정용
 function sectionIndex(filePath, sections, prefix) {
   // 파일 경로 미출력 — 약한 모델이 문서 링크로 되풀이함
   // · h4~h6도 들여쓰기로 노출 — 큰 상위 섹션의 SECTION_CAP 잘림 회피용

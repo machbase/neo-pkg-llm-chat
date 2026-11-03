@@ -4,7 +4,7 @@ import { RenderMd } from "./RenderMd";
 import { ErrorBanner } from "./ErrorBanner";
 import Icon from "../common/Icon";
 
-/** 24-hour wall clock, e.g. "14:22". */
+/** 24시간제 시각(예: "14:22") */
 const formatClock = (ts: number) =>
     new Date(ts).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
 

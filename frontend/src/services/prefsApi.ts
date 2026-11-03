@@ -2,11 +2,9 @@ import type { FavoriteItem } from "../hooks/useFavorites";
 import { getApiBase } from "./baseUrl";
 import { authHeaders } from "../utils/auth";
 
-// Per-user UI preferences (favorites), stored server-side at prefs/{user}.json.
-// The server derives the user from the request token, so no name is sent.
-// Mutating calls use POST + Content-Type 'text/plain' so the browser treats them
-// as "simple" requests (no CORS preflight) — the LLM server has no options()
-// handler and reads the raw body string + JSON.parses it (same as settingsApi).
+// 사용자별 UI 설정(즐겨찾기) — 서버 prefs/{user}.json 저장
+// · 사용자는 서버가 요청 토큰으로 판별 → 이름 미전송
+// · 변경 요청은 POST + 'text/plain' — CORS preflight 회피(서버에 options() 핸들러 없음, 본문 문자열 JSON.parse)
 
 interface PrefsResponse {
     success: boolean;

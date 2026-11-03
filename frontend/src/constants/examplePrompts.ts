@@ -1,4 +1,4 @@
-// Example prompts grouped by category for the empty-state suggestions panel.
+// 빈 화면 추천 패널용 카테고리별 예시 질문
 
 interface PromptItem {
   id: string;

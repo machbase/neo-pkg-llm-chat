@@ -87,6 +87,7 @@ The agentic loop is the core execution engine of this package. It classifies the
 - [Technical Reference](./technical-reference.en.md)
 - [HTTP API and WebSocket](./http-api-and-websocket.en.md)
 - [Troubleshooting](./troubleshooting.en.md)
+- [Release Notes](./release-notes.en.md)
 
 ## Navigation
 

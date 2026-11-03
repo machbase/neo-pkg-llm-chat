@@ -1,13 +1,13 @@
 /**
- * Message represents a chat message shared across all LLM providers.
+ * 전 LLM 프로바이더 공통 채팅 메시지
  * @typedef {Object} Message
  * @property {string} role - "system" | "user" | "assistant" | "tool"
- * @property {string} content - text content
- * @property {ToolCall[]} [toolCalls] - tool calls (assistant only)
+ * @property {string} content - 텍스트 내용
+ * @property {ToolCall[]} [toolCalls] - 도구 호출(assistant 전용)
  */
 
 /**
- * ToolCall represents a function call requested by the LLM.
+ * LLM이 요청한 함수 호출
  * @typedef {Object} ToolCall
  * @property {ToolCallFunction} function
  */
@@ -19,7 +19,7 @@
  */
 
 /**
- * ChatResponse is the unified response type for all LLM providers.
+ * 전 LLM 프로바이더 공통 응답 형식
  * @typedef {Object} ChatResponse
  * @property {string} model
  * @property {Message} message

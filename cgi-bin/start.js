@@ -1,7 +1,6 @@
 'use strict';
 
-// CGI start endpoint — registers the service (with enable:true for boot autostart)
-// if missing, then starts it. Mirrors scripts/start.js so manual POST is one call.
+// CGI start — 서비스 미등록 시 등록(enable:true, 부팅 자동 시작) 후 시작
 
 const process = require('process');
 const path = require('path');
@@ -28,7 +27,7 @@ if (method !== 'POST') {
 } else {
   service.status(SERVICE_NAME, (statusErr, info) => {
     if (statusErr || !info) {
-      // not registered → install (enable:true for boot autostart) then start
+      // 미등록 → 설치(enable:true, 부팅 자동 시작) 후 시작
       service.install({
         name: SERVICE_NAME,
         enable: true,
@@ -49,7 +48,7 @@ if (method !== 'POST') {
       });
       return;
     }
-    // already registered → start (no-op if already running)
+    // 등록됨 → 시작(실행 중이면 무동작)
     service.start(SERVICE_NAME, (startErr) => {
       if (startErr) {
         reply({ ok: false, reason: startErr.message || String(startErr) });

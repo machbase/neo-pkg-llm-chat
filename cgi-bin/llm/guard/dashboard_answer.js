@@ -1,10 +1,9 @@
 var { rePromptNoToolCalls } = require('./guard');
 var { createMessage } = require('../llm/types');
 
-// 대시보드가 성공적으로 생성됐는데(URL 발급) 최종 답변이 그 URL을 빠뜨린 경우를 구제.
-// 증상: 약한 모델이 초반 compile 실패(예: candlestick 거부) 등으로 혼란에 빠져 "파일 확인 도구가 없다/사과/재확인 요청"
-// 같은 헛소리로 끝냄 → 사용자는 멀쩡히 만들어진 대시보드 링크를 못 받음.
-// 대응: (1) 실제 URL+차트수를 박아 한 번 재유도 (2) 그래도 URL이 빠지면 결정론적으로 링크를 덧붙여 보장.
+// 대시보드 생성(URL 발급) 후 최종 답변에 그 URL이 빠진 경우 보정
+// · 1차: 실제 URL·차트 수를 넣어 재유도
+// · 2차: 그래도 빠지면 답변 끝에 링크 덧붙임
 var DashboardAnswerGuard = {
   name: 'dashboard_answer',
   check: function (agent, msg) {
@@ -22,7 +21,7 @@ var DashboardAnswerGuard = {
       '[대시보드 열기](' + url + ') 마크다운 링크를 포함해 최종 답변을 작성하세요.';
     var newMsg = rePromptNoToolCalls(agent, msg, hint);
 
-    // 재유도 후에도 URL 누락(또 혼란) → 결정론적으로 링크 보장. (도구를 다시 부르면 루프가 처리하므로 손대지 않음)
+    // 재유도 후에도 URL 누락 → 링크 덧붙임(도구 호출이면 루프가 처리하므로 그대로)
     if ((!newMsg.toolCalls || newMsg.toolCalls.length === 0) && (newMsg.content || '').indexOf(url) < 0) {
       var base = (newMsg.content || '').trim();
       return createMessage('assistant', (base ? base + '\n\n' : '') + '[대시보드 열기](' + url + ')');

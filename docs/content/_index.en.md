@@ -83,6 +83,7 @@ The agentic loop is the core execution engine of this package. It classifies the
 - [Technical Reference]({{< relref "technical-reference" >}})
 - [HTTP API and WebSocket]({{< relref "http-api-and-websocket" >}})
 - [Troubleshooting]({{< relref "troubleshooting" >}})
+- [Release Notes]({{< relref "release-notes" >}})
 
 ## Navigation
 

@@ -14,7 +14,9 @@ const entries: Record<string, string> = {
 
 const entry = process.env.VITE_ENTRY || "index";
 
+// base './' — public 자산(폰트) 링크를 패키지 하위 경로 기준 상대경로로 출력
 export default defineConfig({
+    base: "./",
     plugins: [react(), tailwindcss(), viteSingleFile()],
     build: {
         rollupOptions: {
