@@ -31,5 +31,5 @@ Without writing SQL, you can explore tables, view tag lists, analyze data, and g
 
 ## Documentation
 
-- [User Guide](https://machbase.github.io/neo-pkg-llm-chat/) (English · 한국어 · 日本語)
+- [User Guide](https://machbase.github.io/neo-pkg-llm-chat/)
 - [Release Notes](https://machbase.github.io/neo-pkg-llm-chat/release-notes/)
