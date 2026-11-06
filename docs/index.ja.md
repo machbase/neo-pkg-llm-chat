@@ -82,12 +82,14 @@ Machbase Neo左側のサイドパネルには、利用可能なパッケージ�
 
 ## ドキュメント一覧
 
-- [初期設定](./first-setup.ja.md)
-- [Chatの使い方](./chat-usage.ja.md)
-- [技術リファレンス](./technical-reference.ja.md)
-- [HTTP APIとWebSocket](./http-api-and-websocket.ja.md)
-- [トラブルシューティング](./troubleshooting.ja.md)
-- [リリースノート](./release-notes.ja.md)
+| ドキュメント | 内容 |
+| :--- | :--- |
+| [初期設定](./first-setup.ja.md) | **初めての方はここから** — APIトークンの発行・Neo接続・API KeyとEndpoint・モデルの登録・保存 |
+| [Chatの使い方](./chat-usage.ja.md) | モデルの選択・質問の送信・お気に入り・自動モード切り替え・代表的な依頼の例 |
+| [技術リファレンス](./technical-reference.ja.md) | 組み込みツールごとの動作 — データ照会・TQL・予測・ダッシュボード・レポート・マニュアル検索 |
+| [HTTP APIとWebSocket](./http-api-and-websocket.ja.md) | HTTP APIエンドポイント・WebSocketプロトコル |
+| [トラブルシューティング](./troubleshooting.ja.md) | 症状別の原因と対処 — トークン・接続・応答の遅延・レポートのリンクなど |
+| [リリースノート](./release-notes.ja.md) | バージョンごとの変更点・更新方法 |
 
 ## ページ移動
 

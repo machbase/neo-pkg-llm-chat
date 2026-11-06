@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { MachbaseConfig } from '../types/settings'
 import type { TokenCheck } from '../services/settingsApi'
 import Icon from '../components/common/Icon'
+import { TokenHowTo } from './TokenHowTo'
 
 interface Props {
     config: MachbaseConfig
@@ -112,6 +113,7 @@ export function MachbaseSection({
                         </button>
                     </div>
                 )}
+                <TokenHowTo defaultOpen={!savedUser} />
             </div>
         </div>
     )

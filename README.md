@@ -1,4 +1,6 @@
-# neo-pkg-llm-chat v4.0.1
+# neo-pkg-llm-chat v4.0.2
+
+[English](README.md) | [한국어](README.kr.md) | [日本語](README.ja.md)
 
 An LLM-powered chat package for querying and analyzing time-series data in Machbase Neo using natural language
 
@@ -31,5 +33,5 @@ Without writing SQL, you can explore tables, view tag lists, analyze data, and g
 
 ## Documentation
 
-- [User Guide](https://machbase.github.io/neo-pkg-llm-chat/)
+- [User Guide](https://machbase.github.io/neo-pkg-llm-chat/) (English · 한국어 · 日本語)
 - [Release Notes](https://machbase.github.io/neo-pkg-llm-chat/release-notes/)

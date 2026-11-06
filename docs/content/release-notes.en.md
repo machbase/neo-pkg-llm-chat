@@ -9,32 +9,48 @@ Main changes in each version and how to update.
 
 | Current version | How to update | After updating |
 | :--- | :--- | :--- |
-| 4.0.0 | Update from the package list | Nothing |
+| 4.0.0 – 4.0.1 | Update from the package list | Nothing |
 | 2.0.0 – 3.3.1 | Update from the package list | Register an API token in Settings (see [First Setup]({{< relref "first-setup" >}})) |
 | 1.0.x | Uninstall the package, then install it again | Enter all Settings again |
 
-- Machbase Neo 8.7.3 or later is required. Check your Neo version before updating.
-- Your existing settings (providers, models, connection) and favorites are kept.
-- Chat is unavailable for a few seconds during the update, and an answer in progress stops.
-- After the update, reload any open LLM Chat screen.
-- 1.0.x has a different internal structure, so reinstall it instead of updating.
+- Machbase Neo 8.7.3 or later required — check your Neo version before updating
+- Existing settings (providers, models, connection) and favorites kept after the update
+- Chat unavailable for a few seconds during the update — an answer in progress stops
+- After updating from 4.0.1 or earlier, if the screen has not changed, right-click inside the LLM Chat screen → **Reload frame** — needed separately for each address you use (`127.0.0.1`, `192.168.x.x`, etc.)
+- 1.0.x: reinstall instead of updating — different internal structure
+
+## 4.0.2 (2026-11-06)
+
+- **How to issue a token** guide with step-by-step pictures added to the Settings screen
+- **Screen refreshes itself after updates**: From the next update on, an old cached screen reopens as the new version automatically
+- **Documentation updates**
+  - Korean and Japanese README added
+  - Contents summary for each document added to the manual index
 
 ## 4.0.1 (2026-11-03)
 
-- **More reliable dashboards**: Advanced analysis dashboards no longer stop halfway.
-- **Closed networks**: The screen displays correctly without an internet connection.
-- **More reliable install and update**: Files from the previous version are cleaned up after an update, and the service no longer runs twice.
+- **More reliable dashboards**: Fixed advanced analysis dashboards stopping halfway
+- **Closed networks**: Screen displays correctly without an internet connection
+- **More reliable install and update**
+  - Files from the previous version cleaned up after an update
+  - Fixed the service running twice
 - **Release notes** page added
 - New package icon
 
 ## 4.0.0 (2026-10-26)
 
-- **API token authentication**: Connects with a per-account API token instead of the Neo console login. Data queries run with the token account's permissions.
-- **Time zone**: Times in reports, query results, and charts are shown in the browser's time zone.
-- **Better answers**: Answers from Ollama models also show the query basis actually applied (unit, period, tags).
-- **Improved security check**: Instructions to change or delete data are blocked, while questions about them are answered.
+- **API token authentication**
+  - Connection with a per-account API token instead of the Neo console login
+  - Data queries run with the token account's permissions
+- **Time zone**: Times in reports, query results, and charts shown in the browser's time zone
+- **Better answers**: Query basis actually applied (unit, period, tags) shown with Ollama model answers
+- **Improved security check**
+  - Instructions to change or delete data blocked
+  - Questions about them answered
 - **Japanese documentation** added
-- **Timer feature removed**: Creating Neo timers from chat has been removed. Questions about timers are answered with the manual.
+- **Timer feature removed**
+  - Creating Neo timers from chat removed
+  - Questions about timers answered with the manual
 - Minimum required Neo version changed to 8.7.3
 
 ## 3.3.1 (2026-09-10)

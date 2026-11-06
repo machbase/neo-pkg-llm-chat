@@ -25,6 +25,8 @@ Queries, charts, dashboards, and reports all run with the permissions of that to
 
    ![Copy the Neo API token](./images/neo-token-copy.png)
 
+The same steps are also shown with pictures under **토큰 발급 방법** (How to issue a token) below the API Token field on the LLM Chat Settings screen.
+
 > The token string is shown only once, when it is issued. If you lose it, issue a new token.  
 > The token must **belong to the account logged in to the console**. A token of another account is rejected during verification.  
 > Required version: Machbase Neo 8.7.3 or later

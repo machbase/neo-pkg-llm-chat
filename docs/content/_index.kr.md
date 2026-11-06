@@ -78,12 +78,14 @@ Machbase Neo 좌측 사이드 패널에는 사용 가능한 패키지 목록이 
 
 ## 문서 목록
 
-- [첫 설정]({{< relref "first-setup" >}})
-- [Chat 사용 방법]({{< relref "chat-usage" >}})
-- [기술 참고]({{< relref "technical-reference" >}})
-- [HTTP API와 WebSocket]({{< relref "http-api-and-websocket" >}})
-- [문제 해결]({{< relref "troubleshooting" >}})
-- [릴리스 노트]({{< relref "release-notes" >}})
+| 문서 | 내용 |
+| :--- | :--- |
+| [첫 설정]({{< relref "first-setup" >}}) | **처음이라면 여기부터** — API 토큰 발급 · Neo 연결 · API Key와 Endpoint · 모델 등록 · 저장 |
+| [Chat 사용 방법]({{< relref "chat-usage" >}}) | 모델 선택 · 질문 보내기 · 즐겨찾기 · 자동 모드 전환 · 대표 요청 예시 |
+| [기술 참고]({{< relref "technical-reference" >}}) | 내장 도구별 동작 — 데이터 조회 · TQL · 예측 · 대시보드 · 리포트 · 매뉴얼 검색 |
+| [HTTP API와 WebSocket]({{< relref "http-api-and-websocket" >}}) | HTTP API 엔드포인트 · WebSocket 프로토콜 |
+| [문제 해결]({{< relref "troubleshooting" >}}) | 증상별 원인과 조치 — 토큰 · 연결 · 응답 지연 · 리포트 링크 등 |
+| [릴리스 노트]({{< relref "release-notes" >}}) | 버전별 변경 사항 · 업데이트 방법 |
 
 ## 문서 이동
 

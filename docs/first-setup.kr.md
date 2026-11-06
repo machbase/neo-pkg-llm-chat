@@ -25,6 +25,8 @@ LLM Chat은 Machbase Neo **API 토큰**으로 데이터베이스에 접속합니
 
    ![Neo API 토큰 복사](./images/neo-token-copy.png)
 
+같은 단계는 LLM Chat Settings 화면의 API Token 칸 아래 **토큰 발급 방법**에서도 그림으로 볼 수 있습니다.
+
 > 토큰 문자열은 발급할 때 한 번만 표시됩니다. 잃어버렸다면 새로 발급합니다.  
 > 토큰은 **콘솔에 로그인한 계정의 토큰**이어야 합니다. 다른 계정의 토큰은 검증 단계에서 거부됩니다.  
 > 필요 버전: Machbase Neo 8.7.3 이상

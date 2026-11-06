@@ -851,6 +851,140 @@ pre {
     color: var(--color-on-surface-disabled);
 }
 
+/* ─── 토큰 발급 방법 (Machbase connection) ─── */
+.token-howto-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--spacing-6);
+    height: var(--size-control-height-sm);
+    padding: 0 var(--spacing-10) 0 var(--spacing-8);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-input);
+    color: var(--color-on-surface);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-medium);
+    cursor: pointer;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.token-howto-toggle:hover {
+    background: var(--color-surface-hover);
+    border-color: var(--color-on-surface-disabled);
+}
+
+.token-howto-toggle[aria-expanded="true"] {
+    border-color: var(--color-primary-hover);
+}
+
+/* 도움말 아이콘만 강조색 */
+.token-howto-toggle > .material-symbols-outlined:first-child {
+    color: var(--color-primary-hover);
+}
+
+.token-howto-steps {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: var(--spacing-12);
+    margin-top: var(--spacing-10);
+    padding: var(--spacing-12) var(--spacing-16);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface-alt);
+}
+
+.token-howto-step {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-8);
+    min-width: 0;
+}
+
+.token-howto-text {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--spacing-8);
+    font-size: var(--font-size-sm);
+    line-height: 18px;
+    color: var(--color-on-surface-secondary);
+    overflow-wrap: anywhere;
+}
+
+.token-howto-num {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 var(--spacing-4);
+    border-radius: var(--radius-sm);
+    background: var(--color-primary);
+    color: var(--color-on-primary);
+    font-family: var(--font-family-mono);
+    font-size: 11px;
+    font-weight: var(--font-weight-bold);
+}
+
+.token-howto-thumb {
+    margin-top: auto;
+    padding: 0;
+    overflow: hidden;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border-medium);
+    background: var(--color-surface);
+    cursor: zoom-in;
+}
+
+.token-howto-thumb img {
+    display: block;
+    width: 100%;
+    height: 150px;
+    object-fit: contain;
+}
+
+/* 크게 보기 — body로 포털 */
+.token-howto-viewer {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--spacing-12);
+    padding: var(--spacing-24);
+    background: rgba(0, 0, 0, 0.72);
+}
+
+.token-howto-viewer > img {
+    max-width: 92vw;
+    max-height: 78vh;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border);
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.55);
+}
+
+.token-howto-viewer-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-10);
+    max-width: 92vw;
+    padding: var(--spacing-8) var(--spacing-12);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface-elevated);
+    color: var(--color-on-surface);
+    font-size: var(--font-size-base);
+}
+
+.token-howto-count {
+    flex-shrink: 0;
+    font-family: var(--font-family-mono);
+    font-size: var(--font-size-sm);
+    color: var(--color-on-surface-tertiary);
+}
+
 /*
  * .page-body-full — flex 컨테이너 (테이블/리스트처럼 남은 높이를 채워야 할 때)
  * 패딩은 .page-body와 동일.

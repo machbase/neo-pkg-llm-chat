@@ -82,12 +82,14 @@ The agentic loop is the core execution engine of this package. It classifies the
 
 ## Documents
 
-- [First Setup](./first-setup.en.md)
-- [How to Use Chat](./chat-usage.en.md)
-- [Technical Reference](./technical-reference.en.md)
-- [HTTP API and WebSocket](./http-api-and-websocket.en.md)
-- [Troubleshooting](./troubleshooting.en.md)
-- [Release Notes](./release-notes.en.md)
+| Document | Contents |
+| :--- | :--- |
+| [First Setup](./first-setup.en.md) | **Start here** — API token · Neo connection · API keys and endpoints · model registration · saving |
+| [How to Use Chat](./chat-usage.en.md) | Model selection · sending questions · favorites · automatic mode switching · example requests |
+| [Technical Reference](./technical-reference.en.md) | How each built-in tool works — data queries · TQL · forecasting · dashboards · reports · manual search |
+| [HTTP API and WebSocket](./http-api-and-websocket.en.md) | HTTP API endpoints · WebSocket protocol |
+| [Troubleshooting](./troubleshooting.en.md) | Symptoms, causes, and fixes — tokens · connection · slow responses · report links |
+| [Release Notes](./release-notes.en.md) | Changes in each version · how to update |
 
 ## Navigation
 
